@@ -1,0 +1,64 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pagerless-server
+  namespace: pagerless
+rules:
+  - apiGroups: [pagerless.dev]
+    resources: [triages]
+    verbs: [get, list, watch]
+  - apiGroups: [pagerless.dev]
+    resources: [triages/status]
+    verbs: [get, update, patch]
+  # Needed to set blockOwnerDeletion on the agent Job's owner reference.
+  - apiGroups: [pagerless.dev]
+    resources: [triages/finalizers]
+    verbs: [update]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch]
+  # Reads the pod that a presented agent token is bound to.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pagerless-server
+  namespace: pagerless
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pagerless-server
+subjects:
+  - kind: ServiceAccount
+    name: pagerless-server
+    namespace: pagerless
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pagerless-server
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+  # Publishes the generated certificate authority in its own webhook configuration.
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [validatingwebhookconfigurations]
+    resourceNames: [pagerless-server]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pagerless-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pagerless-server
+subjects:
+  - kind: ServiceAccount
+    name: pagerless-server
+    namespace: pagerless

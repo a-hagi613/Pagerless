@@ -1,0 +1,42 @@
+# The caBundle fields are filled in by pagerless-server at every start, from the
+# certificate authority it generates (see internal/webhooktls). A GitOps tool
+# must ignore differences in /webhooks/*/clientConfig/caBundle.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: pagerless-server
+webhooks:
+  - name: create.triages.pagerless.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: pagerless-server
+        namespace: pagerless
+        path: /validate-triage-create
+        port: 443
+    rules:
+      - apiGroups: [pagerless.dev]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [triages]
+        scope: Namespaced
+  - name: status.triages.pagerless.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: pagerless-server
+        namespace: pagerless
+        path: /validate-triage-status
+        port: 443
+    rules:
+      - apiGroups: [pagerless.dev]
+        apiVersions: [v1alpha1]
+        operations: [UPDATE]
+        resources: [triages/status]
+        scope: Namespaced
