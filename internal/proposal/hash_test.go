@@ -33,7 +33,7 @@ func patch(memory string) v1alpha1.ProposedAction {
 
 func mustHash(t *testing.T, tr *v1alpha1.Triage, a v1alpha1.ProposedAction, c *v1alpha1.RenderedChange) string {
 	t.Helper()
-	h, err := proposal.Hash(tr, a, c)
+	h, err := proposal.Hash(tr, a, c, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +65,27 @@ func TestHashCoversEveryInputTheApprovalBindsTo(t *testing.T) {
 	for input, hash := range changed {
 		if hash == base {
 			t.Errorf("changing the %s did not change the hash", input)
+		}
+	}
+}
+
+func TestHashCoversTheBaseTheChangeWasRenderedAgainst(t *testing.T) {
+	change := &v1alpha1.RenderedChange{Path: patchedPath, Patch: "p1"}
+	hashWith := func(base *v1alpha1.ProposalBase) string {
+		h, err := proposal.Hash(triage(), patch("512Mi"), change, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	base := hashWith(&v1alpha1.ProposalBase{Commit: "c1", WorkloadGeneration: 3})
+	for name, other := range map[string]*v1alpha1.ProposalBase{
+		"base commit":         {Commit: "c2", WorkloadGeneration: 3},
+		"workload generation": {Commit: "c1", WorkloadGeneration: 4},
+		"no base":             nil,
+	} {
+		if hashWith(other) == base {
+			t.Errorf("changing the %s did not change the hash", name)
 		}
 	}
 }

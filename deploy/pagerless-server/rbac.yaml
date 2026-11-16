@@ -44,6 +44,12 @@ rules:
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]
     verbs: [create]
+  # Validation reads the target Workload and dry-runs the patched Workload against it. Kubernetes RBAC cannot
+  # limit a verb to dry runs, so the server's code sends update only with dryRun=All and only to Workloads in
+  # the namespaces allowed for PatchResources. The Executor, not the server, makes live changes (ADR-0008).
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, update]
   # Publishes the generated certificate authority in its own webhook configuration.
   - apiGroups: [admissionregistration.k8s.io]
     resources: [validatingwebhookconfigurations]

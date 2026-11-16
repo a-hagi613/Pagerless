@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/webhooktls"
 )
@@ -22,6 +24,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "pagerless-server:", err)
 		os.Exit(1)
 	}
+}
+
+// splitList splits a comma-separated list and drops empty items.
+func splitList(s string) []string {
+	var items []string
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func run() error {
@@ -44,6 +57,11 @@ func run() error {
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
 			"service account that pagerless-server runs as")
 		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		sandboxURL    = flag.String("sandbox-url", "",
+			"git URL of the Sandbox; PatchResources is accepted only when it is set")
+		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
+		patchable     = flag.String("patch-namespaces", "",
+			"comma-separated namespaces whose Workloads PatchResources may change")
 	)
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
@@ -86,6 +104,8 @@ func run() error {
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,
+		Sandbox:              sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch},
+		AllowedNamespaces:    splitList(*patchable),
 		WebhookPort:          *webhookPort,
 		WebhookCertDir:       *webhookCertDir,
 		HealthProbeAddress:   *healthBind,
