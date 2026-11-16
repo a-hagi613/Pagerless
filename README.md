@@ -61,11 +61,9 @@ The model proposes; deterministic code decides.
 
 ## Roadmap
 
-1. **Local core.** kind, the observability stack, Argo CD, the Triage operator, the agent with read-only MCP tools, and the CLI. Complete when a failing Workload is triaged, approved, and remediated from the terminal.
-2. **Local polish.** Dashboard, pull request remediation flow, the full Scenario set, and the evaluation harness with the prompt-injection suite.
-3. **MCP security.** agentgateway and Keycloak in front of every MCP tool, including a demonstration of a blocked tool call.
-4. **Cloud.** Terraform for EKS with Karpenter and Pod Identity, keyless Bedrock access, and AWS Budgets alerts.
-5. **Release.** Demonstration video, published evaluation results, and measured operating costs.
+1. **Core loop (local).** kind, the observability stack, Argo CD with the Sandbox, `pagerless-server`, the agent with read-only MCP tools, `pagerless-executor` with the pull request flow, the `kubectl triage` CLI, and Replay. Complete when the OOMKilled Scenario runs from alert through Diagnosis, Approval in the terminal, and pull request merge to a Verification of Recovered.
+2. **Complete product (local).** The dashboard, the remaining Scenarios, agentgateway and Keycloak in front of every MCP tool, and the evaluation harness with the prompt-injection suite. Complete when `make eval` runs all ten Scenarios on kind and a blocked tool call is demonstrated.
+3. **Cloud and release.** Terraform for EKS with Karpenter and Pod Identity, keyless Bedrock access, the nightly teardown workflow, and AWS Budgets alerts, followed by the demonstration video, published evaluation results, and measured operating costs. Complete when the stack runs on EKS, the demonstration is recorded, and the cluster is destroyed.
 
 ## Documentation
 
