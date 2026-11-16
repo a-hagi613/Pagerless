@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help generate manifests test test-go test-agent lint lint-go lint-agent
+.PHONY: help generate manifests build-cli test test-go test-agent lint lint-go lint-agent
 
 help: ## List the available targets.
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -13,6 +13,9 @@ generate: ## Generate the deepcopy methods for the API types.
 
 manifests: ## Generate the CustomResourceDefinitions.
 	go tool controller-gen crd paths=./api/... output:crd:dir=$(CRD_DIR)
+
+build-cli: ## Build the kubectl-triage plugin into bin/.
+	go build -o bin/kubectl-triage ./cmd/kubectl-triage
 
 test: test-go test-agent ## Run the Go and Python test suites.
 

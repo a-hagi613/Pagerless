@@ -6,6 +6,9 @@
 # Claude Code local settings
 .claude/settings.local.json
 
+# Build output of the Go binaries
+/bin/
+
 # Editor and OS files
 .idea/
 .vscode/
