@@ -1,0 +1,4 @@
+# Set by the root Application's Helm parameters, which hack/up.sh renders from .env.
+sandbox:
+  repoURL: ""
+  targetRevision: main
