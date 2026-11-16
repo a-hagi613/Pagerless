@@ -32,6 +32,7 @@ spec:
           args:
             - --agent-image=ghcr.io/a-hagi613/pagerless-agent:0.1.0
             - --report-url=http://pagerless-server.pagerless.svc:8080
+            - --alert-namespaces=sandbox
           env:
             - name: POD_NAMESPACE
               valueFrom:
