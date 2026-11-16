@@ -11,3 +11,10 @@
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Python agent caches and virtual environments
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
