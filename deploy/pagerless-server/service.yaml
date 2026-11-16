@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pagerless-server
+  namespace: pagerless
+spec:
+  selector:
+    app.kubernetes.io/name: pagerless-server
+  ports:
+    - name: report
+      port: 8080
+      targetPort: report
+    - name: webhook
+      port: 443
+      targetPort: webhook
