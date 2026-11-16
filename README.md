@@ -48,6 +48,25 @@ The model proposes; deterministic code decides.
 | Failure injection | OpenTelemetry Demo with flagd, Chaos Mesh, purpose-built manifests |
 | Evaluation | pytest harness, promptfoo |
 
+## Local bootstrap
+
+`make up` creates a local kind cluster, installs Argo CD, and deploys your copy of the [Sandbox](https://github.com/a-hagi613/pagerless-sandbox), which holds the demo Workloads.
+
+Prerequisites, at the versions pinned in [`hack/versions.env`](hack/versions.env):
+
+- Docker Desktop, with at least 8 GiB of memory for the engine.
+- kind v0.33.0, kubectl v1.37.0, and Helm v4.3.2, on the `PATH`.
+- GitHub CLI v2.104.0, required by `make break` and `make reset`.
+- GNU make. On Windows, run every command in WSL Ubuntu.
+
+Steps:
+
+1. Create your copy of the Sandbox from its template, then enable auto-merge and require the `kubeconform` check on `main`, as described in the Sandbox README.
+2. Run `make up`. It prompts for your Sandbox URL, a read-only token and a write token (both fine-grained and scoped to your copy), and the model provider, which defaults to `replay`. The answers are written to `.env`, which Git ignores.
+3. Run `make break SCENARIO=oom`. It commits the OOM Scenario to the Sandbox through an auto-merging pull request. The `checkout` Workload is then OOMKilled.
+4. Run `make reset`. It force-resets the Sandbox `main` branch to the `known-good` tag, and the Workload returns to healthy.
+5. Run `make down` to delete the cluster. It keeps `.env`.
+
 ## CLI
 
 | Command | Description |

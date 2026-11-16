@@ -25,6 +25,7 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	admissionpkg "github.com/a-hagi613/pagerless/internal/admission"
+	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
@@ -63,6 +64,8 @@ type Config struct {
 	ServerServiceAccount string
 	// AgentDeadline defaults to DefaultAgentDeadline.
 	AgentDeadline time.Duration
+	// AlertNamespaces are the namespaces whose opted-in alerts may start Triages. Empty accepts none.
+	AlertNamespaces []string
 	// Clock defaults to the real clock.
 	Clock clock.Clock
 	// Validators are the Actions that Validation accepts, which replaces the
@@ -213,7 +216,16 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals: proposals,
 		Clock:     cfg.Clock,
 	}
-	if err := mgr.Add(reportAPI(cfg.ReportListener, handler)); err != nil {
+	receiver := &alerts.Receiver{
+		Client:     mgr.GetClient(),
+		Store:      store,
+		Namespace:  cfg.Namespace,
+		Namespaces: cfg.AlertNamespaces,
+	}
+	mux := http.NewServeMux()
+	mux.Handle(alerts.Path, receiver)
+	mux.Handle("/", handler)
+	if err := mgr.Add(reportAPI(cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
 	}
 

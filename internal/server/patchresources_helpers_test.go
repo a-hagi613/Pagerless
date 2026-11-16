@@ -20,8 +20,6 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-const sandboxNamespace = "sandbox"
-
 // withPatchResources starts the harness with Validation accepting PatchResources for the sandbox namespace.
 func withPatchResources() testenv.Option {
 	return testenv.WithValidators(func(e *testenv.Env) map[v1alpha1.Action]proposal.ActionValidator {

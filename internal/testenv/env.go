@@ -80,9 +80,10 @@ type Env struct {
 }
 
 type options struct {
-	validators    func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	proposalPoll  time.Duration
-	agentDeadline time.Duration
+	validators      func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll    time.Duration
+	agentDeadline   time.Duration
+	alertNamespaces []string
 }
 
 // Option customizes the harness.
@@ -98,6 +99,11 @@ func WithValidators(f func(*Env) map[v1alpha1.Action]proposal.ActionValidator) O
 // WithAgentDeadline sets the agent Job's active deadline.
 func WithAgentDeadline(d time.Duration) Option {
 	return func(o *options) { o.agentDeadline = d }
+}
+
+// WithAlertNamespaces sets the namespaces whose opted-in alerts start Triages.
+func WithAlertNamespaces(namespaces ...string) Option {
+	return func(o *options) { o.alertNamespaces = namespaces }
 }
 
 // Start runs the API server, installs pagerless-server's manifests, and runs
@@ -184,6 +190,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ReportListener:       listener,
 		AgentDeadline:        o.agentDeadline,
 		ProposalPollInterval: o.proposalPoll,
+		AlertNamespaces:      o.alertNamespaces,
 		Clock:                env.Clock,
 		Validators:           validators,
 		WebhookHost:          testEnv.WebhookInstallOptions.LocalServingHost,

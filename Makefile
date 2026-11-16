@@ -1,9 +1,11 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help generate manifests test test-go test-agent lint lint-go lint-agent
+include hack/versions.env
+
+.PHONY: help generate manifests test test-go test-agent lint lint-go lint-agent up down break reset
 
 help: ## List the available targets.
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
+	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
 
 CRD_DIR := deploy/pagerless-server/crds
 ENVTEST_K8S_VERSION := 1.37.0
@@ -33,3 +35,15 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 	cd agent && uv run --locked ruff check .
 	cd agent && uv run --locked ruff format --check .
 	cd agent && uv run --locked mypy
+
+up: ## Create the kind cluster, install Argo CD, and deploy the Sandbox.
+	bash hack/up.sh
+
+down: ## Delete the kind cluster and the local Helm repository entry.
+	bash hack/down.sh
+
+break: ## Inject a Scenario into the Sandbox, for example make break SCENARIO=oom.
+	bash hack/break.sh "$(SCENARIO)"
+
+reset: ## Force-reset the Sandbox to the known-good tag.
+	bash hack/reset.sh

@@ -93,7 +93,9 @@ func (r *TriageReconciler) initialize(ctx context.Context, t *v1alpha1.Triage) e
 			return nil
 		}
 		latest.Status.Phase = v1alpha1.PhasePending
-		latest.Status.TriggerCount = 1
+		// A repeat Trigger may have joined the Triage before it was initialized,
+		// so the creating Trigger is added to the count rather than set.
+		latest.Status.TriggerCount++
 		return nil
 	})
 	return err

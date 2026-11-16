@@ -4,9 +4,10 @@ metadata:
   name: pagerless-server
   namespace: pagerless
 rules:
+  # Creates a Triage for each opted-in alert (internal/alerts).
   - apiGroups: [pagerless.dev]
     resources: [triages]
-    verbs: [get, list, watch]
+    verbs: [create, get, list, watch]
   - apiGroups: [pagerless.dev]
     resources: [triages/status]
     verbs: [get, update, patch]
