@@ -78,8 +78,9 @@ type Env struct {
 }
 
 type options struct {
-	validators    func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	agentDeadline time.Duration
+	validators      func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	agentDeadline   time.Duration
+	alertNamespaces []string
 }
 
 // Option customizes the harness.
@@ -95,6 +96,11 @@ func WithValidators(f func(*Env) map[v1alpha1.Action]proposal.ActionValidator) O
 // WithAgentDeadline sets the agent Job's active deadline.
 func WithAgentDeadline(d time.Duration) Option {
 	return func(o *options) { o.agentDeadline = d }
+}
+
+// WithAlertNamespaces sets the namespaces whose opted-in alerts start Triages.
+func WithAlertNamespaces(namespaces ...string) Option {
+	return func(o *options) { o.alertNamespaces = namespaces }
 }
 
 // Start runs the API server, installs pagerless-server's manifests, and runs
@@ -172,16 +178,17 @@ func Start(t testing.TB, opts ...Option) *Env {
 		validators = o.validators(env)
 	}
 	mgr, err := server.New(serverConfig, server.Config{
-		Namespace:      Namespace,
-		AgentImage:     AgentImage,
-		AgentServerURL: env.ReportURL,
-		ReportListener: listener,
-		AgentDeadline:  o.agentDeadline,
-		Clock:          env.Clock,
-		Validators:     validators,
-		WebhookHost:    testEnv.WebhookInstallOptions.LocalServingHost,
-		WebhookPort:    testEnv.WebhookInstallOptions.LocalServingPort,
-		WebhookCertDir: testEnv.WebhookInstallOptions.LocalServingCertDir,
+		Namespace:       Namespace,
+		AgentImage:      AgentImage,
+		AgentServerURL:  env.ReportURL,
+		ReportListener:  listener,
+		AgentDeadline:   o.agentDeadline,
+		AlertNamespaces: o.alertNamespaces,
+		Clock:           env.Clock,
+		Validators:      validators,
+		WebhookHost:     testEnv.WebhookInstallOptions.LocalServingHost,
+		WebhookPort:     testEnv.WebhookInstallOptions.LocalServingPort,
+		WebhookCertDir:  testEnv.WebhookInstallOptions.LocalServingCertDir,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)

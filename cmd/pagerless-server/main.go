@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -43,13 +45,19 @@ func run() error {
 			"service account that agent Jobs run as")
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
 			"service account that pagerless-server runs as")
-		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		agentDeadline   = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		alertNamespaces = flag.String("alert-namespaces", "",
+			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
 	)
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 
+	allowed, err := parseNamespaces(*alertNamespaces)
+	if err != nil {
+		return err
+	}
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
 		return fmt.Errorf("load Kubernetes configuration: %w", err)
@@ -86,6 +94,7 @@ func run() error {
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,
+		AlertNamespaces:      allowed,
 		WebhookPort:          *webhookPort,
 		WebhookCertDir:       *webhookCertDir,
 		HealthProbeAddress:   *healthBind,
@@ -93,9 +102,26 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	ctrl.Log.WithName("setup").Info("starting pagerless-server", "namespace", *namespace)
+	ctrl.Log.WithName("setup").Info("starting pagerless-server", "namespace", *namespace, "alertNamespaces", allowed)
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("run manager: %w", err)
 	}
 	return nil
+}
+
+// parseNamespaces splits the comma-separated list of alert namespaces and
+// checks that each one is a valid namespace name.
+func parseNamespaces(list string) ([]string, error) {
+	var namespaces []string
+	for name := range strings.SplitSeq(list, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
+			return nil, fmt.Errorf("alert namespace %q: %s", name, strings.Join(errs, "; "))
+		}
+		namespaces = append(namespaces, name)
+	}
+	return namespaces, nil
 }
