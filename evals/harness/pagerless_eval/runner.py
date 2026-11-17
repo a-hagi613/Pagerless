@@ -48,6 +48,10 @@ SERVER_DEPLOYMENT = "pagerless-server"
 CHECKOUT = "checkout"
 INJECTED_CONTAINER = "memory-holder"
 ADAPTER_FIXTURES = Path("evals/e2e/fixtures")
+# A checked-in recording that came from a live capture lives in evals/replay and
+# is baked into the agent image; the synthetic development fixtures live in
+# evals/e2e/fixtures. A Scenario may name either.
+REPLAY_ARTIFACTS = Path("evals/replay")
 PROVIDERS_LIVE = ("anthropic", "bedrock")
 # LIVE_OPT_IN is the variable that only the guarded paid workflow sets, so that
 # the credential-free Replay subset can never run against a paid provider.
@@ -234,9 +238,16 @@ class Harness:
                     f"Scenario {scenario.name!r} has no Replay recording for the CI subset. "
                     "The documented subset is oom, unschedulable, and bad-config."
                 )
-            recording = self.config.repo_root / ADAPTER_FIXTURES / scenario.replay_recording
-            if not recording.is_file():
-                raise HarnessError(f"the Replay recording {recording} is missing")
+            recording = next(
+                (
+                    root / str(scenario.replay_recording)
+                    for root in (ADAPTER_FIXTURES, REPLAY_ARTIFACTS)
+                    if (self.config.repo_root / root / str(scenario.replay_recording)).is_file()
+                ),
+                None,
+            )
+            if recording is None:
+                raise HarnessError(f"the Replay recording {scenario.replay_recording} is missing")
 
     def _preflight_live(self, provider: str) -> None:
         if provider == "replay":

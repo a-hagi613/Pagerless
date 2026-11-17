@@ -60,10 +60,14 @@ class AnswerKeyTest(unittest.TestCase):
 
     def test_the_replay_subset_has_recordings(self) -> None:
         subset = parse_scenarios("oom,unschedulable,bad-config")
+        roots = (REPO_ROOT / "evals" / "e2e" / "fixtures", REPO_ROOT / "evals" / "replay")
         for item in subset:
             self.assertIsNotNone(item.replay_recording)
-            recording = REPO_ROOT / "evals" / "e2e" / "fixtures" / str(item.replay_recording)
-            self.assertTrue(recording.is_file(), recording)
+            recording = next(
+                (root / str(item.replay_recording) for root in roots if (root / str(item.replay_recording)).is_file()),
+                None,
+            )
+            self.assertIsNotNone(recording, item.replay_recording)
 
     def test_parse_and_lookup_errors_name_the_available_scenarios(self) -> None:
         self.assertEqual(parse_scenarios("all"), SCENARIOS)
