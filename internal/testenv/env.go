@@ -138,6 +138,17 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ErrorIfCRDPathMissing: true,
 		WebhookInstallOptions: envtest.WebhookInstallOptions{Paths: []string{filepath.Join(deployDir, "webhook.yaml")}},
 	}
+	// Serve the webhooks on a listener that is bound before the API server starts. envtest chooses a port by
+	// binding and immediately closing a listener, and the webhook server does not start until the manager does,
+	// so an unbound port can be taken by another listener or connection in between, after which the webhook
+	// server never starts. Serving the webhooks on the listener that reserved the port leaves no gap for that.
+	webhookListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the webhook server: %v", err)
+	}
+	t.Cleanup(func() { _ = webhookListener.Close() })
+	testEnv.WebhookInstallOptions.LocalServingHost = "127.0.0.1"
+	testEnv.WebhookInstallOptions.LocalServingPort = webhookListener.Addr().(*net.TCPAddr).Port
 	cfg, err := testEnv.Start()
 	if err != nil {
 		t.Fatalf("start envtest: %v", err)
@@ -225,9 +236,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 		AlertNamespaces:          o.alertNamespaces,
 		Clock:                    env.Clock,
 		Validators:               validators,
-		WebhookHost:              testEnv.WebhookInstallOptions.LocalServingHost,
-		WebhookPort:              testEnv.WebhookInstallOptions.LocalServingPort,
 		WebhookCertDir:           testEnv.WebhookInstallOptions.LocalServingCertDir,
+		WebhookListener:          webhookListener,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)

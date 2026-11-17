@@ -114,6 +114,11 @@ type Config struct {
 	WebhookHost    string
 	WebhookPort    int
 	WebhookCertDir string
+	// WebhookListener is an already-bound listener that the webhook server
+	// serves on. When it is set, the webhook server does not bind WebhookHost
+	// and WebhookPort when the manager starts; the listener carries the port
+	// for the whole serving span, so nothing can take it in between.
+	WebhookListener net.Listener
 	// HealthProbeAddress is the address of the health probes, or empty to disable them.
 	HealthProbeAddress string
 }
@@ -148,6 +153,8 @@ func (c Config) validate() error {
 		return errors.New("an Argo CD token source is required")
 	case c.AlertmanagerURL == "":
 		return errors.New("an Alertmanager URL is required")
+	case c.WebhookListener != nil && c.WebhookCertDir == "":
+		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
 	return nil
 }
@@ -201,11 +208,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: cfg.HealthProbeAddress,
 		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}}},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Host:    cfg.WebhookHost,
-			Port:    cfg.WebhookPort,
-			CertDir: cfg.WebhookCertDir,
-		}),
+		WebhookServer:          webhookServer(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create manager: %w", err)
