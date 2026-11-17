@@ -36,7 +36,8 @@ const (
 	vault    = "vault"
 
 	// labelKey labels the pods of the Workloads that these tests create.
-	labelKey = "app"
+	labelKey      = "app"
+	containerName = "app"
 )
 
 var (
@@ -425,7 +426,7 @@ func podTemplate(name string) corev1.PodTemplateSpec {
 	return corev1.PodTemplateSpec{
 		Labels: map[string]string{labelKey: name},
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "registry.invalid/" + name + ":1"}},
+			Containers: []corev1.Container{{Name: containerName, Image: "registry.invalid/" + name + ":1"}},
 		},
 	}
 }
@@ -479,7 +480,7 @@ func createPod(t testing.TB, env *testenv.Env, name string, owners []metav1.Owne
 		Namespace:       sandbox,
 		OwnerReferences: owners,
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "registry.invalid/app:1"}},
+			Containers: []corev1.Container{{Name: containerName, Image: "registry.invalid/app:1"}},
 		},
 	}
 	mustCreate(t, env, pod)
