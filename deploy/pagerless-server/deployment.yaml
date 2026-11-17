@@ -36,6 +36,10 @@ spec:
             - --agent-image=ghcr.io/a-hagi613/pagerless-agent:0.1.0
             - --report-url=http://pagerless-server.pagerless.svc:8080
             - --metrics-bind-address=:9090
+            - --dashboard-bind-address=:8082
+            # The browser reaches Grafana through its own port-forward, so the panel URLs use the reader's
+            # localhost. The dashboard UIDs default to the dashboards in deploy/observability/dashboards.
+            - --grafana-url=http://localhost:3000
             - --history-path=/var/lib/pagerless/history.db
             - --alert-namespaces=sandbox
             - --executor-url=http://pagerless-executor.pagerless.svc:8080
@@ -60,6 +64,8 @@ spec:
               containerPort: 8081
             - name: metrics
               containerPort: 9090
+            - name: dashboard
+              containerPort: 8082
           livenessProbe:
             httpGet:
               path: /healthz

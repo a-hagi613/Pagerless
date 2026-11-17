@@ -21,3 +21,10 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Dashboard dependencies and build output. The committed marker keeps the Go embed directory present.
+**/node_modules/
+**/dist/
+!dashboard/dist/
+dashboard/dist/*
+!dashboard/dist/.gitkeep

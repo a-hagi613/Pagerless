@@ -11,3 +11,9 @@ configMapGenerator:
   - name: pagerless-dashboard
     files:
       - pagerless.json
+  # The dashboards that the Pagerless Triage detail view embeds for a Workload's metrics and logs. Their UIDs are
+  # the defaults of --grafana-workload-dashboard-uid and --grafana-logs-dashboard-uid.
+  - name: pagerless-workload-dashboards
+    files:
+      - workload-metrics.json
+      - workload-logs.json

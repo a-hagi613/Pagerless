@@ -25,9 +25,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	webassets "github.com/a-hagi613/pagerless/dashboard"
 	admissionpkg "github.com/a-hagi613/pagerless/internal/admission"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
@@ -49,6 +51,10 @@ const (
 	DefaultAgentDeadline = 5 * time.Minute
 	// DefaultNarrativeDeadline is the Narrative Job's active deadline: one short model call, not an investigation.
 	DefaultNarrativeDeadline = 2 * time.Minute
+	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Workload's metrics.
+	DefaultMetricsDashboardUID = dashboardapi.DefaultMetricsDashboardUID
+	// DefaultLogsDashboardUID is the Grafana dashboard that shows a Workload's logs.
+	DefaultLogsDashboardUID = dashboardapi.DefaultLogsDashboardUID
 	// shutdownTimeout bounds how long the report API drains when the server stops.
 	shutdownTimeout = 10 * time.Second
 	// readHeaderTimeout bounds how long a client may take to send request headers.
@@ -69,6 +75,17 @@ type Config struct {
 	ReportListener net.Listener
 	// MetricsListener is the listener the Prometheus metrics API serves on. It is required.
 	MetricsListener net.Listener
+	// DashboardListener is the listener the dashboard and its read-only API serve on. It is required.
+	DashboardListener net.Listener
+	// GrafanaURL is the Grafana base URL that the browser can reach, for example http://localhost:3000 while the
+	// Grafana Service is port-forwarded. Empty disables the embedded Grafana panels.
+	GrafanaURL string
+	// GrafanaMetricsDashboardUID is the Grafana dashboard that charts the Workload's metrics.
+	// It defaults to dashboardapi.DefaultMetricsDashboardUID.
+	GrafanaMetricsDashboardUID string
+	// GrafanaLogsDashboardUID is the Grafana dashboard that shows the Workload's logs.
+	// It defaults to dashboardapi.DefaultLogsDashboardUID.
+	GrafanaLogsDashboardUID string
 	// HistoryPath is the SQLite file that records Triage snapshots and steps. It is required.
 	HistoryPath string
 	// ExecutorURL is the base URL of pagerless-executor. It is required.
@@ -188,6 +205,8 @@ func (c Config) validate() error {
 		return errors.New("a history path is required")
 	case c.MetricsListener == nil:
 		return errors.New("a metrics listener is required")
+	case c.DashboardListener == nil:
+		return errors.New("a dashboard listener is required")
 	}
 	return nil
 }
@@ -232,6 +251,12 @@ func (c Config) withDefaults() Config {
 	if c.RetentionPollInterval == 0 {
 		c.RetentionPollInterval = controller.DefaultRetentionPollInterval
 	}
+	if c.GrafanaMetricsDashboardUID == "" {
+		c.GrafanaMetricsDashboardUID = dashboardapi.DefaultMetricsDashboardUID
+	}
+	if c.GrafanaLogsDashboardUID == "" {
+		c.GrafanaLogsDashboardUID = dashboardapi.DefaultLogsDashboardUID
+	}
 	return c
 }
 
@@ -265,7 +290,8 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("add the Triage history: %w", err)
 	}
 	metricsAPI := metrics.New(mgr.GetClient())
-	recorder := &recorder{history: historyStore, metrics: metricsAPI}
+	broker := dashboardapi.NewBroker()
+	recorder := &recorder{history: historyStore, metrics: metricsAPI, dashboard: broker}
 
 	validators := cfg.Validators
 	if validators == nil {
@@ -412,6 +438,23 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err := mgr.Add(serve("metrics API", cfg.MetricsListener, metricsAPI.Handler())); err != nil {
 		return nil, fmt.Errorf("add the metrics API: %w", err)
 	}
+	// The dashboard reads through the manager's client, so it inherits the server's RBAC, and its API never writes.
+	dashboard := dashboardapi.New(dashboardapi.Config{
+		Namespace: cfg.Namespace,
+		Reader:    mgr.GetClient(),
+		History:   historyStore,
+		Broker:    broker,
+		Clock:     cfg.Clock,
+		Grafana: dashboardapi.GrafanaConfig{
+			BaseURL:             cfg.GrafanaURL,
+			MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
+			LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
+		},
+		Assets: webassets.Assets(),
+	})
+	if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
+		return nil, fmt.Errorf("add the dashboard: %w", err)
+	}
 
 	if cfg.HealthProbeAddress != "" {
 		if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
@@ -452,14 +495,17 @@ func closeHistory(store *history.Store) manager.Runnable {
 	})
 }
 
-// recorder writes the append-only history and updates the Prometheus metrics after a status write. A history or
-// metrics failure is logged and never fails the request: the Triage resource is the source of truth (ADR-0001).
+// recorder writes the append-only history, updates the Prometheus metrics, and fans live events out to the
+// dashboard after a status write. A history or metrics failure is logged and never fails the request: the Triage
+// resource is the source of truth (ADR-0001).
 type recorder struct {
-	history *history.Store
-	metrics *metrics.Metrics
+	history   *history.Store
+	metrics   *metrics.Metrics
+	dashboard *dashboardapi.Broker
 }
 
-// PhaseChanged records a Triage snapshot on every Phase change and updates the metrics.
+// PhaseChanged records a Triage snapshot on every Phase change, updates the metrics, and notifies open event
+// streams. A terminal Phase also ends the streams, because no further change can occur.
 func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Triage, now time.Time) {
 	r.metrics.ObservePhaseChange(before, after, now)
 	if before.Status.Phase == after.Status.Phase {
@@ -468,13 +514,26 @@ func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Tri
 	if err := r.history.AppendSnapshot(ctx, after, now); err != nil {
 		logf.FromContext(ctx).Error(err, "record the Triage snapshot", "triage", after.Name)
 	}
+	if r.dashboard == nil {
+		return
+	}
+	phase := dashboardapi.PhaseEvent{Phase: after.Status.Phase, Terminal: after.Status.Phase.IsTerminal()}
+	r.dashboard.Publish(after.Name, dashboardapi.EventPhase, phase)
+	if phase.Terminal {
+		r.dashboard.Publish(after.Name, dashboardapi.EventEnd, phase)
+	}
 }
 
-// StepRecorded appends one step event to the history.
+// StepRecorded appends one step event to the history and sends it to open event streams.
 func (r *recorder) StepRecorded(
 	ctx context.Context, tr *v1alpha1.Triage, step v1alpha1.Step, finding *v1alpha1.Finding,
 ) {
 	if err := r.history.AppendStep(ctx, tr, step, finding); err != nil {
 		logf.FromContext(ctx).Error(err, "record the Triage step", "triage", tr.Name)
+	}
+	if r.dashboard != nil {
+		r.dashboard.Publish(tr.Name, dashboardapi.EventStep, dashboardapi.StepEvent{
+			Step: step, Finding: finding, StepCount: tr.Status.StepCount,
+		})
 	}
 }

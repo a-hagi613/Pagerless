@@ -41,7 +41,13 @@ The per-Triage series exist only while the Triage resource does, which retention
 
 ## Grafana dashboards
 
-[`dashboards/kustomization.yaml`](dashboards/kustomization.yaml) generates the `pagerless-dashboard` ConfigMap from [`dashboards/pagerless.json`](dashboards/pagerless.json) and labels it `grafana_dashboard: "1"`. The kube-prometheus-stack Grafana sidecar discovers that label in every namespace and provisions the **Pagerless** dashboard, which charts every metric above.
+[`dashboards/kustomization.yaml`](dashboards/kustomization.yaml) generates ConfigMaps from [`dashboards/pagerless.json`](dashboards/pagerless.json), [`dashboards/workload-metrics.json`](dashboards/workload-metrics.json) and [`dashboards/workload-logs.json`](dashboards/workload-logs.json), and labels them `grafana_dashboard: "1"`. The kube-prometheus-stack Grafana sidecar discovers that label in every namespace and provisions:
+
+- the **Pagerless** dashboard, which charts every metric above;
+- the **Pagerless Workload metrics** dashboard (UID `pagerless-workload`), which charts a Workload's CPU, memory, restarts and ready pods, and which the Triage detail view embeds;
+- the **Pagerless Workload logs** dashboard (UID `pagerless-workload-logs`), which shows a Workload's container logs from Loki, and which the Triage detail view embeds.
+
+The Workload dashboards take `namespace` and `workload` variables, which the dashboard API fills in. The Grafana values set `security.allow_embedding: true`, because Grafana refuses to be framed otherwise, and pin the `loki` and `tempo` data source UIDs that the log dashboard references. The Triage detail view always offers a deep link as well, for when embedding is unavailable.
 
 ## Local credentials
 

@@ -30,6 +30,14 @@ func TestRetentionDeletesATerminalTriageAfterSevenDays(t *testing.T) {
 	if diagnosed.Status.TerminalAt == nil || !diagnosed.Status.TerminalAt.Time.Equal(testenv.StartTime) {
 		t.Fatalf("terminalAt = %v, want the clock's time %v", diagnosed.Status.TerminalAt, testenv.StartTime)
 	}
+	// The recorder writes the terminal snapshot after the status, so wait for it before counting history.
+	eventually(t, "history records the Diagnosed snapshot", func() bool {
+		snapshots, err := env.History.Snapshots(t.Context(), created.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(snapshots) > 0 && snapshots[len(snapshots)-1].Phase == v1alpha1.PhaseDiagnosed
+	})
 	before, err := env.History.Snapshots(t.Context(), created.Name)
 	if err != nil {
 		t.Fatal(err)
