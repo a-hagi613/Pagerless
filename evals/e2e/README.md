@@ -1,7 +1,37 @@
 # Credential-free end-to-end harness
 
 `make e2e` runs the OOMKilled Scenario with the synthetic Replay fixture in a
-dedicated kind cluster. The harness uses separate generated read and write
+dedicated kind cluster. Set `PAGERLESS_E2E_SCENARIO` to run another Scenario
+that `make break` accepts; the harness plays `fixtures/synthetic-<scenario>.json`
+unless `PAGERLESS_E2E_RECORDING` names another recording in that directory, so
+`PAGERLESS_E2E_SCENARIO=injection` runs the prompt-injection Scenario end to end.
+
+`PAGERLESS_E2E_MODEL_PROVIDER=anthropic` runs the same flow against the live
+model instead of Replay. `PAGERLESS_E2E_CAPTURE=1` additionally provisions the
+capture claim and writes the genuine OOMKilled recording, its provenance
+document, and the Narrative recording; the agent refuses a recording file in
+Replay, so that switch requires the live provider. `PAGERLESS_E2E_LIVE=1` is the
+explicit opt-in that lets the harness' adapter preflight accept a live provider,
+and only the guarded paid workflow sets it, so `make eval-replay` can never spend
+money.
+`PAGERLESS_E2E_MEMORY_PEAK` names a file that the runner samples the kind node
+container's memory into every five seconds while the stack is up.
+
+The same cluster and adapter also serve the evaluation's credential-free subset.
+`make eval-replay` sets `PAGERLESS_E2E_EVAL=1` and runs `oom`, `unschedulable`,
+and `bad-config` through `evals/harness`, which resets, injects, approves as the
+`eval-approver` user, and scores each run. CI runs that target as the
+kind-backed gate, one Scenario per job on its own cluster: a push to an
+integration branch gates on `oom`, while a pull request into `main`, a manual
+dispatch, and the nightly run cover all three. The Replay jobs shorten the
+observation window to 60 seconds through `PAGERLESS_VERIFICATION_WINDOW`; the
+single-Scenario `make e2e` check, every live run, and production keep ADR-0006's
+five minutes.
+`make e2e` remains available as the single-scenario check.
+The evaluation's evaluator contract and scoring rules are in
+[docs/evaluation.md](../../docs/evaluation.md).
+
+The harness uses separate generated read and write
 tokens, a per-run TLS CA, and a test-only GitHub-compatible adapter. It invokes
 the ordinary `make break` path, validates the Sandbox manifests with pinned
 kubeconform v0.8.0 before allowing the adapter's required check to pass, and
@@ -12,8 +42,8 @@ refuses a check for a changed head and merges only the checked commit. The harne
 merge SHA, Argo CD health at that SHA, the Recovered phase, the full five-minute
 Verification window, and every deterministic Verification check.
 
-The fixture at `fixtures/synthetic-oom.json` is test data. It is not a live
-recording and is never copied to `/app/recordings/oom.json`. This test exercises
+The fixtures under `fixtures/` are test data. They are not live recordings and
+are never copied to `/app/recordings/oom.json`. This test exercises
 Pagerless integrations against the adapter; it does not test GitHub.com's
 external API, GitHub-hosted branch protection, or GitHub Actions.
 

@@ -1,0 +1,42 @@
+# The proxy runs inside the cluster only, so no LoadBalancer address is
+# allocated. The agent reaches it through the generated Service.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayParameters
+metadata:
+  name: mcp-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  image:
+    registry: {{ .Values.proxy.image.registry }}
+    repository: {{ .Values.proxy.image.repository }}
+    digest: {{ .Values.proxy.image.digest }}
+    pullPolicy: IfNotPresent
+  service:
+    spec:
+      type: ClusterIP
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mcp-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  gatewayClassName: agentgateway
+  infrastructure:
+    parametersRef:
+      group: agentgateway.dev
+      kind: AgentgatewayParameters
+      name: mcp-gateway
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

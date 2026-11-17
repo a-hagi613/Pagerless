@@ -78,6 +78,10 @@ func TestEnsureRepositoryPeelsAnAnnotatedTagAndRepairsAPartialRepository(t *test
 	if head != commit {
 		t.Fatalf("refs/heads/main = %s, want %s", head, commit)
 	}
+	tagCommit := gitForTest(t, directory, "--git-dir", directory, "rev-parse", "refs/tags/known-good^{commit}")
+	if tagCommit != commit {
+		t.Fatalf("the known-good tag peels to %s, want %s", tagCommit, commit)
+	}
 }
 
 func TestEnsureRepositoryLeavesNoRepositoryWhenTheFetchFails(t *testing.T) {

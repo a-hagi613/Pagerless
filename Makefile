@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images test test-go test-agent lint lint-go lint-agent up dev e2e down break reset cloud-up cloud-down cloud-check
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset cloud-up cloud-down cloud-check
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -11,21 +11,36 @@ help: ## List the available targets.
 CRD_DIR := deploy/pagerless-server/crds
 ENVTEST_K8S_VERSION := 1.37.0
 
+# Evaluation defaults. The paid evaluation runs each Scenario twice (ADR-0010);
+# the credential-free CI subset runs three Scenarios once in Replay.
+SCENARIOS ?= all
+REPEATS ?= 2
+MAX_TOKENS ?= 0
+MAX_COST_USD ?= 0
+REPLAY_SCENARIOS ?= oom,unschedulable,bad-config
+
 generate: ## Generate the deepcopy methods for the API types.
 	go tool controller-gen object paths=./api/...
 
 manifests: ## Generate the CustomResourceDefinitions.
-	go tool controller-gen crd paths=./api/... output:crd:dir=$(CRD_DIR)
+	# Cost is an estimate in USD, so the status carries a bounded JSON number for it.
+	go tool controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=$(CRD_DIR)
 
 build-cli: ## Build the kubectl-triage plugin into bin/.
 	go build -o bin/kubectl-triage ./cmd/kubectl-triage
+
+dashboard-build: ## Build the dashboard into dashboard/dist for the Go embed.
+	cd dashboard && npm ci && npm run build
+
+dashboard-check: ## Typecheck and lint the dashboard.
+	cd dashboard && npm ci && npm run typecheck && npm run lint
 
 build-images: ## Build the server, Executor, and agent container images locally.
 	docker build --file Dockerfile.pagerless-server --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_SERVER_IMAGE) .
 	docker build --file Dockerfile.pagerless-executor --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_EXECUTOR_IMAGE) .
 	docker build --file Dockerfile.pagerless-agent --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_AGENT_IMAGE) .
 
-test: test-go test-agent ## Run the Go and Python test suites.
+test: test-go test-agent test-eval ## Run the Go, Python, and evaluation-harness test suites.
 
 test-go: ## Run the Go test suite, including the envtest suites.
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" go test ./...
@@ -45,6 +60,9 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 	cd agent && uv run --locked ruff format --check .
 	cd agent && uv run --locked mypy
 
+validate: ## Render every manifest and validate it with the pinned kubeconform.
+	bash hack/validate-manifests.sh
+
 up: ## Create the kind cluster, install Argo CD, and deploy the Sandbox.
 	bash hack/up.sh
 
@@ -54,13 +72,36 @@ dev: ## Build local images, load them into kind, and create the development stac
 e2e: ## Run the credential-free synthetic Replay end-to-end scenario in kind.
 	bash evals/e2e/run.sh
 
+eval: ## Run the evaluation on the local stack, score every run, and record the results.
+	bash evals/harness/eval.sh --scenarios "$(SCENARIOS)" --repeats "$(REPEATS)" --max-tokens "$(MAX_TOKENS)" --max-cost-usd "$(MAX_COST_USD)"
+
+eval-replay: ## Run the three-Scenario credential-free Replay subset in the isolated adapter kind cluster.
+	PAGERLESS_E2E_EVAL=1 PAGERLESS_E2E_SCENARIOS="$(REPLAY_SCENARIOS)" PAGERLESS_E2E_REPEATS=1 PAGERLESS_E2E_REQUIRE_PASS=1 bash evals/e2e/run.sh
+
+eval-table: ## Regenerate the README results table from evals/results.
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m pagerless_eval.table --update-readme
+
+eval-table-check: ## Fail when README.md's results table is out of date.
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m pagerless_eval.table --check
+
+test-eval: ## Run the evaluation harness's unit tests (no cluster required).
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m unittest discover -s tests -t .
+
+prompts-check: ## Run the prompt-injection suite against the agent's prompts without a paid call.
+	cd agent && uv sync --locked
+# promptfoo declares optional peer dependencies, among them gcp-metadata for the
+# mongodb driver, and npm's strict `ci` lock validation rejects them while its
+# installer resolves them. The committed lock still pins every package that this
+# dev-only suite runs, and peer resolution plays no part in it.
+	cd evals/prompts && npm ci --no-audit --no-fund --legacy-peer-deps && PATH="$(CURDIR)/agent/.venv/bin:$$PATH" ./node_modules/.bin/promptfoo eval -c promptfooconfig.offline.yaml --no-cache
+
 down: ## Delete the kind cluster and the local Helm repository entry.
 	bash hack/down.sh
 
-break: ## Inject a Scenario into the Sandbox, for example make break SCENARIO=oom.
+break: ## Inject a Scenario, for example make break SCENARIO=oom.
 	bash hack/break.sh "$(SCENARIO)"
 
-reset: ## Force-reset the Sandbox to the known-good tag.
+reset: ## Force-reset the Sandbox to the known-good tag and remove chaos experiments.
 	bash hack/reset.sh
 
 cloud-up: ## Create the EKS session, deploy the stack, and wait for it to be healthy.

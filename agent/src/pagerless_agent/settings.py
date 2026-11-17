@@ -13,25 +13,26 @@ from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
-    from pagerless_agent.mcp import MCPServerConfig, ServerName
+    from pagerless_agent.keycloak import TokenProvider
+    from pagerless_agent.mcp import MCPServerConfig
 
 ENV_SERVER_URL = "PAGERLESS_SERVER_URL"
 ENV_TOKEN_FILE = "PAGERLESS_TOKEN_FILE"
 ENV_TRIAGE = "PAGERLESS_TRIAGE"
+ENV_TASK = "PAGERLESS_TASK"
 ENV_WORKLOAD_KIND = "PAGERLESS_WORKLOAD_KIND"
 ENV_WORKLOAD_NAMESPACE = "PAGERLESS_WORKLOAD_NAMESPACE"
 ENV_WORKLOAD_NAME = "PAGERLESS_WORKLOAD_NAME"
 ENV_TRIGGERING_POD = "PAGERLESS_TRIGGERING_POD"
 ENV_HINT = "PAGERLESS_HINT"
 ENV_MODEL_PROVIDER = "PAGERLESS_MODEL_PROVIDER"
-ENV_MCP_KUBERNETES_URL = "PAGERLESS_MCP_KUBERNETES_URL"
-ENV_MCP_GRAFANA_URL = "PAGERLESS_MCP_GRAFANA_URL"
-ENV_MCP_ARGOCD_URL = "PAGERLESS_MCP_ARGOCD_URL"
-ENV_MCP_GITHUB_URL = "PAGERLESS_MCP_GITHUB_URL"
-ENV_MCP_GRAFANA_TOKEN = "PAGERLESS_MCP_GRAFANA_TOKEN"
-ENV_MCP_ARGOCD_TOKEN = "PAGERLESS_MCP_ARGOCD_TOKEN"
-ENV_MCP_GITHUB_TOKEN = "PAGERLESS_MCP_GITHUB_TOKEN"
+ENV_MCP_GATEWAY_URL = "PAGERLESS_MCP_GATEWAY_URL"
+ENV_KEYCLOAK_ISSUER = "PAGERLESS_KEYCLOAK_ISSUER"
+ENV_KEYCLOAK_TOKEN_URL = "PAGERLESS_KEYCLOAK_TOKEN_URL"
+ENV_KEYCLOAK_CLIENT_ID = "PAGERLESS_KEYCLOAK_CLIENT_ID"
+ENV_KEYCLOAK_TOKEN_FILE = "PAGERLESS_KEYCLOAK_TOKEN_FILE"
 ENV_REPLAY_FILE = "PAGERLESS_REPLAY_FILE"
+ENV_NARRATIVE_REPLAY_FILE = "PAGERLESS_NARRATIVE_REPLAY_FILE"
 ENV_RECORDING_FILE = "PAGERLESS_RECORDING_FILE"
 ENV_SANDBOX_OWNER = "PAGERLESS_SANDBOX_OWNER"
 ENV_SANDBOX_REPO = "PAGERLESS_SANDBOX_REPO"
@@ -41,6 +42,14 @@ ENV_ALLOWED_NAMESPACES = "PAGERLESS_ALLOWED_NAMESPACES"
 
 class ConfigError(Exception):
     """The environment does not describe a valid investigation."""
+
+
+ModelProviderName = Literal["replay", "anthropic", "bedrock"]
+
+# The values of ENV_TASK: the two kinds of Job the server starts from the agent image.
+TASK_INVESTIGATE = "investigate"
+TASK_NARRATIVE = "narrative"
+TASKS = (TASK_INVESTIGATE, TASK_NARRATIVE)
 
 
 @dataclass(frozen=True)
@@ -95,23 +104,32 @@ class Settings:
 
 
 @dataclass(frozen=True)
+class KeycloakSettings:
+    """The realm and federated client that authenticate every MCP call."""
+
+    issuer: str
+    token_url: str
+    client_id: str
+    token_file: Path
+
+
+@dataclass(frozen=True)
 class RuntimeSettings:
-    """Provider selection and direct read-only MCP connections for one agent process."""
+    """Provider selection and the authenticated MCP gateway for one agent process."""
 
     investigation: Settings
-    servers: tuple[MCPServerConfig, ...]
+    gateway_url: str
+    keycloak: KeycloakSettings
     sandbox_owner: str
     sandbox_repository: str
     application: str = "sandbox"
-    provider: Literal["replay", "anthropic", "bedrock"] = "replay"
+    provider: ModelProviderName = "replay"
     replay_file: Path = Path("/app/recordings/oom.json")
     recording_file: Path | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> RuntimeSettings:
         """Refuse missing endpoints or configuration outside the investigation's read scope."""
-        from pagerless_agent.mcp import MCPServerConfig
-
         investigation = Settings.from_env(env)
         provider = env.get(ENV_MODEL_PROVIDER, "replay")
         if provider not in {"replay", "anthropic", "bedrock"}:
@@ -120,42 +138,102 @@ class RuntimeSettings:
         allowed = env.get(ENV_ALLOWED_NAMESPACES, namespace).split(",")
         if namespace not in {name.strip() for name in allowed}:
             raise ConfigError("the Workload's namespace is not allowlisted")
-        endpoints: tuple[tuple[ServerName, str, str | None], ...] = (
-            ("k8s", ENV_MCP_KUBERNETES_URL, None),
-            ("grafana", ENV_MCP_GRAFANA_URL, ENV_MCP_GRAFANA_TOKEN),
-            ("argocd", ENV_MCP_ARGOCD_URL, ENV_MCP_ARGOCD_TOKEN),
-            ("github", ENV_MCP_GITHUB_URL, ENV_MCP_GITHUB_TOKEN),
-        )
-        required = [ENV_SANDBOX_OWNER, ENV_SANDBOX_REPO, *(url for _, url, _ in endpoints)]
+        required = [
+            ENV_MCP_GATEWAY_URL,
+            ENV_KEYCLOAK_ISSUER,
+            ENV_KEYCLOAK_TOKEN_URL,
+            ENV_KEYCLOAK_CLIENT_ID,
+            ENV_KEYCLOAK_TOKEN_FILE,
+            ENV_SANDBOX_OWNER,
+            ENV_SANDBOX_REPO,
+        ]
         missing = [name for name in required if not env.get(name)]
         if missing:
             raise ConfigError(f"missing environment variables: {', '.join(missing)}")
-        servers = []
-        for name, variable, token_variable in endpoints:
-            url = env[variable]
-            parsed = urlsplit(url)
-            if (
-                parsed.scheme not in {"http", "https"}
-                or not parsed.hostname
-                or parsed.username
-                or parsed.password
-                or parsed.fragment
-            ):
-                raise ConfigError(f"{variable} must be an HTTP(S) endpoint without embedded credentials")
-            token = env.get(token_variable) if token_variable else None
-            if token and any(character in token for character in "\r\n"):
-                raise ConfigError(f"{token_variable} contains an invalid bearer token")
-            servers.append(MCPServerConfig(name, url, token))
+        gateway_url = _http_endpoint(ENV_MCP_GATEWAY_URL, env[ENV_MCP_GATEWAY_URL])
+        if urlsplit(gateway_url).path not in {"", "/"}:
+            raise ConfigError(f"{ENV_MCP_GATEWAY_URL} must be a base URL without a path")
+        issuer = _http_endpoint(ENV_KEYCLOAK_ISSUER, env[ENV_KEYCLOAK_ISSUER])
+        if issuer.endswith("/") or "/realms/" not in urlsplit(issuer).path:
+            raise ConfigError(f"{ENV_KEYCLOAK_ISSUER} must name a realm without a trailing slash")
+        token_url = _http_endpoint(ENV_KEYCLOAK_TOKEN_URL, env[ENV_KEYCLOAK_TOKEN_URL])
+        if token_url != issuer + "/protocol/openid-connect/token":
+            raise ConfigError(f"{ENV_KEYCLOAK_TOKEN_URL} must be the issuer's token endpoint")
+        client_id = env[ENV_KEYCLOAK_CLIENT_ID]
+        if any(character in client_id for character in " \t\r\n/"):
+            raise ConfigError(f"{ENV_KEYCLOAK_CLIENT_ID} must be a single client identifier")
         recording = env.get(ENV_RECORDING_FILE)
         if recording and provider == "replay":
             raise ConfigError("Replay cannot produce a live recording")
         return cls(
             investigation=investigation,
-            servers=tuple(servers),
+            gateway_url=gateway_url.rstrip("/"),
+            keycloak=KeycloakSettings(
+                issuer=issuer,
+                token_url=token_url,
+                client_id=client_id,
+                token_file=Path(env[ENV_KEYCLOAK_TOKEN_FILE]),
+            ),
             sandbox_owner=env[ENV_SANDBOX_OWNER],
             sandbox_repository=env[ENV_SANDBOX_REPO],
             application=env.get(ENV_ARGOCD_APPLICATION, "sandbox"),
-            provider=cast(Literal["replay", "anthropic", "bedrock"], provider),
+            provider=cast(ModelProviderName, provider),
             replay_file=Path(env.get(ENV_REPLAY_FILE, "/app/recordings/oom.json")),
+            recording_file=Path(recording) if recording else None,
+        )
+
+    def servers(self, token_source: TokenProvider) -> tuple[MCPServerConfig, ...]:
+        """Return one authenticated gateway route per MCP server."""
+        from pagerless_agent.mcp import MCPServerConfig, gateway_endpoints
+
+        return tuple(
+            MCPServerConfig(name, url, token_source) for name, url in gateway_endpoints(self.gateway_url)
+        )
+
+
+def _http_endpoint(name: str, value: str) -> str:
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConfigError(f"{name} must be an HTTP(S) endpoint without embedded credentials")
+    return value
+
+
+@dataclass(frozen=True)
+class NarrativeSettings:
+    """What a Narrative Job needs: where to read and post, and how to call the model."""
+
+    server_url: str
+    token_file: Path
+    triage: str
+    provider: ModelProviderName = "replay"
+    replay_file: Path = Path("/app/recordings/narrative.json")
+    recording_file: Path | None = None
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> NarrativeSettings:
+        """Read the Narrative Job's settings, refusing a recording that Replay cannot produce."""
+        required = [ENV_SERVER_URL, ENV_TOKEN_FILE, ENV_TRIAGE]
+        missing = [name for name in required if not env.get(name)]
+        if missing:
+            raise ConfigError(f"missing environment variables: {', '.join(missing)}")
+        provider = env.get(ENV_MODEL_PROVIDER, "replay")
+        if provider not in ("replay", "anthropic", "bedrock"):
+            raise ConfigError(f"{ENV_MODEL_PROVIDER} must be replay, anthropic, or bedrock")
+        recording = env.get(ENV_RECORDING_FILE)
+        if recording and provider == "replay":
+            raise ConfigError("Replay cannot produce a live recording")
+        return cls(
+            server_url=env[ENV_SERVER_URL],
+            token_file=Path(env[ENV_TOKEN_FILE]),
+            triage=env[ENV_TRIAGE],
+            provider=cast(ModelProviderName, provider),
+            replay_file=Path(env.get(ENV_NARRATIVE_REPLAY_FILE, "/app/recordings/narrative.json")),
             recording_file=Path(recording) if recording else None,
         )

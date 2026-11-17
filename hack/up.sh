@@ -8,7 +8,7 @@ set -euo pipefail
 load_versions
 
 bash "$REPO_ROOT/hack/preflight.sh"
-require_commands uv
+require_commands uv openssl
 [ "$(uv --version | cut -d ' ' -f 2)" = "$UV_VERSION" ] || die "uv $UV_VERSION is required for MCP account provisioning."
 bash "$REPO_ROOT/hack/configure.sh"
 load_env
@@ -38,6 +38,20 @@ else
 	kind create cluster --name "$KIND_CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 180s
 fi
 export PAGERLESS_REUSED_CLUSTER
+
+# kind inherits the host resolver, which on Docker Desktop and CI runners can be
+# a local stub that does not answer external names from inside the cluster. Argo
+# CD pulls Helm and OCI charts through CoreDNS, so forward to public resolvers.
+if kc -n kube-system get configmap coredns >/dev/null 2>&1; then
+	corefile="$(kc -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')"
+	forwarded="$(printf '%s\n' "$corefile" | sed 's|^\( *\)forward \. /etc/resolv.conf$|\1forward . 8.8.8.8 1.1.1.1|')"
+	if [ "$forwarded" != "$corefile" ]; then
+		kc -n kube-system create configmap coredns --from-literal=Corefile="$forwarded" \
+			--dry-run=client -o yaml | kc apply -f -
+		kc -n kube-system rollout restart deployment/coredns
+		kc -n kube-system rollout status deployment/coredns --timeout=120s
+	fi
+fi
 
 if [ "${PAGERLESS_LOCAL_IMAGES:-0}" = "1" ]; then
 	images=("$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_EXECUTOR_IMAGE" "$PAGERLESS_AGENT_IMAGE")

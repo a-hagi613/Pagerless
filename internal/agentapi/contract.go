@@ -24,6 +24,8 @@ const (
 	EnvTokenFile = "PAGERLESS_TOKEN_FILE"
 	// EnvTriage is the name of the Triage the agent investigates.
 	EnvTriage = "PAGERLESS_TRIAGE"
+	// EnvTask selects the Job's work: TaskInvestigate or TaskNarrative.
+	EnvTask = "PAGERLESS_TASK"
 	// EnvWorkloadKind is the kind of the target Workload.
 	EnvWorkloadKind = "PAGERLESS_WORKLOAD_KIND"
 	// EnvWorkloadNamespace is the namespace of the target Workload.
@@ -36,22 +38,23 @@ const (
 	EnvHint = "PAGERLESS_HINT"
 	// EnvModelProvider selects replay, anthropic, or bedrock.
 	EnvModelProvider = "PAGERLESS_MODEL_PROVIDER"
-	// EnvMCPKubernetesURL locates the read-only Kubernetes MCP endpoint.
-	EnvMCPKubernetesURL = "PAGERLESS_MCP_KUBERNETES_URL"
-	// EnvMCPGrafanaURL locates the read-only Grafana MCP endpoint.
-	EnvMCPGrafanaURL = "PAGERLESS_MCP_GRAFANA_URL"
-	// EnvMCPArgoCDURL locates the read-only Argo CD MCP endpoint.
-	EnvMCPArgoCDURL = "PAGERLESS_MCP_ARGOCD_URL"
-	// EnvMCPGitHubURL locates the read-only GitHub MCP endpoint.
-	EnvMCPGitHubURL = "PAGERLESS_MCP_GITHUB_URL"
-	// EnvMCPGrafanaToken authenticates callers to the Grafana MCP server.
-	EnvMCPGrafanaToken = "PAGERLESS_MCP_GRAFANA_TOKEN"
-	// EnvMCPArgoCDToken authenticates callers to the Argo CD MCP server.
-	EnvMCPArgoCDToken = "PAGERLESS_MCP_ARGOCD_TOKEN"
-	// EnvMCPGitHubToken is the read-only Sandbox token used by GitHub MCP.
-	EnvMCPGitHubToken = "PAGERLESS_MCP_GITHUB_TOKEN"
+	// EnvMCPGatewayURL is the base URL of the agentgateway that fronts every MCP server.
+	EnvMCPGatewayURL = "PAGERLESS_MCP_GATEWAY_URL"
+	// EnvKeycloakIssuer is the realm issuer that agentgateway validates, and the
+	// audience of the projected service account token the agent presents to Keycloak.
+	EnvKeycloakIssuer = "PAGERLESS_KEYCLOAK_ISSUER"
+	// EnvKeycloakTokenURL is the realm's token endpoint, which exchanges the
+	// projected service account token for an access token.
+	EnvKeycloakTokenURL = "PAGERLESS_KEYCLOAK_TOKEN_URL"
+	// EnvKeycloakClientID is the federated Keycloak client the agent authenticates as.
+	EnvKeycloakClientID = "PAGERLESS_KEYCLOAK_CLIENT_ID"
+	// EnvKeycloakTokenFile is the path of the projected service account token
+	// whose audience is the realm issuer.
+	EnvKeycloakTokenFile = "PAGERLESS_KEYCLOAK_TOKEN_FILE"
 	// EnvReplayFile names a captured Replay recording in the agent image.
 	EnvReplayFile = "PAGERLESS_REPLAY_FILE"
+	// EnvNarrativeReplayFile names the Replay recording that the Narrative Job plays.
+	EnvNarrativeReplayFile = "PAGERLESS_NARRATIVE_REPLAY_FILE"
 	// EnvRecordingFile names the output of an explicitly requested live recording.
 	EnvRecordingFile = "PAGERLESS_RECORDING_FILE"
 	// EnvSandboxOwner scopes GitHub reads to the Sandbox owner.
@@ -64,6 +67,14 @@ const (
 	EnvAllowedNamespaces = "PAGERLESS_ALLOWED_NAMESPACES"
 )
 
+// The values of EnvTask: the two kinds of Job the server starts from the agent image.
+const (
+	// TaskInvestigate runs the investigation graph.
+	TaskInvestigate = "investigate"
+	// TaskNarrative writes the Narrative of a finished Triage.
+	TaskNarrative = "narrative"
+)
+
 // EventsPath is the path an agent posts step events to.
 func EventsPath(triage string) string {
 	return "/v1/triages/" + url.PathEscape(triage) + "/events"
@@ -72,6 +83,11 @@ func EventsPath(triage string) string {
 // ReportPath is the path an agent posts its report to.
 func ReportPath(triage string) string {
 	return "/v1/triages/" + url.PathEscape(triage) + "/report"
+}
+
+// NarrativePath is the path a Narrative Job reads its record from and posts the Narrative to.
+func NarrativePath(triage string) string {
+	return "/v1/triages/" + url.PathEscape(triage) + "/narrative"
 }
 
 // StepEvent reports one step of the investigation. A Finding event also
@@ -88,7 +104,8 @@ type StepEvent struct {
 	Finding *v1alpha1.Finding `json:"finding,omitempty"`
 }
 
-// Report is the agent's final output: a Diagnosis, its Findings, and one Proposal.
+// Report is the agent's final output: a Diagnosis, its Findings, one Proposal, and the model usage of the
+// investigation.
 type Report struct {
 	// Diagnosis is the root-cause conclusion.
 	Diagnosis string `json:"diagnosis"`
@@ -96,6 +113,9 @@ type Report struct {
 	Findings []v1alpha1.Finding `json:"findings"`
 	// Proposal is the single remediation the agent recommends.
 	Proposal v1alpha1.ProposedAction `json:"proposal"`
+	// Usage is the model usage of the investigation. It is optional so that a report from an agent that predates
+	// usage accounting remains valid.
+	Usage *v1alpha1.Usage `json:"usage,omitempty"`
 }
 
 // ValidationError describes one reason a report was refused.
@@ -123,4 +143,20 @@ type ReportResponse struct {
 type ErrorResponse struct {
 	// Message explains the failure.
 	Message string `json:"message"`
+}
+
+// NarrativeRecord is what a Narrative Job reads: the Triage rendered as text,
+// and the Workload it belongs to.
+type NarrativeRecord struct {
+	// Workload is the Workload that the Triage investigated.
+	Workload v1alpha1.WorkloadReference `json:"workload"`
+	// Text describes the Triage for the model: its Diagnosis, Findings,
+	// Proposal, decision, execution, and Verification checks.
+	Text string `json:"text"`
+}
+
+// NarrativeReport is the Narrative Job's answer: the short account of a finished Triage.
+type NarrativeReport struct {
+	// Narrative is the account, which the server stores in the Triage's status.
+	Narrative string `json:"narrative"`
 }

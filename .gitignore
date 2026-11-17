@@ -22,6 +22,16 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Dashboard dependencies and build output. The committed marker keeps the Go embed directory present.
+**/node_modules/
+**/dist/
+!dashboard/dist/
+dashboard/dist/*
+!dashboard/dist/.gitkeep
+
+# Playwright artifacts from the dashboard smoke test
+dashboard/test-results/
+dashboard/playwright-report/
 # Terraform working directories, local state and plans
 **/.terraform/
 **/.terraform.lock.hcl.bak

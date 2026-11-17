@@ -18,9 +18,9 @@ import (
 const ApproverRole = "pagerless-approver"
 
 // ClientAs returns a client that the API server authenticates as the user, as
-// when an administrator impersonates one. The user holds only the permissions
-// that RBAC grants it, so a test must call GrantApprover for a user who is to
-// create TriageApprovals.
+// a browser or kubectl context authenticated as that user would be. The user
+// holds only the permissions that RBAC grants it, so a test must call
+// GrantApprover for a user who is to create TriageApprovals.
 func (e *Env) ClientAs(t testing.TB, user string) client.Client {
 	t.Helper()
 	scheme, err := server.Scheme()

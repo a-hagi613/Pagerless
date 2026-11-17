@@ -1,0 +1,9 @@
+# The credential-free suite. It makes no model call: the provider inspects the
+# rendered prompt and asserts that every hostile line is inside the Context
+# Bundle's untrusted-data section and is escaped. make prompts-check uses it.
+description: "Pagerless prompt-injection suite (offline prompt construction)"
+prompts:
+  - file://prompts.py:create_prompt
+providers:
+  - file://offline_provider.py
+tests: file://tests.py:offline_tests

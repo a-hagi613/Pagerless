@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,6 +43,9 @@ type Config struct {
 	// Reader reads Triages and TriageApprovals directly from the API server,
 	// never from a cache, so that a decision just applied is always seen.
 	Reader client.Reader
+	// Writer deletes the Workload's pods for RestartWorkload. It is the same
+	// client as Reader in every deployment.
+	Writer client.Writer
 	// Namespace is the namespace that holds Triages and TriageApprovals.
 	Namespace string
 	// Sandbox is the Sandbox repository that changes are committed to and pull requests target.
@@ -50,6 +54,8 @@ type Config struct {
 	GitHub *GitHub
 	// Token returns the write-scoped token that git pushes with.
 	Token func() (string, error)
+	// RestartTimeout bounds one live RestartWorkload. It defaults to DefaultRestartTimeout.
+	RestartTimeout time.Duration
 }
 
 // Executor carries out approved Proposals.
@@ -66,6 +72,8 @@ func New(cfg Config) (*Executor, error) {
 	switch {
 	case cfg.Reader == nil:
 		return nil, errors.New("a reader is required")
+	case cfg.Writer == nil:
+		return nil, errors.New("a writer is required")
 	case cfg.Namespace == "":
 		return nil, errors.New("a namespace is required")
 	case cfg.GitHub == nil || cfg.Token == nil || cfg.GitHub.Token == nil:
@@ -75,6 +83,9 @@ func New(cfg Config) (*Executor, error) {
 	}
 	if err := cfg.Sandbox.Check(); err != nil {
 		return nil, err
+	}
+	if cfg.RestartTimeout == 0 {
+		cfg.RestartTimeout = DefaultRestartTimeout
 	}
 	return &Executor{cfg: cfg}, nil
 }
@@ -97,6 +108,10 @@ func (e *Executor) Execute(ctx context.Context, name, hash string) (*executorapi
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	if tr.Status.Proposal.Action.ExecutesLive() {
+		return e.restart(ctx, tr)
+	}
 
 	branch := branchName(tr, hash)
 	pr, err := e.cfg.GitHub.FindPullRequest(ctx, branch)
@@ -173,16 +188,34 @@ func checkTriage(tr *v1alpha1.Triage, hash string) *executorapi.Error {
 		return refuse(http.StatusConflict, executorapi.ReasonHashMismatch,
 			"hash %s is not the hash of Triage %s's current Proposal", hash, tr.Name)
 	}
-	if !current.Action.DeliveredByPullRequest() {
-		return refuse(http.StatusConflict, executorapi.ReasonUnsupportedAction,
-			"the Executor does not deliver %s by pull request", current.Action)
-	}
 	recomputed, err := proposal.Hash(tr, current.ProposedAction, current.RenderedChange, current.Base)
 	if err != nil || recomputed != hash {
 		return refuse(http.StatusConflict, executorapi.ReasonProposalAltered,
 			"the stored Proposal of Triage %s does not hash to the approved hash", tr.Name)
 	}
-	return checkChange(current)
+	switch {
+	case current.Action.DeliveredByPullRequest():
+		return checkChange(current)
+	case current.Action.ExecutesLive():
+		return checkLiveBase(current)
+	default:
+		return refuse(http.StatusConflict, executorapi.ReasonUnsupportedAction,
+			"the Executor does not execute %s", current.Action)
+	}
+}
+
+// checkLiveBase confirms that a live Action's stored Proposal holds no Sandbox
+// change and names the Workload generation it was rendered against.
+func checkLiveBase(current *v1alpha1.Proposal) *executorapi.Error {
+	if change := current.RenderedChange; change != nil && (change.Path != "" || change.Patch != "") {
+		return refuse(http.StatusConflict, executorapi.ReasonUnsafeChange,
+			"a live Action's stored Proposal must hold no Sandbox change")
+	}
+	if base := current.Base; base == nil || base.WorkloadGeneration == 0 {
+		return refuse(http.StatusConflict, executorapi.ReasonUnsafeChange,
+			"the stored Proposal holds no Workload generation")
+	}
+	return nil
 }
 
 // checkChange confirms that the stored change names a base and a patch, and

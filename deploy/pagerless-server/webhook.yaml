@@ -3,8 +3,10 @@
 # must ignore differences in /webhooks/*/clientConfig/caBundle.
 #
 # A TriageApproval passes through the mutating webhook first, which stamps the
-# requester's identity into spec.approver, and then through the validating
-# webhook, which binds it to the current Proposal (ADR-0004).
+# requester's identity into spec.approver. A request from pagerless-server may
+# instead assert the dashboard user it verified through Keycloak (ADR-0020). The
+# validating webhook then binds the decision to the current Proposal and checks
+# that an asserted approver is a member of the Keycloak approvers group.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:

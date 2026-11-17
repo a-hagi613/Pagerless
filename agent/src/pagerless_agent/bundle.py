@@ -11,6 +11,11 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 MAX_RENDERED_EVENTS = 20
 MAX_RENDERED_LOG_LINES = 50
 MAX_RENDERED_COMMITS = 20
+MAX_EXPERIMENTS = 10
+
+# The Markdown markers that give the bundle its structure. Evidence must not be
+# able to start one, or a log line could pass for a section of the bundle.
+_STRUCTURAL_MARKERS = ("#", "```", "~~~")
 
 
 class _Frozen(BaseModel):
@@ -53,13 +58,28 @@ class Commit(_Frozen):
     time: AwareDatetime
 
 
+class Experiment(_Frozen):
+    """One active Chaos Mesh experiment that targets the Workload.
+
+    The experiment is the external cause of a failure that no Action on the menu
+    can fix, so the bundle names it instead of leaving the model to guess. Its
+    name is set by the Scenario injection and is stable across runs, which keeps
+    a recording replayable.
+    """
+
+    name: str
+    kind: str
+    target: str
+    duration: str
+
+
 class ContextBundle(_Frozen):
     """The fixed set of evidence gathered before the agent's first model call.
 
     `gathered_at` is the reference time of the investigation. Replay resolves
-    recorded timestamps relative to it. Pods are kept in creation order and
-    commits newest first, so that an index into either list names the same
-    entity in every run of the same Scenario.
+    recorded timestamps relative to it. Pods are kept in creation order, commits
+    newest first, and experiments by name, so that an index into any list names
+    the same entity in every run of the same Scenario.
     """
 
     workload: WorkloadRef
@@ -70,6 +90,7 @@ class ContextBundle(_Frozen):
     events: tuple[BundleEvent, ...]
     logs: tuple[PodLogs, ...]
     argocd_status: str
+    experiments: tuple[Experiment, ...] = ()
     commits: tuple[Commit, ...]
 
     @model_validator(mode="before")
@@ -78,6 +99,11 @@ class ContextBundle(_Frozen):
         if isinstance(data, dict) and data.get("pods") is not None:
             pods = [PodState.model_validate(p) if isinstance(p, dict) else p for p in data["pods"]]
             data = {**data, "pods": tuple(sorted(pods, key=lambda p: (p.created_at, p.name)))}
+        if isinstance(data, dict) and data.get("experiments") is not None:
+            experiments = [
+                Experiment.model_validate(e) if isinstance(e, dict) else e for e in data["experiments"]
+            ]
+            data = {**data, "experiments": tuple(sorted(experiments, key=lambda e: (e.name, e.kind)))}
         return data
 
     def render(self) -> str:
@@ -89,7 +115,7 @@ class ContextBundle(_Frozen):
         ]
         if self.triggering_pod:
             out.append(f"Triggering pod: {self.triggering_pod}")
-        out += ["", "## Workload status", self.workload_status, "", "## Pods"]
+        out += ["", "## Workload status", _evidence(self.workload_status), "", "## Pods"]
         for pod in self.pods:
             reason = (
                 f", last termination: {pod.last_termination_reason}" if pod.last_termination_reason else ""
@@ -100,16 +126,47 @@ class ContextBundle(_Frozen):
             )
         out += ["", "## Events (most recent last)"]
         for event in self.events[-MAX_RENDERED_EVENTS:]:
-            out.append(f"- {_iso(event.time)} {event.type} {event.reason} {event.object}: {event.message}")
+            out.append(
+                f"- {_iso(event.time)} {event.type} {event.reason} {event.object}: {_evidence(event.message)}"
+            )
         out += ["", "## Recent logs"]
         for logs in self.logs:
             lines = logs.lines.splitlines()[-MAX_RENDERED_LOG_LINES:]
             out.append(f"### {logs.pod} / {logs.container}")
-            out.extend(lines)
-        out += ["", "## Argo CD status", self.argocd_status, "", "## Recent Sandbox commits (newest first)"]
+            out.extend(_evidence(line) for line in lines)
+        out += ["", "## Argo CD status", _evidence(self.argocd_status), "", "## Active chaos experiments"]
+        if not self.experiments:
+            out.append("- none")
+        for experiment in self.experiments[:MAX_EXPERIMENTS]:
+            out.append(
+                f"- {experiment.name} ({experiment.kind}) targets {experiment.target}; "
+                f"duration {experiment.duration}"
+            )
+        out += ["", "## Recent Sandbox commits (newest first)"]
         for commit in self.commits[:MAX_RENDERED_COMMITS]:
-            out.append(f"- {commit.sha} {_iso(commit.time)} {commit.author}: {commit.message}")
+            out.append(f"- {commit.sha} {_iso(commit.time)} {commit.author}: {_evidence(commit.message)}")
         return "\n".join(out)
+
+
+def _evidence(text: str) -> str:
+    """Return untrusted text with any Markdown structure marker escaped.
+
+    Log lines, event messages, commit messages, and status blobs are written by
+    systems that an attacker may control. A line that starts with a heading or a
+    code fence would otherwise read as part of the bundle's structure, so a log
+    line could pass for a section such as "Active chaos experiments". Escaping
+    the marker keeps the text what it is: evidence.
+    """
+    return "\n".join(_escape_marker(line) for line in text.split("\n"))
+
+
+def _escape_marker(line: str) -> str:
+    """Prefix a line's Markdown structure marker with a backslash."""
+    body = line.lstrip(" ")
+    if body.startswith(_STRUCTURAL_MARKERS):
+        indent = line[: len(line) - len(body)]
+        return f"{indent}\\{body}"
+    return line
 
 
 def _iso(value: datetime) -> str:

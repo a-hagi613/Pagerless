@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -41,7 +42,9 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
 )
@@ -49,6 +52,8 @@ import (
 const (
 	// Namespace is the namespace in which pagerless-server runs in the harness, as in a cluster.
 	Namespace = "pagerless"
+	// SandboxNamespace is the namespace whose Workloads the harness's executable Actions may change.
+	SandboxNamespace = "sandbox"
 	// AgentImage is the agent image that Jobs reference. No container ever runs in envtest.
 	AgentImage = "registry.invalid/pagerless-agent:test"
 	// AlertmanagerToken is the deterministic bearer token used by alert receiver seam tests.
@@ -74,6 +79,14 @@ type Env struct {
 	ServerConfig *rest.Config
 	// ReportURL is the base URL of the agent API.
 	ReportURL string
+	// MetricsURL is the base URL of the Prometheus metrics API.
+	MetricsURL string
+	// DashboardURL is the base URL of the dashboard and its read-only API.
+	DashboardURL string
+	// HistoryPath is the SQLite file the server appends history to.
+	HistoryPath string
+	// History is the server's history, opened for reading by the test.
+	History *history.Store
 	// Clock is the clock that pagerless-server reads, so tests can control timestamps.
 	Clock *clocktesting.FakeClock
 	// Sandbox is a local bare git repository that stands in for the Sandbox.
@@ -88,19 +101,29 @@ type Env struct {
 	ExecutorURL string
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
 	WebhookInstall *envtest.WebhookInstallOptions
+	// Dashboard is the signed-in session that the dashboard tests send.
+	Dashboard DashboardSession
 
-	t testing.TB
+	auth      *fakeAuth
+	approvers *fakeApprovers
+	t         testing.TB
 }
 
 type options struct {
-	validators       func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	proposalPoll     time.Duration
-	executionPoll    time.Duration
-	verificationPoll time.Duration
-	agentDeadline    time.Duration
-	agentRuntime     controller.AgentRuntimeConfig
-	alertNamespaces  []string
-	alertToken       func() (string, error)
+	validators        func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll      time.Duration
+	executionPoll     time.Duration
+	verificationPoll  time.Duration
+	retentionPoll     time.Duration
+	agentDeadline     time.Duration
+	agentRuntime      controller.AgentRuntimeConfig
+	alertNamespaces   []string
+	alertToken        func() (string, error)
+	approvers         *fakeApprovers
+	dashboardUser     string
+	dashboardApprover bool
+	dashboardAuth     dashboardapi.Auth
+	dashboardAddress  string
 }
 
 // Option customizes the harness.
@@ -128,14 +151,41 @@ func WithAlertmanagerToken(source func() (string, error)) Option {
 	return func(o *options) { o.alertToken = source }
 }
 
+// WithDashboardAuth replaces the harness's stand-in sign-in with a real one,
+// such as the Keycloak flow that the smoke test drives through a browser.
+func WithDashboardAuth(auth dashboardapi.Auth) Option {
+	return func(o *options) { o.dashboardAuth = auth }
+}
+
+// WithDashboardAddress binds the dashboard listener to a fixed address, so a
+// browser can be pointed at a URL that is known before the harness starts.
+func WithDashboardAddress(address string) Option {
+	return func(o *options) { o.dashboardAddress = address }
+}
+
+// WithRetentionPollInterval sets how often the retention controller checks a terminal Triage. The fake clock only
+// advances when a test steps it, so a test that observes the deletion boundary sets a short interval; every other
+// test keeps the server's one-minute default and does no retention work.
+func WithRetentionPollInterval(d time.Duration) Option {
+	return func(o *options) { o.retentionPoll = d }
+}
+
 // Start runs the API server, installs the manifests of pagerless-server and
 // pagerless-executor, and runs both. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
-	o := options{executionPoll: defaultExecutionPoll, verificationPoll: defaultVerificationPoll}
+	o := options{
+		executionPoll:     defaultExecutionPoll,
+		verificationPoll:  defaultVerificationPoll,
+		dashboardUser:     DashboardUser,
+		dashboardApprover: true,
+	}
 	o.alertToken = func() (string, error) { return AlertmanagerToken, nil }
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.approvers == nil {
+		o.approvers = newFakeApprovers()
 	}
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("KUBEBUILDER_ASSETS is not set; run the tests with `make test-go`, which downloads the envtest binaries")
@@ -184,7 +234,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("create clientset: %v", err)
 	}
 	ctx := t.Context()
-	if err := c.Create(ctx, &corev1.Namespace{Name: "sandbox"}); err != nil {
+	if err := c.Create(ctx, &corev1.Namespace{Name: SandboxNamespace}); err != nil {
 		t.Fatalf("create the allowlisted Workload namespace: %v", err)
 	}
 	executorDir := filepath.Join(root, "deploy", "pagerless-executor")
@@ -213,15 +263,43 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if err != nil {
 		t.Fatalf("listen for the report API: %v", err)
 	}
+	metricsListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the metrics API: %v", err)
+	}
+	t.Cleanup(func() { _ = metricsListener.Close() })
+	dashboardListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the dashboard: %v", err)
+	}
+	if o.dashboardAddress != "" {
+		_ = dashboardListener.Close()
+		dashboardListener, err = net.Listen("tcp", o.dashboardAddress)
+		if err != nil {
+			t.Fatalf("listen for the dashboard on %s: %v", o.dashboardAddress, err)
+		}
+	}
+	t.Cleanup(func() { _ = dashboardListener.Close() })
+	historyPath := filepath.Join(t.TempDir(), "history.db")
 	env := &Env{
 		Config:         cfg,
 		Client:         c,
 		Clientset:      clientset,
 		ServerConfig:   serverConfig,
 		ReportURL:      "http://" + listener.Addr().String(),
+		MetricsURL:     "http://" + metricsListener.Addr().String(),
+		DashboardURL:   "http://" + dashboardListener.Addr().String(),
+		HistoryPath:    historyPath,
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
+		auth:           newFakeAuth(),
+		approvers:      o.approvers,
 		t:              t,
+	}
+	env.Dashboard = env.auth.signIn(o.dashboardUser, o.dashboardApprover)
+	auth := dashboardapi.Auth(env.auth)
+	if o.dashboardAuth != nil {
+		auth = o.dashboardAuth
 	}
 	env.Sandbox = NewBareRepo(t)
 	env.GitHub = NewFakeGitHub(t, env.Sandbox)
@@ -233,6 +311,19 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if o.validators != nil {
 		validators = o.validators(env)
 	}
+	agentRuntime := o.agentRuntime
+	if agentRuntime.GatewayURL == "" {
+		agentRuntime.GatewayURL = "http://mcp-gateway.agentgateway-system.svc.cluster.local"
+	}
+	if agentRuntime.KeycloakIssuer == "" {
+		agentRuntime.KeycloakIssuer = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+	}
+	if agentRuntime.KeycloakTokenURL == "" {
+		agentRuntime.KeycloakTokenURL = agentRuntime.KeycloakIssuer + "/protocol/openid-connect/token"
+	}
+	if agentRuntime.KeycloakClientID == "" {
+		agentRuntime.KeycloakClientID = controller.DefaultKeycloakClientID
+	}
 	executorToken := func() (string, error) {
 		return env.issueToken(context.Background(), Namespace, server.DefaultServerServiceAccount, executorapi.Audience)
 	}
@@ -240,8 +331,12 @@ func Start(t testing.TB, opts ...Option) *Env {
 		Namespace:                Namespace,
 		AgentImage:               AgentImage,
 		AgentServerURL:           env.ReportURL,
-		AgentRuntime:             o.agentRuntime,
+		AgentRuntime:             agentRuntime,
 		ReportListener:           listener,
+		MetricsListener:          metricsListener,
+		DashboardListener:        dashboardListener,
+		GrafanaURL:               "http://grafana.monitoring.test",
+		HistoryPath:              historyPath,
 		ExecutorURL:              env.ExecutorURL,
 		ExecutorToken:            executorToken,
 		AgentDeadline:            o.agentDeadline,
@@ -252,7 +347,11 @@ func Start(t testing.TB, opts ...Option) *Env {
 		AlertmanagerURL:          env.Alertmanager.URL,
 		AlertmanagerToken:        o.alertToken,
 		VerificationPollInterval: o.verificationPoll,
+		RetentionPollInterval:    o.retentionPoll,
 		AlertNamespaces:          o.alertNamespaces,
+		WorkloadNamespaces:       []string{SandboxNamespace},
+		DashboardAuth:            auth,
+		Approvers:                env.approvers,
 		Clock:                    env.Clock,
 		Validators:               validators,
 		WebhookCertDir:           testEnv.WebhookInstallOptions.LocalServingCertDir,
@@ -274,7 +373,57 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("pagerless-server cache did not sync")
 	}
+	env.History, err = history.OpenReader(historyPath)
+	if err != nil {
+		t.Fatalf("open the Triage history for reading: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := env.History.Close(); err != nil {
+			t.Errorf("close the Triage history: %v", err)
+		}
+	})
+	waitForMetrics(t, env.MetricsURL)
 	return env
+}
+
+// waitForMetrics waits until the metrics API answers, so that the first scrape in a test cannot race the manager.
+func waitForMetrics(t testing.TB, baseURL string) {
+	t.Helper()
+	httpClient := &http.Client{Timeout: time.Second}
+	err := wait.PollUntilContextTimeout(
+		t.Context(), pollInterval, waitTimeout, true, func(context.Context) (bool, error) {
+			response, err := httpClient.Get(baseURL + "/metrics")
+			if err != nil {
+				return false, nil
+			}
+			defer func() { _ = response.Body.Close() }()
+			return response.StatusCode == http.StatusOK, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("the metrics API at %s did not start: %v", baseURL, err)
+	}
+}
+
+// WaitForGone polls until the Triage no longer exists.
+func (e *Env) WaitForGone(t testing.TB, name string) {
+	t.Helper()
+	key := types.NamespacedName{Namespace: Namespace, Name: name}
+	err := wait.PollUntilContextTimeout(
+		t.Context(), pollInterval, waitTimeout, true, func(ctx context.Context) (bool, error) {
+			var tr v1alpha1.Triage
+			if err := e.Client.Get(ctx, key, &tr); err != nil {
+				if errors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("waiting for Triage %s to be deleted: %v", name, err)
+	}
 }
 
 func repoRoot(t testing.TB) string {
@@ -384,7 +533,7 @@ func NewTriage(workloadName string) *v1alpha1.Triage {
 		Spec: v1alpha1.TriageSpec{
 			Workload: v1alpha1.WorkloadReference{
 				Kind:      v1alpha1.WorkloadKindDeployment,
-				Namespace: "sandbox",
+				Namespace: SandboxNamespace,
 				Name:      workloadName,
 			},
 			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI},

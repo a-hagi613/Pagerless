@@ -19,7 +19,7 @@ func newShowCommand(conn *connection) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "show <name>",
-		Short: "Show a Triage's Diagnosis, Findings, Proposal, execution, and Verification checks",
+		Short: "Show a Triage's Diagnosis, Findings, Proposal, execution, Verification checks, and Narrative",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := parseFormat(output)

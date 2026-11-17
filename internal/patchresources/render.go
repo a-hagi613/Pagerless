@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/sandboxyaml"
 )
 
 // indentStep is the indentation of each nested level in rendered YAML.
@@ -61,12 +61,15 @@ func render(src []byte, workload v1alpha1.WorkloadReference, container string, r
 	if bytes.Contains(src, []byte("\r")) {
 		return nil, none, unsupported("the file has carriage returns; use LF line endings")
 	}
-	docs, err := parseDocuments(src)
+	docs, err := sandboxyaml.ParseDocuments(src)
 	if err != nil {
 		return nil, none, err
 	}
-	index, err := findWorkload(docs, workload)
+	index, err := sandboxyaml.FindWorkload(docs, workload)
 	if err != nil {
+		if errors.Is(err, sandboxyaml.ErrAmbiguous) {
+			return nil, none, unsupported("%v", err)
+		}
 		return nil, none, err
 	}
 	containerNode, err := findContainer(docs[index], container)
@@ -77,7 +80,7 @@ func render(src []byte, workload v1alpha1.WorkloadReference, container string, r
 		return nil, none, unsupported("container %s is written in flow style; use block style", container)
 	}
 
-	resourcesKey, resourcesValue := mapEntry(containerNode, "resources")
+	resourcesKey, resourcesValue := sandboxyaml.Entry(containerNode, "resources")
 	var current corev1.ResourceRequirements
 	if resourcesValue != nil {
 		if current, err = decodeResources(resourcesValue); err != nil {
@@ -99,7 +102,7 @@ func render(src []byte, workload v1alpha1.WorkloadReference, container string, r
 		if err := checkClosed(resourcesValue, lines); err != nil {
 			return nil, none, err
 		}
-		first, last := resourcesKey.Line-1, lastLine(resourcesValue)
+		first, last := resourcesKey.Line-1, sandboxyaml.LastLine(resourcesValue)
 		edited = slices.Concat(lines[:first], blockLines(resourcesKey.Column-1, sections), lines[last:])
 	default:
 		anchor, err := insertionAnchor(containerNode)
@@ -107,7 +110,7 @@ func render(src []byte, workload v1alpha1.WorkloadReference, container string, r
 			return nil, none, err
 		}
 		indent := containerNode.Content[0].Column - 1
-		after := lastLine(anchor)
+		after := sandboxyaml.LastLine(anchor)
 		before := slices.Clone(lines[:after])
 		if n := len(before); n > 0 && !strings.HasSuffix(before[n-1], "\n") {
 			before[n-1] += "\n"
@@ -202,59 +205,16 @@ func blockLines(indent int, sections []section) []string {
 	return lines
 }
 
-func parseDocuments(src []byte) ([]*yaml.Node, error) {
-	decoder := yaml.NewDecoder(bytes.NewReader(src))
-	var docs []*yaml.Node
-	for {
-		var doc yaml.Node
-		err := decoder.Decode(&doc)
-		if errors.Is(err, io.EOF) {
-			return docs, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("the file is not valid YAML: %w", err)
-		}
-		if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 {
-			return nil, unsupported("the file holds an unexpected YAML document")
-		}
-		docs = append(docs, doc.Content[0])
-	}
-}
-
-// findWorkload returns the index of the one document that defines the Workload.
-func findWorkload(docs []*yaml.Node, w v1alpha1.WorkloadReference) (int, error) {
-	found := -1
-	for i, doc := range docs {
-		if doc.Kind != yaml.MappingNode {
-			continue
-		}
-		if scalar(doc, "kind") != string(w.Kind) || scalar(mapValue(doc, "metadata"), "name") != w.Name {
-			continue
-		}
-		if ns := scalar(mapValue(doc, "metadata"), "namespace"); ns != "" && ns != w.Namespace {
-			continue
-		}
-		if found >= 0 {
-			return 0, unsupported("the file defines %s %s more than once", w.Kind, w.Name)
-		}
-		found = i
-	}
-	if found < 0 {
-		return 0, fmt.Errorf("the file does not define %s %s", w.Kind, w.Name)
-	}
-	return found, nil
-}
-
 func findContainer(doc *yaml.Node, name string) (*yaml.Node, error) {
 	node := doc
 	for _, key := range containersPath {
-		node = mapValue(node, key)
+		node = sandboxyaml.Value(node, key)
 	}
 	if node == nil || node.Kind != yaml.SequenceNode {
 		return nil, errors.New("the manifest has no spec.template.spec.containers")
 	}
 	for _, c := range node.Content {
-		if c.Kind == yaml.MappingNode && scalar(c, "name") == name {
+		if c.Kind == yaml.MappingNode && sandboxyaml.Scalar(c, "name") == name {
 			return c, nil
 		}
 	}
@@ -265,7 +225,7 @@ func findContainer(doc *yaml.Node, name string) (*yaml.Node, error) {
 // the image, or else the name, because a one-line scalar has a known last line.
 func insertionAnchor(container *yaml.Node) (*yaml.Node, error) {
 	for _, key := range []string{"image", "name"} {
-		if _, value := mapEntry(container, key); value != nil && value.Kind == yaml.ScalarNode &&
+		if _, value := sandboxyaml.Entry(container, key); value != nil && value.Kind == yaml.ScalarNode &&
 			value.Style&(yaml.LiteralStyle|yaml.FoldedStyle) == 0 {
 			return value, nil
 		}
@@ -278,7 +238,7 @@ func checkClosed(value *yaml.Node, lines []string) error {
 	if value.Style&yaml.FlowStyle == 0 {
 		return nil
 	}
-	last := lastLine(value)
+	last := sandboxyaml.LastLine(value)
 	if last > len(lines) || !strings.ContainsAny(lines[last-1], "}") {
 		return unsupported("resources is written in a multi-line flow style; use block style")
 	}
@@ -300,50 +260,15 @@ func decodeResources(node *yaml.Node) (corev1.ResourceRequirements, error) {
 	return r, nil
 }
 
-// lastLine is the last line, counting from 1, that the node or any node
-// beneath it starts on.
-func lastLine(n *yaml.Node) int {
-	last := n.Line
-	for _, c := range n.Content {
-		last = max(last, lastLine(c))
-	}
-	return last
-}
-
-// mapEntry returns the key and value nodes of a mapping entry.
-func mapEntry(m *yaml.Node, key string) (*yaml.Node, *yaml.Node) {
-	if m == nil || m.Kind != yaml.MappingNode {
-		return nil, nil
-	}
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Kind == yaml.ScalarNode && m.Content[i].Value == key {
-			return m.Content[i], m.Content[i+1]
-		}
-	}
-	return nil, nil
-}
-
-func mapValue(m *yaml.Node, key string) *yaml.Node {
-	_, v := mapEntry(m, key)
-	return v
-}
-
-func scalar(m *yaml.Node, key string) string {
-	if v := mapValue(m, key); v != nil && v.Kind == yaml.ScalarNode {
-		return v.Value
-	}
-	return ""
-}
-
 // verify proves that the edit changed nothing but the container's resources:
 // it decodes both files and compares every document, with the one container's
 // resources held out of the comparison and checked against the intended values.
 func verify(before, after []byte, index int, container string, want corev1.ResourceRequirements) error {
-	oldDocs, err := decodeAll(before)
+	oldDocs, err := sandboxyaml.DecodeAll(before)
 	if err != nil {
 		return err
 	}
-	newDocs, err := decodeAll(after)
+	newDocs, err := sandboxyaml.DecodeAll(after)
 	if err != nil {
 		return fmt.Errorf("the rendered file is not valid YAML: %w", err)
 	}
@@ -376,22 +301,6 @@ func verify(before, after []byte, index int, container string, want corev1.Resou
 		return unsupported("the rendering changed more than the container's resources")
 	}
 	return nil
-}
-
-func decodeAll(src []byte) ([]any, error) {
-	decoder := yaml.NewDecoder(bytes.NewReader(src))
-	var docs []any
-	for {
-		var doc any
-		err := decoder.Decode(&doc)
-		if errors.Is(err, io.EOF) {
-			return docs, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("the file is not valid YAML: %w", err)
-		}
-		docs = append(docs, doc)
-	}
 }
 
 func containerMap(doc any, name string) (map[string]any, bool) {

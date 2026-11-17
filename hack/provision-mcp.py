@@ -16,6 +16,9 @@ import urllib.request
 
 CONTEXT = os.environ.get("PAGERLESS_KUBE_CONTEXT") or "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
 NAMESPACE = "pagerless"
+GATEWAY_NAMESPACE = "agentgateway-system"
+GATEWAY_URL = "http://mcp-gateway." + GATEWAY_NAMESPACE + ".svc.cluster.local"
+KEYCLOAK_ISSUER = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
 
 
 def kubectl(*args, data=None):
@@ -39,10 +42,10 @@ def existing_secret(name, namespace=NAMESPACE):
     return {key: base64.b64decode(value).decode() for key, value in result.get("data", {}).items()}
 
 
-def apply_secret(name, values):
+def apply_secret(name, values, namespace=NAMESPACE):
     kubectl("apply", "-f", "-", data={
         "apiVersion": "v1", "kind": "Secret", "type": "Opaque",
-        "metadata": {"name": name, "namespace": NAMESPACE},
+        "metadata": {"name": name, "namespace": namespace},
         "data": {key: base64.b64encode(value.encode()).decode() for key, value in values.items()},
     })
 
@@ -140,11 +143,16 @@ def main():
     apply_secret("mcp-backend-tokens", {"grafana": grafana})
     apply_secret("argocd-read", {"token": argocd})
     callers = existing_secret("mcp-client-tokens")
-    apply_secret("mcp-client-tokens", {
+    callers = {
         "grafana": callers.get("grafana") or secrets.token_hex(32),
         "argocd": callers.get("argocd") or secrets.token_hex(32),
         "github": os.environ["GITHUB_READ_TOKEN"],
-    })
+    }
+    apply_secret("mcp-client-tokens", callers)
+    # The gateway is now the only caller of the MCP servers. It reads each
+    # server's credential from its own namespace, so the same read-only tokens
+    # are present in both namespaces and never reach an agent Job.
+    apply_secret("mcp-client-tokens", callers, namespace=GATEWAY_NAMESPACE)
     provider = os.environ.get("MODEL_PROVIDER", "replay")
     credentials = {}
     if provider == "anthropic":
@@ -166,13 +174,14 @@ def main():
         raise RuntimeError("the Sandbox owner and repository must each be a single nonempty GitHub path segment")
     values = {
         "PAGERLESS_MODEL_PROVIDER": provider,
-        "PAGERLESS_MCP_KUBERNETES_URL": "http://mcp-kubernetes.pagerless.svc:8080/mcp",
-        "PAGERLESS_MCP_GRAFANA_URL": "http://mcp-grafana.pagerless.svc:8000/mcp",
-        "PAGERLESS_MCP_ARGOCD_URL": "http://mcp-argocd.pagerless.svc:3000/mcp",
-        "PAGERLESS_MCP_GITHUB_URL": os.environ.get(
-            "PAGERLESS_MCP_GITHUB_URL", "http://mcp-github.pagerless.svc:8082/readonly"
-        ) or "http://mcp-github.pagerless.svc:8082/readonly",
+        "PAGERLESS_MCP_GATEWAY_URL": GATEWAY_URL,
+        "PAGERLESS_KEYCLOAK_ISSUER": KEYCLOAK_ISSUER,
+        "PAGERLESS_KEYCLOAK_TOKEN_URL": KEYCLOAK_ISSUER + "/protocol/openid-connect/token",
+        "PAGERLESS_KEYCLOAK_CLIENT_ID": "pagerless-agent",
         "PAGERLESS_REPLAY_FILE": os.environ.get("PAGERLESS_REPLAY_FILE", "/app/recordings/oom.json"),
+        "PAGERLESS_NARRATIVE_REPLAY_FILE": os.environ.get(
+            "PAGERLESS_NARRATIVE_REPLAY_FILE", "/app/recordings/narrative.json"
+        ),
         "PAGERLESS_SANDBOX_OWNER": owner,
         "PAGERLESS_SANDBOX_REPO": repo,
         "PAGERLESS_ARGOCD_APPLICATION": "sandbox",

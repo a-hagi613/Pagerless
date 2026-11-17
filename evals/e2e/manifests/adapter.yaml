@@ -35,7 +35,7 @@ spec:
             - --repository=pagerless-test/sandbox
             - --repository-root=/var/lib/pagerless
             - --source=https://github.com/a-hagi613/pagerless-sandbox.git
-            - --revision=55ab7c5f78ab29a8c6560e6134304c5f53d4fa0c
+            - --revision=9eff68bdf72bcf9e99d6d713a152995d851aa841
             - --read-token-file=/var/run/pagerless/read-token
             - --write-token-file=/var/run/pagerless/write-token
             - --tls-cert=/var/run/pagerless/tls/tls.crt

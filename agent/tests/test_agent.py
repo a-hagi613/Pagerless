@@ -163,32 +163,37 @@ async def test_a_recorded_run_replays_to_a_report_for_the_current_run(tmp_path: 
         ("Finding", None, "Commit: Lower the checkout memory limit"),
         ("Progress", None, "Writing the Proposal."),
     ]
-    assert result.server.reports == [
-        {
-            "diagnosis": (
-                f"The container of {pod} exceeds its 128Mi memory limit and is OOMKilled. "
-                f"Commit {sha[:7]} lowered the limit."
-            ),
-            "findings": [
-                {
-                    "kind": "Event",
-                    "source": f"events: pod/{pod}",
-                    "summary": f"{pod} was OOMKilled at 2026-12-02T04:03:06.789000Z",
-                },
-                {
-                    "kind": "Log",
-                    "source": f"pods_log sandbox/{pod} (previous)",
-                    "summary": "The process allocated 512 MiB and was killed.",
-                },
-                {
-                    "kind": "Commit",
-                    "source": f"sandbox commit {sha}",
-                    "summary": "Lower the checkout memory limit",
-                },
-            ],
-            "proposal": GOOD_PROPOSAL,
-        }
-    ]
+    assert len(result.server.reports) == 1
+    report = dict(result.server.reports[0])
+    assert report.pop("usage") == {
+        "inputTokens": 5000,
+        "outputTokens": 500,
+        "costUSD": pytest.approx(0.00075),
+    }
+    assert report == {
+        "diagnosis": (
+            f"The container of {pod} exceeds its 128Mi memory limit and is OOMKilled. "
+            f"Commit {sha[:7]} lowered the limit."
+        ),
+        "findings": [
+            {
+                "kind": "Event",
+                "source": f"events: pod/{pod}",
+                "summary": f"{pod} was OOMKilled at 2026-12-02T04:03:06.789000Z",
+            },
+            {
+                "kind": "Log",
+                "source": f"pods_log sandbox/{pod} (previous)",
+                "summary": "The process allocated 512 MiB and was killed.",
+            },
+            {
+                "kind": "Commit",
+                "source": f"sandbox commit {sha}",
+                "summary": "Lower the checkout memory limit",
+            },
+        ],
+        "proposal": GOOD_PROPOSAL,
+    }
     # Every request carries the same tools, including the agent's own, so that a provider can cache them.
     assert [t.name for t in result.model.requests[0].tools] == ["pods_log", "resources_get", "record_finding"]
     assert [r.stage for r in result.model.requests] == [

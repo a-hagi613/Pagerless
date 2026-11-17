@@ -8,7 +8,10 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
+	"github.com/a-hagi613/pagerless/internal/remediation"
+	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
+	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/server"
 )
 
@@ -25,6 +28,64 @@ func WithProposalPollInterval(d time.Duration) Option {
 // WithValidators.
 func (e *Env) PatchResources(allowedNamespaces ...string) map[v1alpha1.Action]proposal.ActionValidator {
 	e.t.Helper()
+	asServer := e.serverClient()
+	validators := proposal.DefaultValidators()
+	validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
+		Reader:            asServer,
+		Writer:            asServer,
+		Sandbox:           e.SandboxRepository(),
+		AllowedNamespaces: allowedNamespaces,
+		Bounds:            patchresources.DefaultBounds(),
+	})
+	return validators
+}
+
+// SandboxActions returns the validators for NoAction, PatchResources, and
+// Rollback. Both pull request Actions render against the harness's Sandbox with
+// pagerless-server's own identity.
+func (e *Env) SandboxActions(allowedNamespaces ...string) map[v1alpha1.Action]proposal.ActionValidator {
+	e.t.Helper()
+	validators := e.PatchResources(allowedNamespaces...)
+	validators[v1alpha1.ActionRollback] = rollback.New(rollback.Config{
+		Reader:            e.serverClient(),
+		Sandbox:           e.SandboxRepository(),
+		AllowedNamespaces: allowedNamespaces,
+	})
+	return validators
+}
+
+// Remediations returns the validators for every executable Action: NoAction,
+// RestartWorkload, Scale, PatchResources, and Rollback. They run with
+// pagerless-server's own identity against the harness's Sandbox. Pass it to
+// WithValidators.
+func (e *Env) Remediations(allowedNamespaces ...string) map[v1alpha1.Action]proposal.ActionValidator {
+	e.t.Helper()
+	asServer := e.serverClient()
+	validators := e.SandboxActions(allowedNamespaces...)
+	validators[v1alpha1.ActionRestartWorkload] = remediation.NewRestart(remediation.Config{
+		Reader:            asServer,
+		Sandbox:           e.SandboxRepository(),
+		AllowedNamespaces: allowedNamespaces,
+	})
+	validators[v1alpha1.ActionScale] = scale.New(scale.Config{
+		Reader:            asServer,
+		Writer:            asServer,
+		Sandbox:           e.SandboxRepository(),
+		AllowedNamespaces: allowedNamespaces,
+		Bounds:            scale.DefaultBounds(),
+	})
+	return validators
+}
+
+// SandboxRepository returns a repository that reads the harness's Sandbox, as
+// pagerless-server is configured in a cluster.
+func (e *Env) SandboxRepository() sandbox.Repository {
+	return sandbox.Repository{URL: e.Sandbox.URL, Branch: SandboxBranch}
+}
+
+// serverClient returns a client with pagerless-server's identity.
+func (e *Env) serverClient() client.Client {
+	e.t.Helper()
 	scheme, err := server.Scheme()
 	if err != nil {
 		e.t.Fatal(err)
@@ -33,13 +94,5 @@ func (e *Env) PatchResources(allowedNamespaces ...string) map[v1alpha1.Action]pr
 	if err != nil {
 		e.t.Fatalf("create a client with the server's identity: %v", err)
 	}
-	validators := proposal.DefaultValidators()
-	validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
-		Reader:            asServer,
-		Writer:            asServer,
-		Sandbox:           sandbox.Repository{URL: e.Sandbox.URL, Branch: SandboxBranch},
-		AllowedNamespaces: allowedNamespaces,
-		Bounds:            patchresources.DefaultBounds(),
-	})
-	return validators
+	return asServer
 }

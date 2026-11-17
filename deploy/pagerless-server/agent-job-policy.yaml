@@ -72,8 +72,8 @@ spec:
           (!has(c.envFrom) || size(c.envFrom) == 0) &&
           (!has(c.env) || c.env.all(e, !has(e.valueFrom) ||
             (has(e.valueFrom.secretKeyRef) &&
-             e.valueFrom.secretKeyRef.name in ['mcp-client-tokens', 'pagerless-agent-credentials']))))
-      message: pagerless-agent Jobs may reference only explicit keys of their read-only MCP and inference Secrets
+             e.valueFrom.secretKeyRef.name == 'pagerless-agent-credentials'))))
+      message: pagerless-agent Jobs may reference only explicit keys of their inference Secret
       reason: Forbidden
     - expression: >-
         (!has(variables.pod.volumes) || variables.pod.volumes.all(v,
@@ -84,20 +84,27 @@ spec:
              has(s.serviceAccountToken.audience) && s.serviceAccountToken.audience == 'pagerless-server' &&
              s.serviceAccountToken.path == 'token' &&
              has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 600)) ||
+          (v.name == 'pagerless-keycloak-token' && has(v.projected) && size(v.projected.sources) == 1 &&
+           v.projected.sources.all(s, has(s.serviceAccountToken) &&
+             has(s.serviceAccountToken.audience) &&
+             s.serviceAccountToken.audience.matches('^http://keycloak[.]keycloak[.]svc[.]cluster[.]local:8080/realms/[a-z0-9-]+$') &&
+             s.serviceAccountToken.path == 'token' &&
+             has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 600)) ||
           (v.name == 'eks-pod-identity-token' && has(v.projected) && size(v.projected.sources) == 1 &&
            v.projected.sources.all(s, has(s.serviceAccountToken) &&
              has(s.serviceAccountToken.audience) && s.serviceAccountToken.audience == 'pods.eks.amazonaws.com' &&
              has(s.serviceAccountToken.path) && s.serviceAccountToken.path == 'eks-pod-identity-token' &&
              has(s.serviceAccountToken.expirationSeconds)))))
-      message: pagerless-agent Jobs may mount only temporary storage, the dedicated Replay capture claim, the report-audience token, and the Pod Identity token
+      message: pagerless-agent Jobs may mount only temporary storage, the dedicated Replay capture claim, the report token, the Keycloak realm-audience token, and the Pod Identity token
       reason: Forbidden
     - expression: >-
         variables.pod.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
           (m.name == 'temporary' && m.mountPath == '/tmp') ||
           (m.name == 'recordings' && m.mountPath == '/recordings') ||
           (m.name == 'pagerless-token' && m.mountPath == '/var/run/pagerless' && has(m.readOnly) && m.readOnly) ||
+          (m.name == 'pagerless-keycloak-token' && m.mountPath == '/var/run/keycloak' && has(m.readOnly) && m.readOnly) ||
           (m.name == 'eks-pod-identity-token' && m.mountPath == '/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/')))
-      message: pagerless-agent volume mounts must use their dedicated paths and keep the report token read-only
+      message: pagerless-agent volume mounts must use their dedicated paths and keep each token read-only
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

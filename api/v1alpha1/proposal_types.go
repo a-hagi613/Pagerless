@@ -65,7 +65,7 @@ type PatchResourcesParameters struct {
 
 // RollbackParameters are the parameters of the Rollback Action.
 type RollbackParameters struct {
-	// Commit is the Sandbox commit to revert. It must be among the last 20 commits touching the Workload's path.
+	// Commit is the Sandbox commit to revert. It must be among the last 20 commits touching the Workload's path or a declared dependency path.
 	// +required
 	// +kubebuilder:validation:MinLength=7
 	// +kubebuilder:validation:MaxLength=64

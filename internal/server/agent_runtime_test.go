@@ -18,23 +18,74 @@ import (
 )
 
 const (
-	anthropicProvider    = "anthropic"
-	bedrockProvider      = "bedrock"
-	recordingPVCVariable = "PAGERLESS_RECORDING_PVC"
-	recordingFile        = "/recordings/oom.json"
-	recordingClaimName   = "pagerless-replay-capture"
+	anthropicProvider       = "anthropic"
+	bedrockProvider         = "bedrock"
+	replayProvider          = "replay"
+	liveProviderRequirement = "live model provider"
+	unrelatedClaimName      = "private-data"
+	recordingPVCVariable    = "PAGERLESS_RECORDING_PVC"
+	recordingFile           = "/recordings/oom.json"
+	recordingClaimName      = "pagerless-replay-capture"
+	keycloakIssuer          = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+	keycloakClientID        = "pagerless-agent"
 )
 
+func TestGatewayConfigurationMustDescribeOneReachableRealm(t *testing.T) {
+	valid := controller.AgentRuntimeConfig{
+		GatewayURL:       "http://mcp-gateway.agentgateway-system.svc.cluster.local",
+		KeycloakIssuer:   keycloakIssuer,
+		KeycloakTokenURL: keycloakIssuer + "/protocol/openid-connect/token",
+		KeycloakClientID: keycloakClientID,
+	}
+	if err := valid.ValidateGateway(); err != nil {
+		t.Fatalf("valid gateway configuration was refused: %v", err)
+	}
+	cases := []struct {
+		name   string
+		change func(*controller.AgentRuntimeConfig)
+		want   string
+	}{
+		{"no gateway", func(c *controller.AgentRuntimeConfig) { c.GatewayURL = "" }, "PAGERLESS_MCP_GATEWAY_URL"},
+		{"gateway path", func(c *controller.AgentRuntimeConfig) { c.GatewayURL += "/mcp" }, "without a path"},
+		{"gateway credentials", func(c *controller.AgentRuntimeConfig) {
+			c.GatewayURL = "http://user:secret@gateway"
+		}, "without a path or credentials"},
+		{"no issuer", func(c *controller.AgentRuntimeConfig) { c.KeycloakIssuer = "" }, "PAGERLESS_KEYCLOAK_ISSUER"},
+		{"issuer not a realm", func(c *controller.AgentRuntimeConfig) {
+			c.KeycloakIssuer = "http://keycloak:8080"
+		}, "realm URL"},
+		{"issuer trailing slash", func(c *controller.AgentRuntimeConfig) {
+			c.KeycloakIssuer += "/"
+		}, "trailing slash"},
+		{"token endpoint of another realm", func(c *controller.AgentRuntimeConfig) {
+			c.KeycloakTokenURL = "http://keycloak:8080/realms/other/protocol/openid-connect/token"
+		}, "token endpoint"},
+		{"no client", func(c *controller.AgentRuntimeConfig) { c.KeycloakClientID = "" }, "PAGERLESS_KEYCLOAK_CLIENT_ID"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := valid
+			tc.change(&config)
+			if err := config.ValidateGateway(); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("configuration error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *testing.T) {
-	for _, provider := range []string{"replay", anthropicProvider, bedrockProvider} {
+	for _, provider := range []string{replayProvider, anthropicProvider, bedrockProvider} {
 		t.Run(provider, func(t *testing.T) {
 			runtime := controller.AgentRuntimeConfig{
-				Provider: provider, KubernetesURL: "http://mcp-kubernetes:8080/mcp",
-				GrafanaURL: "http://mcp-grafana:8000/mcp", ArgoCDURL: "http://mcp-argocd:3000/mcp",
-				GitHubURL: "http://mcp-github:8082/readonly", SandboxOwner: "example", SandboxRepo: sandboxNamespace,
+				Provider: provider, GatewayURL: "http://mcp-gateway.agentgateway-system.svc.cluster.local",
+				KeycloakIssuer:    "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
+				KeycloakClientID:  keycloakClientID,
+				SandboxOwner:      "example",
+				SandboxRepo:       sandboxNamespace,
 				ArgoCDApplication: sandboxNamespace, AllowedNamespaces: sandboxNamespace, AWSRegion: "us-east-1",
 				ReplayFile: "/app/recordings/oom.json",
 			}
+			runtime.KeycloakTokenURL = runtime.KeycloakIssuer + "/protocol/openid-connect/token"
 			env := testenv.Start(t, testenv.WithAgentRuntime(runtime))
 			created := env.CreateTriage(t, testenv.NewTriage(checkout))
 			tr := env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
@@ -61,26 +112,34 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 				variables[variable.Name] = variable
 				if variable.ValueFrom != nil && variable.ValueFrom.SecretKeyRef != nil {
 					secret := variable.ValueFrom.SecretKeyRef.Name
-					if secret != controller.AgentCredentialsSecret && secret != controller.MCPClientTokensSecret {
+					if secret != controller.AgentCredentialsSecret {
 						t.Errorf("the agent references the unexpected Secret %q", secret)
 					}
 				}
 			}
 			for name, value := range map[string]string{
-				agentapi.EnvModelProvider: provider, agentapi.EnvMCPKubernetesURL: runtime.KubernetesURL,
-				agentapi.EnvMCPGrafanaURL: runtime.GrafanaURL, agentapi.EnvMCPArgoCDURL: runtime.ArgoCDURL,
-				agentapi.EnvMCPGitHubURL: runtime.GitHubURL, agentapi.EnvSandboxOwner: runtime.SandboxOwner,
-				agentapi.EnvSandboxRepo: runtime.SandboxRepo, agentapi.EnvAllowedNamespaces: sandboxNamespace,
+				agentapi.EnvModelProvider: provider, agentapi.EnvMCPGatewayURL: runtime.GatewayURL,
+				agentapi.EnvKeycloakIssuer: runtime.KeycloakIssuer, agentapi.EnvKeycloakTokenURL: runtime.KeycloakTokenURL,
+				agentapi.EnvKeycloakClientID: runtime.KeycloakClientID,
+				agentapi.EnvSandboxOwner:     runtime.SandboxOwner,
+				agentapi.EnvSandboxRepo:      runtime.SandboxRepo, agentapi.EnvAllowedNamespaces: sandboxNamespace,
 			} {
 				if variables[name].Value != value {
 					t.Errorf("%s = %q, want %q", name, variables[name].Value, value)
 				}
 			}
-			for name, key := range map[string]string{
-				agentapi.EnvMCPGrafanaToken: "grafana", agentapi.EnvMCPArgoCDToken: "argocd",
-				agentapi.EnvMCPGitHubToken: "github",
+			if variables[agentapi.EnvKeycloakTokenFile].Value != "/var/run/keycloak/token" {
+				t.Errorf("%s = %q, want the Keycloak token mount", agentapi.EnvKeycloakTokenFile,
+					variables[agentapi.EnvKeycloakTokenFile].Value)
+			}
+			for _, name := range []string{
+				"PAGERLESS_MCP_KUBERNETES_URL", "PAGERLESS_MCP_GRAFANA_URL", "PAGERLESS_MCP_ARGOCD_URL",
+				"PAGERLESS_MCP_GITHUB_URL", "PAGERLESS_MCP_GRAFANA_TOKEN", "PAGERLESS_MCP_ARGOCD_TOKEN",
+				"PAGERLESS_MCP_GITHUB_TOKEN",
 			} {
-				requireSecretKey(t, variables[name], controller.MCPClientTokensSecret, key, false)
+				if _, exists := variables[name]; exists {
+					t.Errorf("agent Job unexpectedly kept the direct MCP setting %s", name)
+				}
 			}
 			if provider == anthropicProvider {
 				requireSecretKey(t, variables["ANTHROPIC_API_KEY"], controller.AgentCredentialsSecret, "ANTHROPIC_API_KEY", false)
@@ -187,42 +246,78 @@ func requireAgentRecordingStorage(t *testing.T, provider string) {
 	}
 }
 
-func TestAgentRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *testing.T) {
-	cases := []struct {
+// TestRecordingRejectsIncompleteOrInaccessibleStorageConfiguration covers both
+// server settings that make a Job capture a recording: the investigation's and
+// the Narrative's. Each reuses the same claim and the same live-provider rule.
+func TestRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *testing.T) {
+	const narrativeRecordingFile = "/recordings/narrative.json"
+	investigation := []struct {
+		provider, claim, file, want string
+	}{
+		{anthropicProvider, "", "/tmp/oom.json", recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "", agentapi.EnvRecordingFile},
+		{replayProvider, recordingClaimName, recordingFile, liveProviderRequirement},
+		{"", recordingClaimName, recordingFile, liveProviderRequirement},
+		{anthropicProvider, "NotValid", recordingFile, recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, unrelatedClaimName, recordingFile, recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
+	}
+	narrative := []struct {
 		name, provider, claim, file, want string
 	}{
-		{"no claim", anthropicProvider, "", "/tmp/oom.json", recordingPVCVariable},
-		{"no file", anthropicProvider, recordingClaimName, "", agentapi.EnvRecordingFile},
-		{"Replay", "replay", recordingClaimName, recordingFile, "live model provider"},
-		{"default Replay", "", recordingClaimName, recordingFile, "live model provider"},
-		{"invalid claim", anthropicProvider, "NotValid", recordingFile, recordingPVCVariable},
-		{"relative path", anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
-		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
-		{"traversal", anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
-		{"unrelated claim", anthropicProvider, "private-data", recordingFile, recordingPVCVariable},
-		{"directory", anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
+		{"no claim", anthropicProvider, "", narrativeRecordingFile, recordingPVCVariable},
+		{"Replay", replayProvider, recordingClaimName, narrativeRecordingFile, liveProviderRequirement},
+		{"default Replay", "", recordingClaimName, narrativeRecordingFile, liveProviderRequirement},
+		{"unrelated claim", anthropicProvider, unrelatedClaimName, narrativeRecordingFile, recordingPVCVariable},
+		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/narrative.json", controller.NarrativeRecordingFileEnv},
+		{
+			"traversal", anthropicProvider, recordingClaimName, "/recordings/../narrative.json",
+			controller.NarrativeRecordingFileEnv,
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = listener.Close() })
-			token := func() (string, error) { return "unused", nil }
-			_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
-				Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
-				ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
-				ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
-				AlertmanagerToken: token,
-				AgentRuntime: controller.AgentRuntimeConfig{
-					Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
-				},
-			})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("configuration error = %v, want %q", err, tc.want)
-			}
+	names := []string{
+		"no claim", "no file", "Replay", "default Replay", "invalid claim",
+		"relative path", "outside claim", "traversal", "unrelated claim", "directory",
+	}
+	for i, tc := range investigation {
+		name := names[i]
+		t.Run("investigation/"+name, func(t *testing.T) {
+			requireConfigurationRefused(t, controller.AgentRuntimeConfig{
+				Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
+			}, tc.want)
 		})
+	}
+	for _, tc := range narrative {
+		t.Run("narrative/"+tc.name, func(t *testing.T) {
+			requireConfigurationRefused(t, controller.AgentRuntimeConfig{
+				Provider: tc.provider, RecordingPVC: tc.claim, NarrativeRecordingFile: tc.file,
+			}, tc.want)
+		})
+	}
+}
+
+// requireConfigurationRefused builds a server with the runtime configuration and
+// checks that it refuses to start with the expected reason.
+func requireConfigurationRefused(t *testing.T, runtime controller.AgentRuntimeConfig, want string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	token := func() (string, error) { return "unused", nil }
+	_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
+		Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
+		ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
+		ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
+		AlertmanagerToken: token,
+		AgentRuntime:      runtime,
+	})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("configuration error = %v, want %q", err, want)
 	}
 }
 
@@ -231,19 +326,25 @@ func requireRecordingTokenIsolation(t *testing.T, pod corev1.PodSpec) {
 	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
 		t.Fatal("recording must not enable the default API token")
 	}
-	var audiences []string
+	audiences := map[string]string{}
 	for _, volume := range pod.Volumes {
 		if volume.Projected == nil {
 			continue
 		}
 		for _, source := range volume.Projected.Sources {
 			if source.ServiceAccountToken != nil {
-				audiences = append(audiences, source.ServiceAccountToken.Audience)
+				audiences[volume.Name] = source.ServiceAccountToken.Audience
 			}
 		}
 	}
-	if len(audiences) != 1 || audiences[0] != agentapi.Audience {
-		t.Errorf("recording token audiences = %v, want only the report API audience", audiences)
+	if audiences["pagerless-token"] != agentapi.Audience {
+		t.Errorf("report token audience = %q, want %q", audiences["pagerless-token"], agentapi.Audience)
+	}
+	if audiences["pagerless-keycloak-token"] != keycloakIssuer {
+		t.Errorf("Keycloak token audience = %q, want the realm issuer", audiences["pagerless-keycloak-token"])
+	}
+	if len(audiences) != 2 {
+		t.Errorf("projected token volumes = %v, want the report and Keycloak tokens only", audiences)
 	}
 }
 

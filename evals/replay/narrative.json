@@ -1,0 +1,21 @@
+{
+  "format": "pagerless.dev/replay",
+  "version": 1,
+  "scenario": "narrative",
+  "model": "claude-haiku-5-5",
+  "workload": "checkout",
+  "turns": [
+    {
+      "stage": "narrative",
+      "response": {
+        "text": "The checkout Deployment was failing because its container exceeded the 128Mi memory limit on every start, which the Diagnosis traced to a recent change that lowered the limit. The approved PatchResources Proposal raised the memory limit to 512Mi. Verification found the rollout available, Argo CD synced and healthy, and no new restarts during the observation window, so the Triage ended Recovered.",
+        "tool_calls": [],
+        "structured": null,
+        "usage": {
+          "input_tokens": 1842,
+          "output_tokens": 96
+        }
+      }
+    }
+  ]
+}

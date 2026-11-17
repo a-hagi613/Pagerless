@@ -18,12 +18,14 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/cli"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
@@ -348,6 +350,59 @@ func TestShowRefusesAnUnknownTriage(t *testing.T) {
 	}
 }
 
+// TestShowDisplaysTheNarrative writes the status that Verification and the
+// Narrative Job leave behind, as the server does, and checks how the CLI
+// presents it. The server's own write is covered by the envtest seam.
+func TestShowDisplaysTheNarrative(t *testing.T) {
+	env, kubeconfig := startCluster(t)
+	createDeployment(t, env, checkout)
+	out, err := execute(t.Context(), kubeconfig, "-n", sandbox, "deploy/"+checkout)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	name := createdName(t, out)
+	env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
+
+	narrative := "The checkout Deployment recovered after the approved memory change."
+	writeServerStatus(t, env, name, func(tr *v1alpha1.Triage) {
+		tr.Status.Phase = v1alpha1.PhaseRecovered
+		tr.Status.Diagnosis = "The container exceeded its 128Mi memory limit."
+		tr.Status.Narrative = narrative
+	})
+
+	shown, err := execute(t.Context(), kubeconfig, "show", name)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	if !strings.Contains(shown, "Narrative\n  "+narrative) {
+		t.Errorf("show output lacks the Narrative:\n%s", shown)
+	}
+
+	shownJSON, err := execute(t.Context(), kubeconfig, "show", name, "-o", "json")
+	if err != nil {
+		t.Fatalf("show -o json: %v", err)
+	}
+	var fromJSON v1alpha1.Triage
+	if err := json.Unmarshal([]byte(shownJSON), &fromJSON); err != nil {
+		t.Fatalf("decode show -o json: %v", err)
+	}
+	if fromJSON.Status.Narrative != narrative {
+		t.Errorf("show -o json narrative = %q, want %q", fromJSON.Status.Narrative, narrative)
+	}
+
+	shownYAML, err := execute(t.Context(), kubeconfig, "show", name, "-o", "yaml")
+	if err != nil {
+		t.Fatalf("show -o yaml: %v", err)
+	}
+	var fromYAML v1alpha1.Triage
+	if err := yaml.Unmarshal([]byte(shownYAML), &fromYAML); err != nil {
+		t.Fatalf("decode show -o yaml: %v", err)
+	}
+	if fromYAML.Status.Narrative != narrative {
+		t.Errorf("show -o yaml narrative = %q, want %q", fromYAML.Status.Narrative, narrative)
+	}
+}
+
 func TestCommandLineRefusesInvalidArguments(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -390,6 +445,32 @@ func startCluster(t testing.TB) (*testenv.Env, string) {
 	t.Helper()
 	env := testenv.Start(t)
 	return env, kubeconfigFor(t, env.Config)
+}
+
+// writeServerStatus changes a Triage's status with the server's identity, the
+// only one that the status guard admits. It arranges a state that the server
+// would have written.
+func writeServerStatus(t testing.TB, env *testenv.Env, name string, mutate func(*v1alpha1.Triage)) {
+	t.Helper()
+	scheme, err := server.Scheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.New(env.ServerConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("create a client with the server's identity: %v", err)
+	}
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var tr v1alpha1.Triage
+		if err := c.Get(t.Context(), client.ObjectKey{Namespace: testenv.Namespace, Name: name}, &tr); err != nil {
+			return err
+		}
+		mutate(&tr)
+		return c.Status().Update(t.Context(), &tr)
+	})
+	if err != nil {
+		t.Fatalf("write the status of Triage %s: %v", name, err)
+	}
 }
 
 // kubeconfigFor writes a kubeconfig that reaches the harness API server as its admin user.

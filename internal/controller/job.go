@@ -17,12 +17,16 @@ import (
 const (
 	// TriageLabel labels every object created for a Triage with the Triage's name.
 	TriageLabel = "pagerless.dev/triage"
-	// agentContainerName is the name of the agent's only container.
+	// agentContainerName is the name of the Job's only container.
 	agentContainerName = "agent"
 	// tokenVolumeName and tokenMountPath locate the projected service account token.
 	tokenVolumeName = "pagerless-token"
 	tokenMountPath  = "/var/run/pagerless"
 	tokenFileName   = "token"
+	// keycloakTokenVolumeName and keycloakTokenMountPath locate the projected
+	// token whose audience is the Keycloak realm issuer.
+	keycloakTokenVolumeName = "pagerless-keycloak-token"
+	keycloakTokenMountPath  = "/var/run/keycloak"
 	// tokenExpirationSeconds is the lifetime of the projected token, which the kubelet refreshes.
 	tokenExpirationSeconds = 600
 	// agentUID is the non-root user and group the agent runs as.
@@ -33,20 +37,31 @@ const (
 
 // AgentJobName returns the name of the agent Job for a Triage.
 func AgentJobName(triageName string) string {
-	name := triageName + "-agent"
+	return jobName(triageName, "-agent")
+}
+
+// narrativeJobName returns the name of the Narrative Job for a Triage. It is
+// deterministic, so that a repeated reconcile creates no second Job.
+func narrativeJobName(triageName string) string {
+	return jobName(triageName, "-narrative")
+}
+
+// jobName names a Job for a Triage, shortened to a valid DNS label when the Triage's name is long.
+func jobName(triageName, suffix string) string {
+	name := triageName + suffix
 	if len(name) > maxJobNameLength {
-		name = strings.TrimRight(triageName[:maxJobNameLength-len("-agent")], "-.") + "-agent"
+		name = strings.TrimRight(triageName[:maxJobNameLength-len(suffix)], "-.") + suffix
 	}
 	return name
 }
 
-// AgentJobConfig holds the settings of the agent Job.
+// AgentJobConfig holds the settings of the agent Jobs.
 type AgentJobConfig struct {
 	// Image is the agent container image.
 	Image string
 	// ServiceAccount is the read-only service account the agent runs as.
 	ServiceAccount string
-	// ServerURL is the base URL that the agent posts step events and its report to.
+	// ServerURL is the base URL that the agent posts step events, its report, and the Narrative to.
 	ServerURL string
 	// Deadline is the Job's active deadline.
 	Deadline int64
@@ -54,15 +69,34 @@ type AgentJobConfig struct {
 	Runtime AgentRuntimeConfig
 }
 
-// buildAgentJob returns the Job that runs the agent for a Triage. The agent
-// has no write permissions, so the Job mounts no default service account token
-// and projects a single token whose audience is the server's.
+// jobSpec is what distinguishes the investigation Job from the Narrative Job.
+type jobSpec struct {
+	// name is the Job's name.
+	name string
+	// deadline is the Job's active deadline in seconds.
+	deadline int64
+	// env is the container environment.
+	env []corev1.EnvVar
+	// recordingPVC is the existing claim to mount at /recordings, when this Job writes a recording.
+	recordingPVC string
+	// keycloakToken mounts the projected token whose audience is the realm issuer. Only the
+	// investigation Job calls the MCP gateway; the Narrative Job makes one model call.
+	keycloakToken bool
+}
+
+// buildAgentJob returns the Job that runs the investigation for a Triage. The
+// agent has no write permissions, so the Job mounts no default service account
+// token and projects two tokens: one whose audience is the server's, and one
+// whose audience is the Keycloak realm issuer that the agent exchanges for an
+// access token on the MCP gateway.
 func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 	spec := triage.Spec
 	env := []corev1.EnvVar{
 		{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
 		{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
+		{Name: agentapi.EnvKeycloakTokenFile, Value: keycloakTokenMountPath + "/" + tokenFileName},
 		{Name: agentapi.EnvTriage, Value: triage.Name},
+		{Name: agentapi.EnvTask, Value: agentapi.TaskInvestigate},
 		{Name: agentapi.EnvWorkloadKind, Value: string(spec.Workload.Kind)},
 		{Name: agentapi.EnvWorkloadNamespace, Value: spec.Workload.Namespace},
 		{Name: agentapi.EnvWorkloadName, Value: spec.Workload.Name},
@@ -74,16 +108,52 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 		env = append(env, corev1.EnvVar{Name: agentapi.EnvHint, Value: spec.Hint})
 	}
 	env = append(env, cfg.Runtime.environment()...)
+	return buildJob(triage, cfg, jobSpec{
+		name:          AgentJobName(triage.Name),
+		deadline:      cfg.Deadline,
+		env:           env,
+		recordingPVC:  cfg.Runtime.RecordingPVC,
+		keycloakToken: true,
+	})
+}
+
+// buildNarrativeJob returns the Job that writes the Narrative of a Triage whose
+// Verification has ended. It makes one model call and needs no Workload access,
+// so it receives neither the Workload's identity nor any MCP endpoint.
+func buildNarrativeJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
+	runtimeEnv := cfg.Runtime.narrativeEnvironment()
+	env := make([]corev1.EnvVar, 0, 4+len(runtimeEnv))
+	env = append(env,
+		corev1.EnvVar{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
+		corev1.EnvVar{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
+		corev1.EnvVar{Name: agentapi.EnvTriage, Value: triage.Name},
+		corev1.EnvVar{Name: agentapi.EnvTask, Value: agentapi.TaskNarrative},
+	)
+	env = append(env, runtimeEnv...)
+	spec := jobSpec{
+		name:     narrativeJobName(triage.Name),
+		deadline: cfg.Deadline,
+		env:      env,
+	}
+	if cfg.Runtime.NarrativeRecordingFile != "" {
+		spec.recordingPVC = cfg.Runtime.RecordingPVC
+	}
+	return buildJob(triage, cfg, spec)
+}
+
+// buildJob returns a Job that runs one short-lived agent process under the
+// restricted security context that agent Job admission permits.
+func buildJob(triage *v1alpha1.Triage, cfg AgentJobConfig, spec jobSpec) *batchv1.Job {
 	labels := map[string]string{
 		"app.kubernetes.io/name": "pagerless-agent",
 		TriageLabel:              triage.Name,
 	}
 	job := &batchv1.Job{
-		Name:      AgentJobName(triage.Name),
+		Name:      spec.name,
 		Namespace: triage.Namespace,
 		Labels:    labels,
 		Spec: batchv1.JobSpec{
-			ActiveDeadlineSeconds: new(cfg.Deadline),
+			ActiveDeadlineSeconds: new(spec.deadline),
 			BackoffLimit:          new(int32(0)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
@@ -101,7 +171,7 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 						Name:            agentContainerName,
 						Image:           cfg.Image,
 						ImagePullPolicy: corev1.PullIfNotPresent,
-						Env:             env,
+						Env:             spec.env,
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: new(false),
 							ReadOnlyRootFilesystem:   new(true),
@@ -140,12 +210,32 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 			},
 		},
 	}
-	if cfg.Runtime.RecordingPVC != "" {
+	if spec.keycloakToken {
+		pod := &job.Spec.Template.Spec
+		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      keycloakTokenVolumeName,
+			MountPath: keycloakTokenMountPath,
+			ReadOnly:  true,
+		})
+		pod.Volumes = append(pod.Volumes, corev1.Volume{
+			Name: keycloakTokenVolumeName,
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{{
+					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+						Audience:          cfg.Runtime.KeycloakIssuer,
+						ExpirationSeconds: new(int64(tokenExpirationSeconds)),
+						Path:              tokenFileName,
+					},
+				}},
+			},
+		})
+	}
+	if spec.recordingPVC != "" {
 		pod := &job.Spec.Template.Spec
 		pod.SecurityContext.FSGroup = new(int64(agentUID))
 		pod.Volumes = append(pod.Volumes, corev1.Volume{
 			Name:                  "recordings",
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: cfg.Runtime.RecordingPVC},
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: spec.recordingPVC},
 		})
 		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts,
 			corev1.VolumeMount{Name: "recordings", MountPath: "/recordings"})

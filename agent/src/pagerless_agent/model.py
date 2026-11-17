@@ -20,11 +20,12 @@ class _Frozen(BaseModel):
 
 
 class Stage(StrEnum):
-    """The stage of the agent graph that makes a model call."""
+    """The stage that makes a model call: one of the investigation's graph or the Narrative."""
 
     INVESTIGATE = "investigate"
     DIAGNOSE = "diagnose"
     PROPOSE = "propose"
+    NARRATIVE = "narrative"
 
 
 class ToolSpec(_Frozen):
@@ -68,7 +69,10 @@ class ModelRequest(_Frozen):
     `output_schema` is set when the stage needs structured output, and the
     response must then carry `structured`. `bundle` is the Context Bundle of the
     investigation. Live providers ignore it, because the messages already
-    contain it. Replay resolves its recorded placeholders against it.
+    contain it. Replay resolves its recorded placeholders against it. The
+    Narrative has no Context Bundle, so its recorded text carries no
+    placeholders. `max_output_tokens` caps this call when the stage needs a
+    smaller limit than the provider's.
     """
 
     stage: Stage
@@ -76,7 +80,8 @@ class ModelRequest(_Frozen):
     messages: tuple[Message, ...]
     tools: tuple[ToolSpec, ...]
     output_schema: dict[str, Any] | None = None
-    bundle: ContextBundle
+    bundle: ContextBundle | None = None
+    max_output_tokens: int | None = Field(default=None, ge=1)
 
 
 class ModelResponse(_Frozen):

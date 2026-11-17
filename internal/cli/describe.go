@@ -18,7 +18,7 @@ import (
 
 // describe writes the presentation of a Triage: its header, its Diagnosis and
 // Findings, its Proposal with the rendered change, the human decision, the
-// execution result, and the Verification checks.
+// execution result, the Verification checks, and the Narrative.
 func describe(w io.Writer, tr *v1alpha1.Triage) error {
 	p := &printer{w: w}
 	status := &tr.Status
@@ -58,6 +58,9 @@ func describe(w io.Writer, tr *v1alpha1.Triage) error {
 
 	p.section("Verification")
 	writeVerification(p, status.VerificationChecks)
+
+	p.section("Narrative")
+	p.block("  ", status.Narrative)
 	return p.err
 }
 

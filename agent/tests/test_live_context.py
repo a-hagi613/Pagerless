@@ -5,12 +5,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import yaml
 from mcp import Client
 from mcp.server import MCPServer
 
 from pagerless_agent.live_context import MCPContextSource
 from pagerless_agent.mcp import MCPServerConfig, MCPTools
 from pagerless_agent.settings import Target
+from tests.fakes import StaticToken
+
+TOKEN = StaticToken()
 
 
 def evidence_server() -> tuple[MCPServer, list[str]]:
@@ -82,6 +86,79 @@ def evidence_server() -> tuple[MCPServer, list[str]]:
         return "allocating memory\nKilled"
 
     @server.tool()
+    def resources_list(apiVersion: str, kind: str, namespace: str) -> str:  # noqa: N803
+        # Pinned Chaos Mesh 2.8.8 status shape, with one experiment per case the
+        # Context Bundle decides: a match, a namespace-wide match, another
+        # Workload, a recovered run, and another namespace.
+        # kubernetes-mcp-server returns complete objects as YAML text.
+        calls.append("experiments")
+        assert (apiVersion, kind, namespace) == ("chaos-mesh.org/v1alpha1", "StressChaos", "sandbox")
+        return yaml.safe_dump(
+            [
+                {
+                    "metadata": {"name": "cpu-stress-checkout"},
+                    "spec": {
+                        "selector": {
+                            "namespaces": ["sandbox"],
+                            "labelSelectors": {"app": "checkout"},
+                        },
+                        "duration": "30m",
+                    },
+                    "status": {
+                        "conditions": [
+                            {"type": "AllInjected", "status": "True"},
+                            {"type": "AllRecovered", "status": "False"},
+                        ],
+                        "experiment": {"desiredPhase": "Run"},
+                    },
+                },
+                {
+                    "metadata": {"name": "cpu-stress-sandbox"},
+                    "spec": {"selector": {"namespaces": ["sandbox"]}, "duration": "5m"},
+                    "status": {"experiment": {"desiredPhase": "Run"}},
+                },
+                {
+                    "metadata": {"name": "cpu-stress-cart"},
+                    "spec": {
+                        "selector": {
+                            "namespaces": ["sandbox"],
+                            "labelSelectors": {"app": "cart"},
+                        },
+                        "duration": "30m",
+                    },
+                    "status": {"experiment": {"desiredPhase": "Run"}},
+                },
+                {
+                    "metadata": {"name": "cpu-stress-recovered"},
+                    "spec": {
+                        "selector": {
+                            "namespaces": ["sandbox"],
+                            "labelSelectors": {"app": "checkout"},
+                        },
+                        "duration": "30m",
+                    },
+                    "status": {
+                        "conditions": [
+                            {"type": "AllInjected", "status": "False"},
+                            {"type": "AllRecovered", "status": "True"},
+                        ],
+                        "experiment": {"desiredPhase": "Run"},
+                    },
+                },
+                {
+                    "metadata": {"name": "memory-stress-elsewhere"},
+                    "spec": {
+                        "selector": {
+                            "namespaces": ["other"],
+                            "labelSelectors": {"app": "checkout"},
+                        },
+                        "duration": "10m",
+                    },
+                },
+            ]
+        )
+
+    @server.tool()
     def get_application(applicationName: str) -> dict[str, Any]:  # noqa: N803
         calls.append("argocd")
         assert applicationName == "sandbox"
@@ -110,9 +187,9 @@ async def test_the_bundle_uses_scoped_live_reads_and_canonical_evidence_order() 
     server, calls = evidence_server()
     async with MCPTools(
         (
-            MCPServerConfig("k8s", "http://evidence/mcp"),
-            MCPServerConfig("argocd", "http://evidence/mcp"),
-            MCPServerConfig("github", "http://evidence/mcp"),
+            MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("argocd", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("github", "http://evidence/mcp", TOKEN),
         ),
         namespace="sandbox",
         owner="example",
@@ -128,16 +205,26 @@ async def test_the_bundle_uses_scoped_live_reads_and_canonical_evidence_order() 
     assert bundle.logs[0].pod == "checkout-new" and "Killed" in bundle.logs[0].lines
     assert "Degraded" in bundle.argocd_status
     assert bundle.commits[0].sha == "b" * 40
-    assert calls == ["workload", "pods", "events", "logs", "logs", "argocd", "commits"]
+    # Only the active experiments that select the Workload's pods are evidence:
+    # one by label, and one that selects every pod in the namespace.
+    assert [experiment.name for experiment in bundle.experiments] == [
+        "cpu-stress-checkout",
+        "cpu-stress-sandbox",
+    ]
+    assert bundle.experiments[0].kind == "StressChaos"
+    assert bundle.experiments[0].target == "Deployment sandbox/checkout"
+    assert bundle.experiments[0].duration == "30m"
+    assert bundle.experiments[1].duration == "5m"
+    assert calls == ["workload", "pods", "events", "logs", "logs", "argocd", "experiments", "commits"]
 
 
 async def test_a_deleted_triggering_pod_does_not_prevent_investigating_the_workload() -> None:
     server, _ = evidence_server()
     async with MCPTools(
         (
-            MCPServerConfig("k8s", "http://evidence/mcp"),
-            MCPServerConfig("argocd", "http://evidence/mcp"),
-            MCPServerConfig("github", "http://evidence/mcp"),
+            MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("argocd", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("github", "http://evidence/mcp", TOKEN),
         ),
         namespace="sandbox",
         owner="example",

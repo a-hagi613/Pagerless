@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -103,6 +106,8 @@ const (
 	ReasonSourcePathChanged = "SourcePathChanged"
 	// ReasonSandboxFileChanged means the Sandbox file that the patch changes was modified.
 	ReasonSandboxFileChanged = "SandboxFileChanged"
+	// ReasonRollbackCommitChanged means the commit a Rollback Proposal reverts is no longer among the allowed commits.
+	ReasonRollbackCommitChanged = "RollbackCommitChanged"
 	// ReasonWorkloadDeleted means the Workload no longer exists.
 	ReasonWorkloadDeleted = "WorkloadDeleted"
 )
@@ -114,6 +119,32 @@ const MaxValidationAttempts = 2
 // AnnotationSourcePath is the annotation on a Workload that names the Sandbox
 // file holding its manifest, relative to the root of the Sandbox.
 const AnnotationSourcePath = "pagerless.dev/source-path"
+
+// AnnotationDependsOnPaths is the annotation on a Workload that names the
+// Sandbox files it depends on but does not own, such as a shared configuration
+// file. The value is a comma-separated list of paths relative to the root of
+// the Sandbox. Rollback may revert a commit that touches one of them.
+const AnnotationDependsOnPaths = "pagerless.dev/depends-on-paths"
+
+// DependsOnPaths returns the Sandbox paths declared in a Workload's
+// annotations, without duplicates and in sorted order.
+func DependsOnPaths(annotations map[string]string) []string {
+	var paths []string
+	seen := make(map[string]struct{})
+	for entry := range strings.SplitSeq(annotations[AnnotationDependsOnPaths], ",") {
+		p := strings.TrimSpace(entry)
+		if p == "" {
+			continue
+		}
+		if _, duplicate := seen[p]; duplicate {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	return paths
+}
 
 // WorkloadKind is the kind of a Workload that a Triage can target.
 // +kubebuilder:validation:Enum=Deployment;StatefulSet
@@ -217,6 +248,9 @@ const MaxSteps = 50
 
 // MaxFindings is the number of Findings kept in a Triage's status.
 const MaxFindings = 20
+
+// MaxNarrativeLength is the longest Narrative that a Triage stores.
+const MaxNarrativeLength = 4000
 
 // Step is one entry of the bounded step summary.
 type Step struct {
@@ -347,11 +381,43 @@ type VerificationCheck struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Usage is the model usage of one Triage's investigation, as the agent reported it. Every field is bounded so
+// that a compromised agent cannot inflate Triage status or the exported metrics.
+type Usage struct {
+	// InputTokens counts every input token the investigation's model calls read, including cached tokens.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=10000000
+	InputTokens int64 `json:"inputTokens"`
+
+	// OutputTokens counts every output token the investigation's model calls wrote.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000000
+	OutputTokens int64 `json:"outputTokens"`
+
+	// CostUSD is the estimated cost of the model calls in United States dollars.
+	// +required
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=100
+	CostUSD float64 `json:"costUSD"`
+}
+
 // TriageStatus is the observed state of a Triage. Only pagerless-server writes it (ADR-0001).
 type TriageStatus struct {
 	// Phase is the stage the Triage is in.
 	// +optional
 	Phase Phase `json:"phase,omitempty"`
+
+	// StartedAt is when pagerless-server put the Triage in the Pending phase. It is the start of the time to
+	// Recovered that Pagerless exports.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// TerminalAt is when the Triage reached its terminal phase. The retention controller deletes the Triage
+	// seven days later. It is empty until the Triage is terminal.
+	// +optional
+	TerminalAt *metav1.Time `json:"terminalAt,omitempty"`
 
 	// Conditions describe the Triage's state in machine-readable form.
 	// +optional
@@ -381,6 +447,10 @@ type TriageStatus struct {
 	// ToolCallCount is the number of tool calls the agent reported.
 	// +optional
 	ToolCallCount int32 `json:"toolCallCount,omitempty"`
+
+	// Usage is the model usage of the investigation, as the agent reported it in its accepted report.
+	// +optional
+	Usage *Usage `json:"usage,omitempty"`
 
 	// Findings are the cited evidence the agent reported.
 	// +optional
@@ -421,6 +491,17 @@ type TriageStatus struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +listType=atomic
 	VerificationChecks []VerificationCheck `json:"verificationChecks,omitempty"`
+
+	// NarrativeJobName is the name of the Job that writes the Narrative after Verification.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	NarrativeJobName string `json:"narrativeJobName,omitempty"`
+
+	// Narrative is the short, purely descriptive account of the Triage written after Verification. It never
+	// affects the outcome.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4000
+	Narrative string `json:"narrative,omitempty"`
 
 	// FollowUpTriage names the Follow-up Triage started after a NotRecovered outcome.
 	// +optional

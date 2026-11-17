@@ -15,23 +15,31 @@ from mcp import Client
 
 from pagerless_agent.agent import Agent, Outcome
 from pagerless_agent.identifiers import ReplayError
+from pagerless_agent.keycloak import FederatedTokenSource, TokenError
 from pagerless_agent.live_context import MCPContextSource
 from pagerless_agent.mcp import MCPServerConfig, MCPTools, connect
 from pagerless_agent.model import ModelProvider
+from pagerless_agent.pricing import HAIKU_5_5_PRICES, NOVA_2_LITE_PRICES
 from pagerless_agent.replay import Recording, RecordingProvider, ReplayProvider
 from pagerless_agent.server import ServerClient
-from pagerless_agent.settings import ConfigError, RuntimeSettings
+from pagerless_agent.settings import (
+    ENV_TASK,
+    TASK_INVESTIGATE,
+    TASK_NARRATIVE,
+    ConfigError,
+    RuntimeSettings,
+)
 
 log = logging.getLogger(__name__)
 
 
-def create_provider(settings: RuntimeSettings) -> ModelProvider:
+def create_provider(provider: str, replay_file: Path) -> ModelProvider:
     """Select Replay by default; live providers use the SDK's environment credential discovery."""
-    if settings.provider == "replay":
-        return ReplayProvider(Recording.load(settings.replay_file))
+    if provider == "replay":
+        return ReplayProvider(Recording.load(replay_file))
     from pagerless_agent.providers import AnthropicProvider, BedrockProvider
 
-    if settings.provider == "anthropic":
+    if provider == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ConfigError("ANTHROPIC_API_KEY is required for the anthropic provider")
         return AnthropicProvider()
@@ -44,9 +52,10 @@ async def run(
     client_factory: Callable[[MCPServerConfig], AbstractAsyncContextManager[Client]] = connect,
     server_http: httpx.AsyncClient | None = None,
     provider: ModelProvider | None = None,
+    token_source: FederatedTokenSource | None = None,
 ) -> Outcome:
     """Investigate, report, and close every connection; Replay still executes MCP reads."""
-    selected = provider or create_provider(settings)
+    selected = provider or create_provider(settings.provider, settings.replay_file)
     recorder = None
     if settings.recording_file is not None:
         if settings.provider == "replay":
@@ -56,8 +65,13 @@ async def run(
         model = ANTHROPIC_MODEL if settings.provider == "anthropic" else BEDROCK_MODEL
         recorder = RecordingProvider(selected, scenario="oom", model=model)
     investigation = settings.investigation
+    gateway = token_source or FederatedTokenSource(
+        settings.keycloak.token_url, settings.keycloak.client_id, settings.keycloak.token_file
+    )
     try:
         async with AsyncExitStack() as stack:
+            if token_source is None:
+                stack.push_async_callback(gateway.aclose)
             server = ServerClient(
                 investigation.server_url,
                 investigation.target.triage,
@@ -67,7 +81,7 @@ async def run(
             stack.push_async_callback(server.aclose)
             tools = await stack.enter_async_context(
                 MCPTools(
-                    settings.servers,
+                    settings.servers(gateway),
                     namespace=investigation.target.namespace,
                     owner=settings.sandbox_owner,
                     repository=settings.sandbox_repository,
@@ -81,9 +95,10 @@ async def run(
                 tools=tools,
                 source=MCPContextSource(tools),
                 server=server,
+                prices=(NOVA_2_LITE_PRICES if settings.provider == "bedrock" else HAIKU_5_5_PRICES),
             ).run()
             if recorder is not None and outcome.kind == "reported":
-                _save_recording(recorder.recording(), settings.recording_file)
+                save_recording(recorder.recording(), settings.recording_file)
             return outcome
     finally:
         close = getattr(selected, "aclose", None)
@@ -91,7 +106,7 @@ async def run(
             await close()
 
 
-def _save_recording(recording: Recording, destination: Path | None) -> None:
+def save_recording(recording: Recording, destination: Path | None) -> None:
     if destination is None:
         return
     # A partial or non-normalizable recording must never replace a valid artifact.
@@ -110,9 +125,18 @@ def _save_recording(recording: Recording, destination: Path | None) -> None:
 
 
 def main(env: Mapping[str, str] | None = None) -> int:
-    """Return the Job's exit code without printing credentials or raw tool outputs."""
+    """Run the Job that the environment selects, and return its exit code."""
+    environment = os.environ if env is None else env
+    task = environment.get(ENV_TASK, TASK_INVESTIGATE)
+    if task == TASK_NARRATIVE:
+        from pagerless_agent.narrative import main as narrative_main
+
+        return narrative_main(environment)
+    if task != TASK_INVESTIGATE:
+        log.error("invalid agent configuration: %s must be investigate or narrative", ENV_TASK)
+        return 1
     try:
-        settings = RuntimeSettings.from_env(os.environ if env is None else env)
+        settings = RuntimeSettings.from_env(environment)
         outcome = asyncio.run(run(settings))
     except ConfigError as error:
         log.error("invalid agent configuration: %s", error)
@@ -121,6 +145,9 @@ def main(env: Mapping[str, str] | None = None) -> int:
         log.error(
             "cannot read or validate the Replay recording; set PAGERLESS_REPLAY_FILE to a captured recording"
         )
+        return 1
+    except TokenError as error:
+        log.error("cannot authenticate to the MCP gateway through Keycloak: %s", error)
         return 1
     except Exception as error:
         log.error("agent startup or recording failed (%s)", type(error).__name__)

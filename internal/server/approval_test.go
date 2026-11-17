@@ -34,6 +34,7 @@ const (
 	bobUser   = "bob@example.com"
 	// forgedUser is pagerless-server's own identity, which no approver may claim.
 	forgedUser    = "system:serviceaccount:pagerless:pagerless-server"
+	serverName    = "pagerless-server"
 	absentHash    = "0000000000000000000000000000000000000000000000000000000000000000"
 	approvalsKind = "triageapprovals"
 )

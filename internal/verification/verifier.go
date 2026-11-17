@@ -19,6 +19,29 @@ import (
 // DefaultWindow is how long the Workload is observed for new restarts and OOMKills (ADR-0006).
 const DefaultWindow = 5 * time.Minute
 
+// WindowEnvironment names the variable that may shorten the observation window.
+// ADR-0006 keeps five minutes for every deployment and every published run; the
+// override exists only so the credential-free CI Replay jobs can check the
+// pipeline quickly, and a live evaluation never sets it.
+const WindowEnvironment = "PAGERLESS_VERIFICATION_WINDOW"
+
+// WindowFromEnvironment returns the observation window that the environment
+// selects, or DefaultWindow when the variable is unset or empty.
+func WindowFromEnvironment(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(WindowEnvironment))
+	if raw == "" {
+		return DefaultWindow, nil
+	}
+	window, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s is not a duration: %w", WindowEnvironment, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %q", WindowEnvironment, raw)
+	}
+	return window, nil
+}
+
 // DefaultApplication is the Argo CD application that deploys the Sandbox.
 const DefaultApplication = "sandbox"
 
@@ -56,26 +79,52 @@ type Verifier struct {
 
 // Synced checks that Argo CD reports the application Synced and Healthy at the merge commit.
 func (v *Verifier) Synced(ctx context.Context, mergeCommit string) (v1alpha1.VerificationCheck, error) {
-	name := v.Application
-	if name == "" {
-		name = DefaultApplication
-	}
+	name := v.application()
 	app, err := v.Applications.Application(ctx, name)
 	if err != nil {
 		return v1alpha1.VerificationCheck{}, err
 	}
-	switch {
-	case mergeCommit == "":
+	if mergeCommit == "" {
 		return failed(v1alpha1.CheckArgoCDSynced, "the pull request has no merge commit yet"), nil
-	case app.SyncStatus != "Synced":
-		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD reports application %s %s", name, orUnknown(app.SyncStatus)), nil
-	case app.Revision != mergeCommit:
-		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD synced application %s to %s, not the merge commit %s",
-			name, orUnknown(app.Revision), mergeCommit), nil
-	case app.HealthStatus != "Healthy":
-		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD reports application %s %s", name, orUnknown(app.HealthStatus)), nil
 	}
-	return passed(v1alpha1.CheckArgoCDSynced, "application %s is Synced and Healthy at %s", name, mergeCommit), nil
+	return syncCheck(name, app, mergeCommit), nil
+}
+
+// LiveSynced checks that Argo CD reports the application Synced and Healthy. A
+// live Action changes no Sandbox commit, so there is no revision to compare;
+// Synced still proves that Argo CD sees no drift from the live change.
+func (v *Verifier) LiveSynced(ctx context.Context) (v1alpha1.VerificationCheck, error) {
+	name := v.application()
+	app, err := v.Applications.Application(ctx, name)
+	if err != nil {
+		return v1alpha1.VerificationCheck{}, err
+	}
+	return syncCheck(name, app, ""), nil
+}
+
+// application returns the name of the Argo CD application that deploys the Sandbox.
+func (v *Verifier) application() string {
+	if v.Application == "" {
+		return DefaultApplication
+	}
+	return v.Application
+}
+
+// syncCheck reports the application's status, comparing its revision when there is one to compare.
+func syncCheck(name string, app *Application, mergeCommit string) v1alpha1.VerificationCheck {
+	switch {
+	case app.SyncStatus != "Synced":
+		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD reports application %s %s", name, orUnknown(app.SyncStatus))
+	case mergeCommit != "" && app.Revision != mergeCommit:
+		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD synced application %s to %s, not the merge commit %s",
+			name, orUnknown(app.Revision), mergeCommit)
+	case app.HealthStatus != "Healthy":
+		return failed(v1alpha1.CheckArgoCDSynced, "Argo CD reports application %s %s", name, orUnknown(app.HealthStatus))
+	case mergeCommit == "":
+		return passed(v1alpha1.CheckArgoCDSynced, "application %s is Synced and Healthy", name)
+	default:
+		return passed(v1alpha1.CheckArgoCDSynced, "application %s is Synced and Healthy at %s", name, mergeCommit)
+	}
 }
 
 // Rollout checks that the Workload's rollout is complete and available: the controller has observed the latest
@@ -205,18 +254,25 @@ func terminationsSince(pod *corev1.Pod, since time.Time) []string {
 
 // selector returns the label selector of the Workload's pods.
 func (v *Verifier) selector(ctx context.Context, ref v1alpha1.WorkloadReference) (labels.Selector, error) {
+	return PodSelector(ctx, v.Reader, ref)
+}
+
+// PodSelector returns the label selector of the Workload's pods.
+func PodSelector(
+	ctx context.Context, reader client.Reader, ref v1alpha1.WorkloadReference,
+) (labels.Selector, error) {
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
 	var raw *metav1.LabelSelector
 	switch ref.Kind {
 	case v1alpha1.WorkloadKindDeployment:
 		var d appsv1.Deployment
-		if err := v.Reader.Get(ctx, key, &d); err != nil {
+		if err := reader.Get(ctx, key, &d); err != nil {
 			return nil, err
 		}
 		raw = d.Spec.Selector
 	case v1alpha1.WorkloadKindStatefulSet:
 		var s appsv1.StatefulSet
-		if err := v.Reader.Get(ctx, key, &s); err != nil {
+		if err := reader.Get(ctx, key, &s); err != nil {
 			return nil, err
 		}
 		raw = s.Spec.Selector

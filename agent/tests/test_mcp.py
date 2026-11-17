@@ -14,6 +14,9 @@ from mcp.types import CallToolResult, TextContent, Tool
 
 from pagerless_agent.mcp import MCPServerConfig, MCPTools, ToolPolicyError
 from pagerless_agent.tools import UnknownToolError
+from tests.fakes import StaticToken
+
+TOKEN = StaticToken()
 
 
 async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
@@ -30,7 +33,7 @@ async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
         raise AssertionError("a write-capable tool must never run")
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -43,7 +46,7 @@ async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
         assert calls == ["checkout-1"]
 
 
-async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_the_server() -> None:
+async def test_namespace_and_repository_boundaries_refuse_calls_before_the_server() -> None:
     server = MCPServer("reads")
     calls: list[dict[str, str]] = []
 
@@ -58,16 +61,19 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         return []
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"), MCPServerConfig("github", "http://github/readonly")),
+        (
+            MCPServerConfig("k8s", "http://k8s/mcp", TOKEN),
+            MCPServerConfig("github", "http://github/readonly", TOKEN),
+        ),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
         client_factory=lambda _: Client(server),
     ) as tools:
         for args in (
-            {"apiVersion": "v1", "kind": "Secret", "name": "token"},
             {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "namespace": "kube-system"},
-            {"apiVersion": "example.dev/v1", "kind": "Pod", "name": "checkout"},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "allNamespaces": True},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "cluster": "other"},
         ):
             assert (await tools.call("k8s__resources_get", args)).is_error
         assert (await tools.call("github__list_commits", {"owner": "other", "repo": "private"})).is_error
@@ -76,6 +82,39 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         assert calls == []
         await tools.call("github__list_commits", {})
         assert calls == [{"owner": "example", "repo": "sandbox"}]
+
+
+async def test_a_secret_read_reaches_the_gateway_so_its_policy_can_refuse_it() -> None:
+    server = MCPServer("Kubernetes")
+    seen: list[dict[str, str]] = []
+
+    @server.tool()
+    def resources_get(apiVersion: str, kind: str, name: str, namespace: str) -> dict[str, str]:  # noqa: N803
+        seen.append({"apiVersion": apiVersion, "kind": kind, "name": name, "namespace": namespace})
+        return {"kind": kind}
+
+    async with MCPTools(
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
+        namespace="sandbox",
+        owner="example",
+        repository="sandbox",
+        client_factory=lambda _: Client(server),
+    ) as tools:
+        await tools.call(
+            "k8s__resources_get",
+            {"apiVersion": "v1", "kind": "Secret", "name": "github-write", "namespace": "sandbox"},
+        )
+
+    # The client forwards the read, so agentgateway's policy is the boundary that
+    # refuses it by argument and logs the denial (ADR-0022, Scenario 10).
+    assert seen == [
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "name": "github-write",
+            "namespace": "sandbox",
+        }
+    ]
 
 
 async def test_complete_objects_are_read_past_a_reduced_summary_table() -> None:
@@ -101,7 +140,7 @@ async def test_complete_objects_are_read_past_a_reduced_summary_table() -> None:
         yield SummaryClient()
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -127,7 +166,7 @@ async def test_structured_evidence_errors_and_large_outputs_preserve_the_tool_bo
         return "untrusted log " * 4000
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"),),
+        (MCPServerConfig("k8s", "http://k8s/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -162,7 +201,7 @@ async def test_partial_initialization_closes_connections_and_never_leaves_tools_
                 closed.append(config.name)
 
     tools = MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"), MCPServerConfig("k8s", "http://other/mcp")),
+        (MCPServerConfig("k8s", "http://k8s/mcp", TOKEN), MCPServerConfig("k8s", "http://other/mcp", TOKEN)),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
