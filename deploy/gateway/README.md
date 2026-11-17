@@ -29,8 +29,9 @@ a direct MCP endpoint.
 mode to the Gateway. It accepts only tokens whose `iss` is
 `http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless` and whose
 `aud` contains `account`, and it fetches the signing keys from the Keycloak
-realm JWKS through the `keycloak` Service. The gateway removes the token before
-forwarding, so no MCP server receives the agent's credential.
+realm JWKS through the `keycloak` Service. The gateway removes the Keycloak
+token before forwarding, so no MCP server receives the agent's Keycloak
+credential.
 
 The agent obtains that token with its projected service account token through
 Keycloak client authentication with a federated JWT. The token's only audience
