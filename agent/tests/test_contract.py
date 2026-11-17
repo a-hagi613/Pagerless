@@ -16,6 +16,8 @@ from pagerless_agent.contract import (
     Report,
     StepEvent,
     encode,
+    normalize_proposal,
+    proposal_tool_schema,
     validation_errors,
 )
 
@@ -24,6 +26,48 @@ REPO = Path(__file__).resolve().parents[2]
 
 def go_source(path: str) -> str:
     return (REPO / path).read_text(encoding="utf-8")
+
+
+class TestProposalToolSchema:
+    def test_the_schema_is_a_flat_object_the_anthropic_api_accepts(self) -> None:
+        schema = proposal_tool_schema()
+        assert schema["type"] == "object"
+        assert not {"oneOf", "anyOf", "allOf"} & schema.keys()
+        assert schema["required"] == ["action"]
+        properties = schema["properties"]
+        assert isinstance(properties, dict)
+        assert properties["action"]["enum"] == list(contract.ACTIONS)
+        parameters = properties["parameters"]
+        assert set(parameters["properties"]) == {"replicas", "container", "requests", "limits", "commit"}
+
+    @pytest.mark.parametrize(
+        ("payload", "action"),
+        [
+            (
+                {
+                    "action": "PatchResources",
+                    "parameters": {"container": "app", "limits": {"memory": "128Mi"}},
+                },
+                "PatchResources",
+            ),
+            ({"action": "Scale", "parameters": {"replicas": 2}}, "Scale"),
+            ({"action": "Rollback", "parameters": {"commit": "a" * 40}}, "Rollback"),
+            ({"action": "RestartWorkload"}, "RestartWorkload"),
+            ({"action": "NoAction"}, "NoAction"),
+        ],
+    )
+    def test_flat_parameters_are_wrapped_for_the_wire_contract(
+        self, payload: dict[str, Any], action: str
+    ) -> None:
+        assert PROPOSED_ACTION.validate_python(normalize_proposal(payload)).action == action
+
+    def test_parameters_already_in_the_wire_shape_are_unchanged(self) -> None:
+        nested = {
+            "action": "PatchResources",
+            "parameters": {"patchResources": {"container": "app", "limits": {"memory": "128Mi"}}},
+        }
+        assert normalize_proposal(nested) is nested
+        assert PROPOSED_ACTION.validate_python(normalize_proposal(nested)).action == "PatchResources"
 
 
 class TestAgreementWithTheServer:

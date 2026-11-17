@@ -145,6 +145,89 @@ ProposedAction = Annotated[
 
 PROPOSED_ACTION: TypeAdapter[ProposedAction] = TypeAdapter(ProposedAction)
 
+_PARAMETER_WRAPPER = {"Scale": "scale", "PatchResources": "patchResources", "Rollback": "rollback"}
+
+
+def normalize_proposal(value: object) -> object:
+    """Wrap the model's per-Action parameter fields in the wire contract's wrapper.
+
+    The tool schema presents one flat ``parameters`` object because Anthropic
+    rejects a top-level union, while the wire contract nests each Action's
+    parameters under its own key. A model that already emits the nested shape is
+    accepted unchanged.
+    """
+    if not isinstance(value, dict):
+        return value
+    action = value.get("action")
+    wrapper = _PARAMETER_WRAPPER.get(action) if isinstance(action, str) else None
+    parameters = value.get("parameters")
+    if wrapper is None or not isinstance(parameters, dict) or wrapper in parameters:
+        return value
+    return {**value, "parameters": {wrapper: parameters}}
+
+
+def proposal_tool_schema() -> dict[str, object]:
+    """Return the Proposal tool schema that the Anthropic API accepts.
+
+    Anthropic rejects a union at the top level of a tool's input schema, so the
+    discriminated union is presented as one object with an action enum and the
+    parameters for each parameterised Action. Pydantic still validates the
+    exact variant, and one revision is allowed when the model picks the wrong
+    parameter object.
+    """
+    quantity = {"type": "string", "pattern": _QUANTITY}
+    resource_map = {
+        "type": "object",
+        "description": "Kubernetes resource name to quantity, for example memory: 128Mi.",
+        "additionalProperties": quantity,
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["action"],
+        "properties": {
+            "action": {"type": "string", "enum": list(ACTIONS)},
+            "parameters": {
+                "type": "object",
+                "description": (
+                    "The fields for the chosen Action and no others: replicas for Scale; "
+                    "container, requests, and limits for PatchResources; commit for Rollback. "
+                    "Omit parameters for RestartWorkload and NoAction."
+                ),
+                "additionalProperties": False,
+                "properties": {
+                    "replicas": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 2**31 - 1,
+                        "description": "Scale: the desired replica count.",
+                    },
+                    "container": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 63,
+                        "description": "PatchResources: the container to change.",
+                    },
+                    "requests": {
+                        **resource_map,
+                        "description": "PatchResources: the resource requests to set, "
+                        "for example memory: 128Mi.",
+                    },
+                    "limits": {
+                        **resource_map,
+                        "description": "PatchResources: the resource limits to set, "
+                        "for example memory: 256Mi.",
+                    },
+                    "commit": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{7,64}$",
+                        "description": "Rollback: the Sandbox commit to revert.",
+                    },
+                },
+            },
+        },
+    }
+
 
 class DiagnosisOutput(_Strict):
     """The structured output of the Diagnosis stage."""

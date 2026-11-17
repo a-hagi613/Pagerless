@@ -44,6 +44,8 @@ from pagerless_agent.contract import (
     ReportError,
     StepEvent,
     StepKind,
+    normalize_proposal,
+    proposal_tool_schema,
     validation_errors,
 )
 from pagerless_agent.model import (
@@ -240,11 +242,11 @@ class Agent:
         if attempt == 1:
             messages.append(Message(role="user", content=prompts.PROPOSE_PROMPT))
         await self._event("Progress", "Writing the Proposal." if attempt == 1 else "Revising the Proposal.")
-        response = await self._ask(Stage.PROPOSE, state, messages, PROPOSED_ACTION.json_schema())
+        response = await self._ask(Stage.PROPOSE, state, messages, proposal_tool_schema())
         messages.append(Message(role="assistant", content=json.dumps(response.structured)))
         update: _State = {"messages": messages, "attempt": attempt}
         try:
-            update["proposal"] = PROPOSED_ACTION.validate_python(response.structured)
+            update["proposal"] = PROPOSED_ACTION.validate_python(normalize_proposal(response.structured))
             update["errors"] = []
         except ValidationError as error:
             update["proposal"] = None

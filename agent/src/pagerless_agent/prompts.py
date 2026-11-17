@@ -49,8 +49,11 @@ DIAGNOSE_PROMPT = (
 )
 
 PROPOSE_PROMPT = (
-    "Now write the Proposal: exactly one Action from the menu, with its parameters. Respond only with the "
-    "structured output."
+    "Now write the Proposal: exactly one Action from the menu, with only the fields that belong to it. "
+    "For PatchResources, parameters are container, requests, and limits, for example "
+    '{"action": "PatchResources", "parameters": {"container": "checkout", "limits": {"memory": "128Mi"}}}. '
+    "For Scale, parameters are replicas. For Rollback, parameters are commit. "
+    "RestartWorkload and NoAction take no parameters. Respond only with the structured output."
 )
 
 
