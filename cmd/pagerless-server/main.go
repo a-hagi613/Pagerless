@@ -198,6 +198,7 @@ func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
 		GitHubURL:         os.Getenv(agentapi.EnvMCPGitHubURL),
 		ReplayFile:        os.Getenv(agentapi.EnvReplayFile),
 		RecordingFile:     os.Getenv(agentapi.EnvRecordingFile),
+		RecordingPVC:      os.Getenv("PAGERLESS_RECORDING_PVC"),
 		SandboxOwner:      os.Getenv(agentapi.EnvSandboxOwner),
 		SandboxRepo:       os.Getenv(agentapi.EnvSandboxRepo),
 		ArgoCDApplication: os.Getenv(agentapi.EnvArgoCDApplication),

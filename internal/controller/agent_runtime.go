@@ -1,10 +1,40 @@
 package controller
 
 import (
+	"errors"
+	"path"
+	"strings"
+
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 )
+
+// ValidateRecording refuses configurations whose output cannot be retrieved after a Job completes.
+// The claim must already exist in the Job's namespace; provisioning it is an operator action.
+func (c AgentRuntimeConfig) ValidateRecording() error {
+	if c.RecordingFile == "" && c.RecordingPVC == "" {
+		return nil
+	}
+	if c.RecordingPVC == "" {
+		return errors.New("PAGERLESS_RECORDING_PVC is required for a server-managed recording")
+	}
+	if c.RecordingFile == "" {
+		return errors.New("PAGERLESS_RECORDING_FILE is required when PAGERLESS_RECORDING_PVC is set")
+	}
+	if c.Provider != "anthropic" && c.Provider != "bedrock" {
+		return errors.New("a server-managed recording requires a live model provider: anthropic or bedrock")
+	}
+	if errs := validation.IsDNS1123Subdomain(c.RecordingPVC); len(errs) > 0 {
+		return errors.New("PAGERLESS_RECORDING_PVC must name an existing PersistentVolumeClaim in the Job's namespace")
+	}
+	if !path.IsAbs(c.RecordingFile) || path.Clean(c.RecordingFile) != c.RecordingFile ||
+		!strings.HasPrefix(c.RecordingFile, "/recordings/") || strings.ContainsRune(c.RecordingFile, 0) {
+		return errors.New("PAGERLESS_RECORDING_FILE must name an absolute file strictly inside /recordings without traversal")
+	}
+	return nil
+}
 
 const (
 	// AgentCredentialsSecret holds only the selected provider's inference credentials.
@@ -28,6 +58,8 @@ type AgentRuntimeConfig struct {
 	ArgoCDApplication string
 	AllowedNamespaces string
 	AWSRegion         string
+	// RecordingPVC names an existing claim in the agent Job's namespace, mounted at /recordings.
+	RecordingPVC string
 }
 
 func (c AgentRuntimeConfig) environment() []corev1.EnvVar {

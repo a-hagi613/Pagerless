@@ -78,7 +78,7 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 		"app.kubernetes.io/name": "pagerless-agent",
 		TriageLabel:              triage.Name,
 	}
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		Name:      AgentJobName(triage.Name),
 		Namespace: triage.Namespace,
 		Labels:    labels,
@@ -140,6 +140,17 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 			},
 		},
 	}
+	if cfg.Runtime.RecordingPVC != "" {
+		pod := &job.Spec.Template.Spec
+		pod.SecurityContext.FSGroup = new(int64(agentUID))
+		pod.Volumes = append(pod.Volumes, corev1.Volume{
+			Name:                  "recordings",
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: cfg.Runtime.RecordingPVC},
+		})
+		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: "recordings", MountPath: "/recordings"})
+	}
+	return job
 }
 
 // jobOutcome describes how an agent Job ended.

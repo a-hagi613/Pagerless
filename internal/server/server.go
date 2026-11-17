@@ -158,7 +158,7 @@ func (c Config) validate() error {
 	case c.WebhookListener != nil && c.WebhookCertDir == "":
 		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
-	return nil
+	return c.AgentRuntime.ValidateRecording()
 }
 
 func (c Config) withDefaults() Config {

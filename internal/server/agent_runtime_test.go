@@ -1,18 +1,31 @@
 package server_test
 
 import (
+	"net"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
+const (
+	anthropicProvider    = "anthropic"
+	recordingPVCVariable = "PAGERLESS_RECORDING_PVC"
+	recordingFile        = "/recordings/oom.json"
+	recordingClaimName   = "pagerless-replay-capture"
+)
+
 func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *testing.T) {
-	for _, provider := range []string{"replay", "anthropic", "bedrock"} {
+	for _, provider := range []string{"replay", anthropicProvider, "bedrock"} {
 		t.Run(provider, func(t *testing.T) {
 			runtime := controller.AgentRuntimeConfig{
 				Provider: provider, KubernetesURL: "http://mcp-kubernetes:8080/mcp",
@@ -29,6 +42,11 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 				t.Fatal(err)
 			}
 			pod := job.Spec.Template.Spec
+			for _, volume := range pod.Volumes {
+				if volume.PersistentVolumeClaim != nil {
+					t.Error("a Job without recording configuration must not mount a claim")
+				}
+			}
 			if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
 				t.Fatal("the agent must not mount an API-server-audience token")
 			}
@@ -62,7 +80,7 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 			} {
 				requireSecretKey(t, variables[name], controller.MCPClientTokensSecret, key, false)
 			}
-			if provider == "anthropic" {
+			if provider == anthropicProvider {
 				requireSecretKey(t, variables["ANTHROPIC_API_KEY"], controller.AgentCredentialsSecret, "ANTHROPIC_API_KEY", false)
 			} else if _, exists := variables["ANTHROPIC_API_KEY"]; exists {
 				t.Errorf("%s Jobs must not receive an Anthropic API key", provider)
@@ -80,6 +98,140 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 				}
 			}
 		})
+	}
+}
+
+func TestAgentRecordingUsesOnlyTheExistingClaimAndPreservesTokenIsolation(t *testing.T) {
+	env := testenv.Start(t, testenv.WithAgentRuntime(controller.AgentRuntimeConfig{
+		Provider: anthropicProvider, RecordingPVC: recordingClaimName, RecordingFile: recordingFile,
+	}))
+	claim := &corev1.PersistentVolumeClaim{
+		Name: recordingClaimName, Namespace: testenv.Namespace,
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("128Mi")},
+			},
+		},
+	}
+	if err := env.Client.Create(t.Context(), claim); err != nil {
+		t.Fatal(err)
+	}
+	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	tr := env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
+	job, err := env.GetJob(t.Context(), tr.Status.JobName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := job.Spec.Template.Spec
+	if pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 65532 {
+		t.Fatal("the recording claim must be writable by filesystem group 65532")
+	}
+	requireRecordingTokenIsolation(t, pod)
+	container := pod.Containers[0]
+	if container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+		t.Fatal("recording must not make the root filesystem writable")
+	}
+	var recordingVolume string
+	for _, volume := range pod.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			if volume.PersistentVolumeClaim.ClaimName != recordingClaimName || volume.PersistentVolumeClaim.ReadOnly {
+				t.Errorf("unexpected recording claim reference: %+v", volume.PersistentVolumeClaim)
+			}
+			recordingVolume = volume.Name
+		}
+	}
+	if recordingVolume == "" {
+		t.Fatal("the recording Job must reference its configured claim")
+	}
+	foundMount := false
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == recordingVolume {
+			foundMount = true
+			if mount.MountPath != "/recordings" || mount.ReadOnly {
+				t.Errorf("recording mount = %+v, want writable /recordings", mount)
+			}
+		}
+	}
+	if !foundMount {
+		t.Error("the agent container must mount the recording claim")
+	}
+	foundPath := false
+	for _, variable := range container.Env {
+		if variable.Name == agentapi.EnvRecordingFile && variable.Value == recordingFile {
+			foundPath = true
+		}
+		if variable.Name == recordingPVCVariable {
+			t.Error("the server's storage setting is not part of the agent environment contract")
+		}
+	}
+	if !foundPath {
+		t.Error("the agent must receive the configured recording file")
+	}
+	var claims corev1.PersistentVolumeClaimList
+	if err := env.Client.List(t.Context(), &claims, client.InNamespace(testenv.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(claims.Items) != 1 || claims.Items[0].Name != recordingClaimName {
+		t.Error("recording must reuse the existing claim without provisioning more claims")
+	}
+}
+
+func TestAgentRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *testing.T) {
+	cases := []struct {
+		name, provider, claim, file, want string
+	}{
+		{"no claim", anthropicProvider, "", "/tmp/oom.json", recordingPVCVariable},
+		{"no file", anthropicProvider, recordingClaimName, "", agentapi.EnvRecordingFile},
+		{"Replay", "replay", recordingClaimName, recordingFile, "live model provider"},
+		{"default Replay", "", recordingClaimName, recordingFile, "live model provider"},
+		{"invalid claim", anthropicProvider, "NotValid", recordingFile, recordingPVCVariable},
+		{"relative path", anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
+		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
+		{"traversal", anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
+		{"directory", anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			token := func() (string, error) { return "unused", nil }
+			_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
+				Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
+				ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
+				ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
+				AgentRuntime: controller.AgentRuntimeConfig{
+					Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
+				},
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("configuration error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func requireRecordingTokenIsolation(t *testing.T, pod corev1.PodSpec) {
+	t.Helper()
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Fatal("recording must not enable the default API token")
+	}
+	var audiences []string
+	for _, volume := range pod.Volumes {
+		if volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if source.ServiceAccountToken != nil {
+				audiences = append(audiences, source.ServiceAccountToken.Audience)
+			}
+		}
+	}
+	if len(audiences) != 1 || audiences[0] != agentapi.Audience {
+		t.Errorf("recording token audiences = %v, want only the report API audience", audiences)
 	}
 }
 

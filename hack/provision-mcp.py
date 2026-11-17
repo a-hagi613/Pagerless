@@ -179,7 +179,7 @@ def main():
         "PAGERLESS_ALLOWED_NAMESPACES": "sandbox",
         "PAGERLESS_SANDBOX_URL": os.environ["SANDBOX_URL"],
     }
-    for name in ("PAGERLESS_RECORDING_FILE", "AWS_REGION"):
+    for name in ("PAGERLESS_RECORDING_FILE", "PAGERLESS_RECORDING_PVC", "AWS_REGION"):
         if os.environ.get(name):
             values[name] = os.environ[name]
     kubectl("apply", "-f", "-", data={
