@@ -36,7 +36,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 go run "$script_dir/certgen" "$state/certs"
-read_token="$("${python[@]}" -c 'import secrets; print("e2e-read-" + secrets.token_urlsafe(32))')"
+# The GitHub MCP server accepts only GitHub-shaped bearer tokens, so the
+# disposable read token carries a GitHub prefix and an unmistakable e2e marker.
+read_token="$("${python[@]}" -c 'import secrets; print("ghp_e2e" + secrets.token_hex(16))')"
 write_token="$("${python[@]}" -c 'import secrets; print("e2e-write-" + secrets.token_urlsafe(32))')"
 archive="$state/kubeconform.tar.gz"
 curl --fail --silent --show-error --location --output "$archive" https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz

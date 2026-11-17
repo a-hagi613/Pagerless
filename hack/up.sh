@@ -28,7 +28,7 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	[ "$PAGERLESS_GITHUB_REPOSITORY" = "$PAGERLESS_E2E_REPOSITORY" ] ||
 		die "the Executor repository must match the isolated adapter repository."
 	[[ "$PAGERLESS_E2E_TOKEN" == e2e-write-* && "$PAGERLESS_E2E_TOKEN" = "$GITHUB_WRITE_TOKEN" &&
-		"$GITHUB_READ_TOKEN" == e2e-read-* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
+		"$GITHUB_READ_TOKEN" == ghp_e2e* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
 		die "E2E bootstrap requires distinct disposable adapter tokens from its isolated configuration."
 	[ "$PAGERLESS_E2E_GIT_HOST" = sandbox-adapter.pagerless-e2e.svc ] ||
 		die "E2E adapter Git host must be the isolated Sandbox adapter Service."

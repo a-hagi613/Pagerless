@@ -15,7 +15,7 @@ ENVIRONMENT = {
     "PAGERLESS_E2E_CONTROL_URL": "http://127.0.0.1:18080",
     "PAGERLESS_E2E_GIT_URL": "https://localhost:18443/git/pagerless-test/sandbox.git",
     "PAGERLESS_E2E_TOKEN": "e2e-write-disposable",
-    "GITHUB_READ_TOKEN": "e2e-read-disposable",
+    "GITHUB_READ_TOKEN": "ghp_e2e-disposable",
     "PAGERLESS_E2E_CA_FILE": "/private/ca.crt",
     "PAGERLESS_E2E_KUBECONFORM_BIN": "/private/kubeconform",
 }
@@ -62,7 +62,7 @@ class RequiredCheckTests(unittest.TestCase):
         git_env = clone.kwargs["env"]
         self.assertEqual(git_env["GIT_SSL_CAINFO"], ENVIRONMENT["PAGERLESS_E2E_CA_FILE"])
         auth = git_env["GIT_CONFIG_VALUE_0"].removeprefix("Authorization: Basic ")
-        self.assertEqual(base64.b64decode(auth).decode(), "pagerless:e2e-read-disposable")
+        self.assertEqual(base64.b64decode(auth).decode(), "pagerless:ghp_e2e-disposable")
         self.assertNotIn("e2e-write-disposable", " ".join(clone.args[0]))
 
     @patch("checks.request", return_value=PULL_REQUEST)

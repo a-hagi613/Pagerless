@@ -34,8 +34,8 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 		die "the adapter Git and API URLs must use the same loopback host and port."
 	[[ "$SANDBOX_URL" == "https://sandbox-adapter.pagerless-e2e.svc:8443/git/$PAGERLESS_E2E_REPOSITORY.git" ]] ||
 		die "the configured Sandbox must be the isolated pagerless-e2e adapter Service."
-	[[ "$PAGERLESS_E2E_TOKEN" == e2e-write-* && "$GITHUB_WRITE_TOKEN" == "$PAGERLESS_E2E_TOKEN" && "$GITHUB_READ_TOKEN" == e2e-read-* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
-		die "the adapter requires distinct disposable e2e-read-* and e2e-write-* tokens in the isolated configuration."
+	[[ "$PAGERLESS_E2E_TOKEN" == e2e-write-* && "$GITHUB_WRITE_TOKEN" == "$PAGERLESS_E2E_TOKEN" && "$GITHUB_READ_TOKEN" == ghp_e2e* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
+		die "the adapter requires a distinct disposable ghp_e2e* read token and e2e-write-* write token in the isolated configuration."
 	[ -r "$PAGERLESS_E2E_CA_FILE" ] || die "the adapter CA certificate is not readable."
 	[ -x "$PAGERLESS_E2E_KUBECONFORM_BIN" ] || die "the pinned kubeconform binary is not executable."
 	"$PAGERLESS_E2E_KUBECONFORM_BIN" -v 2>&1 | grep -q 'v0.8.0' ||

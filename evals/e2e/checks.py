@@ -66,7 +66,9 @@ def validate_head(pr: dict[str, Any], environment: dict[str, str]) -> str:
     ):
         raise RuntimeError("required checks may only read the loopback HTTPS adapter repository")
     token = environment["GITHUB_READ_TOKEN"]
-    if not token.startswith("e2e-read-"):
+    # The GitHub MCP server forwards only GitHub-shaped bearer tokens, and the
+    # e2e marker keeps a disposable credential distinguishable from a real one.
+    if not token.startswith("ghp_e2e"):
         raise RuntimeError("required checks require the disposable adapter read token")
     kubeconform = environment["PAGERLESS_E2E_KUBECONFORM_BIN"]
     if command([kubeconform, "-v"]) != "v0.8.0":
