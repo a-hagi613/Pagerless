@@ -2,7 +2,7 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 implementation is in progress. The operator, CLI, read-only MCP integrations, model providers, Validation, Executor and deterministic Verification are implemented. A genuine live OOMKilled Replay recording, complete kind end-to-end validation, and publication of the pinned runtime images remain release gates. The dashboard, agentgateway, Keycloak and EKS deployment are planned for later phases.
+> **Project status:** Phase 1 is complete and validated locally: a fresh kind run and CI both reach Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard, agentgateway, Keycloak and EKS deployment are later phases.
 
 ## The Phase 1 loop
 
@@ -61,7 +61,7 @@ Install a reachable Docker engine, GNU make, Git with a configured commit identi
 
 1. Create a repository from the [Sandbox template](https://github.com/a-hagi613/pagerless-sandbox). Enable auto-merge and require its `kubeconform` check on `main`, following that repository's setup instructions.
 2. Prepare two fine-grained GitHub tokens scoped to that copy: a read-only token with Contents read access, and a separate write token with Contents and Pull requests write access. Replay avoids model charges; it still performs real MCP reads and real Sandbox GitHub operations in this workflow.
-3. Run the local bootstrap. It prompts for the Sandbox URL, tokens and model provider, defaulting to `replay`, and preserves them in the ignored root `.env`. The ordinary `make up` path uses the pinned GHCR references; it requires those versioned images to be published and publicly pullable. Until that release gate is verified, use `make dev` to build and load this checkout's images.
+3. Run the local bootstrap. It prompts for the Sandbox URL, tokens and model provider, defaulting to `replay`, and preserves them in the ignored root `.env`. The ordinary `make up` path uses the published, publicly pullable `0.1.0` GHCR references; `make dev` builds and loads this checkout's images instead.
 
 Argo CD reads platform manifests from Git even when images are built locally. Push the intended commit before selecting it with `PLATFORM_REVISION`; set `PLATFORM_REPO_URL` as well when using another platform repository. From a checkout at that pushed commit:
 
@@ -128,11 +128,11 @@ The observability stack runs in `monitoring`. Grafana has Loki and Tempo data so
 kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, credential-free kind integration, and versioned runtime image publication on release tags. Public image availability and the complete end-to-end release result are not yet established by this README.
+Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, credential-free kind integration, and versioned runtime image publication on release tags. The `v0.1.0` tag published the server, Executor and agent images, and anonymous registry pulls succeed for all three.
 
 ## Roadmap
 
-1. **Phase 1: core loop locally.** Complete the genuine live OOMKilled capture, free Replay validation through Recovered on kind, and versioned image publication. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
+1. **Phase 1: core loop locally.** Complete: the genuine live OOMKilled capture, free Replay validation through Recovered on kind, credential-free end-to-end CI, and the public `v0.1.0` runtime images. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
 2. **Phase 2: complete the local product.** Add the custom React/shadcn dashboard with embedded Grafana panels, SQLite history, RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway and Keycloak, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
 3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
 
