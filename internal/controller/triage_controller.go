@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,11 +58,20 @@ func (r *TriageReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Reconcile advances one Triage.
 func (r *TriageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var t v1alpha1.Triage
-	if err := r.Client.Get(ctx, req.NamespacedName, &t); err != nil {
+	if err := r.Status.Reader.Get(ctx, req.NamespacedName, &t); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !t.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
+	}
+	if duplicateFailure(&t) {
+		return ctrl.Result{}, r.deleteDuplicateJob(ctx, &t)
+	}
+	if t.Status.Phase.IsActive() {
+		canonical, err := r.resolveDuplicates(ctx, &t)
+		if err != nil || !canonical {
+			return ctrl.Result{}, err
+		}
 	}
 
 	switch t.Status.Phase {
@@ -121,7 +131,7 @@ func (r *TriageReconciler) startInvestigation(ctx context.Context, t *v1alpha1.T
 			return fmt.Errorf("agent Job %s exists and is not owned by Triage %s", existing.Name, t.Name)
 		}
 	}
-	_, err := r.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	updated, err := r.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
 		if latest.Status.Phase != v1alpha1.PhasePending {
 			return nil
 		}
@@ -129,7 +139,75 @@ func (r *TriageReconciler) startInvestigation(ctx context.Context, t *v1alpha1.T
 		latest.Status.JobName = job.Name
 		return nil
 	})
+	if err == nil && duplicateFailure(updated) {
+		return r.deleteDuplicateJob(ctx, updated)
+	}
 	return err
+}
+
+// resolveDuplicates repairs the admission race before allowing more investigation work. It can run for any
+// Active Triage, so a late tie cannot leave an earlier loser's agent running without another status update.
+func (r *TriageReconciler) resolveDuplicates(ctx context.Context, current *v1alpha1.Triage) (bool, error) {
+	winner, duplicates, err := triage.CanonicalActive(ctx, r.Status.Reader, current.Namespace, current.Spec.Workload)
+	if err != nil || winner == nil {
+		return false, err
+	}
+	for i := range duplicates {
+		if err := r.failDuplicate(ctx, &duplicates[i], winner); err != nil {
+			return false, err
+		}
+	}
+	return winner.UID == current.UID, nil
+}
+
+func (r *TriageReconciler) failDuplicate(ctx context.Context, duplicate, winner *v1alpha1.Triage) error {
+	updated, err := r.Status.Update(ctx, client.ObjectKeyFromObject(duplicate), func(latest *v1alpha1.Triage) error {
+		if latest.UID != duplicate.UID || !latest.Status.Phase.IsActive() {
+			return nil
+		}
+		canonical, _, err := triage.CanonicalActive(ctx, r.Status.Reader, latest.Namespace, latest.Spec.Workload)
+		if err != nil {
+			return err
+		}
+		if canonical == nil || canonical.UID != winner.UID || triage.HasApprovedWork(latest) {
+			return errors.New("the canonical Active Triage changed; retry duplicate resolution")
+		}
+		latest.Status.Phase = v1alpha1.PhaseFailed
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type: v1alpha1.ConditionFailed, Status: metav1.ConditionTrue, Reason: v1alpha1.ReasonDuplicate,
+			Message:            fmt.Sprintf("the Workload already has canonical Active Triage %q", winner.Name),
+			ObservedGeneration: latest.Generation,
+		})
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if duplicateFailure(updated) {
+		return r.deleteDuplicateJob(ctx, updated)
+	}
+	return nil
+}
+
+func duplicateFailure(tr *v1alpha1.Triage) bool {
+	condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionFailed)
+	return tr.Status.Phase == v1alpha1.PhaseFailed && condition != nil && condition.Reason == v1alpha1.ReasonDuplicate
+}
+
+// deleteDuplicateJob never deletes a name collision or a replaced Job: ownership and a UID precondition bind
+// deletion to this losing Triage. An owned Job created after the failure is cleaned on its Owns watch event.
+func (r *TriageReconciler) deleteDuplicateJob(ctx context.Context, tr *v1alpha1.Triage) error {
+	var job batchv1.Job
+	key := client.ObjectKey{Namespace: tr.Namespace, Name: AgentJobName(tr.Name)}
+	if err := r.Status.Reader.Get(ctx, key, &job); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if !metav1.IsControlledBy(&job, tr) {
+		return nil
+	}
+	err := r.Client.Delete(ctx, &job, client.Preconditions{UID: &job.UID},
+		client.PropagationPolicy(metav1.DeletePropagationBackground))
+	return client.IgnoreNotFound(err)
 }
 
 // watchAgentJob ends the Triage as Failed when its Job has ended or vanished

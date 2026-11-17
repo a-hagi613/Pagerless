@@ -10,12 +10,14 @@ import (
 
 	admissionv1 "k8s.io/api/admission/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/triage"
 )
 
 // Webhook paths for TriageApprovals.
@@ -67,10 +69,8 @@ type StalenessChecker interface {
 // approver that is not the requester, so a missing or bypassed stamping
 // webhook cannot let a forged identity through.
 //
-// Admissions are serialized and read the API server directly, so two decisions
-// created one after the other cannot both pass. Two created within the same
-// instant, before the first is stored, can; the controller then applies
-// whichever it processes first and ignores the other.
+// Every decision for the same Triage identity and exact hash must use one deterministic resource name. The
+// API server's atomic name reservation therefore admits at most one decision even when admissions overlap.
 type ApprovalValidator struct {
 	// Reader reads Triages and TriageApprovals directly from the API server.
 	Reader client.Reader
@@ -113,8 +113,33 @@ func (v *ApprovalValidator) Handle(ctx context.Context, req admission.Request) a
 		}
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("get Triage: %w", err))
 	}
+	name := v1alpha1.TriageApprovalName(&tr, approval.Spec.ProposalHash)
+	if approval.Name != name || approval.GenerateName != "" {
+		return admission.Denied(fmt.Sprintf(
+			"a decision must use deterministic metadata.name %q with no metadata.generateName", name))
+	}
+	var existing v1alpha1.TriageApproval
+	if err := v.Reader.Get(ctx, types.NamespacedName{Namespace: v.Namespace, Name: name}, &existing); err == nil {
+		response := admission.Denied(fmt.Sprintf("TriageApproval %s already exists for Triage %s in phase %s",
+			name, tr.Name, phaseName(&tr)))
+		response.Result.Reason = metav1.StatusReasonAlreadyExists
+		response.Result.Code = http.StatusConflict
+		response.Result.Details = &metav1.StatusDetails{
+			Group: v1alpha1.GroupVersion.Group, Kind: "triageapprovals", Name: name,
+		}
+		return response
+	} else if !apierrors.IsNotFound(err) {
+		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("get TriageApproval: %w", err))
+	}
 	if refusal := v.checkProposal(ctx, &tr, &approval); refusal != nil {
 		return *refusal
+	}
+	winner, _, err := triage.CanonicalActive(ctx, v.Reader, tr.Namespace, tr.Spec.Workload)
+	if err != nil {
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+	if winner == nil || winner.UID != tr.UID {
+		return admission.Denied("only the canonical Active Triage for the Workload accepts a decision")
 	}
 	return admission.Allowed("")
 }

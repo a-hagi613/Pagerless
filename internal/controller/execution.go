@@ -117,6 +117,13 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 	if tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != "" {
 		return ctrl.Result{}, nil
 	}
+	winner, _, err := triage.CanonicalActive(ctx, r.Status.Reader, tr.Namespace, tr.Spec.Workload)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("check the canonical Active Triage before execution: %w", err)
+	}
+	if winner == nil || winner.UID != tr.UID {
+		return ctrl.Result{}, nil
+	}
 	log := logf.FromContext(ctx).WithValues("triage", key.Name)
 
 	response, err := r.Executor.Execute(ctx, key.Name, tr.Status.Proposal.Hash)

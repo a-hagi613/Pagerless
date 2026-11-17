@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,14 +10,22 @@ import (
 	"testing"
 	"time"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	webhookadmission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/admission"
+	"github.com/a-hagi613/pagerless/internal/proposal"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
@@ -30,7 +39,7 @@ const (
 )
 
 // writeVerbs are the verbs that change a resource. An approver may use only the first, on TriageApprovals.
-var writeVerbs = []string{"create", "update", "patch", "delete"}
+var writeVerbs = []string{"create", updateVerb, "patch", "delete"}
 
 // decision returns a TriageApproval for the Triage's current Proposal.
 func decision(tr *v1alpha1.Triage, outcome v1alpha1.DecisionOutcome, reason string) *v1alpha1.TriageApproval {
@@ -39,7 +48,7 @@ func decision(tr *v1alpha1.Triage, outcome v1alpha1.DecisionOutcome, reason stri
 		hash = tr.Status.Proposal.Hash
 	}
 	return &v1alpha1.TriageApproval{
-		GenerateName: "decision-", Namespace: testenv.Namespace,
+		Name: v1alpha1.TriageApprovalName(tr, hash), Namespace: testenv.Namespace,
 		Spec: v1alpha1.TriageApprovalSpec{
 			Triage:       tr.Name,
 			ProposalHash: hash,
@@ -133,14 +142,15 @@ func TestApprovalWorksFromAPlainManifest(t *testing.T) {
 	manifest := fmt.Sprintf(`apiVersion: pagerless.dev/v1alpha1
 kind: TriageApproval
 metadata:
-  name: approve-%s
+  name: %s
   namespace: %s
 spec:
   triage: %s
   proposalHash: %s
   decision: Approved
   reason: applied with kubectl
-`, proposed.Name, testenv.Namespace, proposed.Name, proposed.Status.Proposal.Hash)
+`, v1alpha1.TriageApprovalName(proposed, proposed.Status.Proposal.Hash),
+		testenv.Namespace, proposed.Name, proposed.Status.Proposal.Hash)
 	var obj unstructured.Unstructured
 	if err := yaml.Unmarshal([]byte(manifest), &obj.Object); err != nil {
 		t.Fatal(err)
@@ -215,6 +225,7 @@ func TestDecisionsThatDoNotBindToTheCurrentProposalAreRefused(t *testing.T) {
 		proposed := proposedTriage(t, env, "mismatch")
 		bad := decision(proposed, v1alpha1.DecisionApproved, "")
 		bad.Spec.ProposalHash = absentHash
+		bad.Name = v1alpha1.TriageApprovalName(proposed, absentHash)
 		requireRefusal(t, alice.Create(t.Context(), bad), "does not match")
 		requireUndecided(t, env, proposed.Name, v1alpha1.PhaseProposed)
 	})
@@ -225,6 +236,7 @@ func TestDecisionsThatDoNotBindToTheCurrentProposalAreRefused(t *testing.T) {
 		other := proposedTriage(t, env, "elsewhere-other")
 		bad := decision(mine, v1alpha1.DecisionApproved, "")
 		bad.Spec.ProposalHash = other.Status.Proposal.Hash
+		bad.Name = v1alpha1.TriageApprovalName(mine, bad.Spec.ProposalHash)
 		requireRefusal(t, alice.Create(t.Context(), bad), "does not match")
 		requireUndecided(t, env, mine.Name, v1alpha1.PhaseProposed)
 	})
@@ -259,15 +271,52 @@ func TestDecisionsThatDoNotBindToTheCurrentProposalAreRefused(t *testing.T) {
 
 func TestApprovalOfAnExpiredProposalIsRefusedBeforeTheTriageIsMarkedExpired(t *testing.T) {
 	t.Parallel()
-	// The default poll interval keeps the controller from marking the Triage Expired first.
 	env := testenv.Start(t, withPatchResources())
 	deploy(t, env, workload{name: checkout})
 	proposed := proposedTriage(t, env, checkout)
 	alice := approverClient(t, env, aliceUser)
 
-	env.Clock.Step(time.Hour)
-	requireRefusal(t, alice.Create(t.Context(), decision(proposed, v1alpha1.DecisionApproved, "")), "expired")
+	// Drive admission's clock independently so the stored Triage is still Proposed.
+	// Advancing the shared clock would race the controller's first Proposed reconciliation.
+	expiredClock := clocktesting.NewFakeClock(proposed.Status.Proposal.ExpiresAt.Time)
+	validator := admission.ApprovalValidator{
+		Reader: env.Client, Namespace: testenv.Namespace, Clock: expiredClock,
+		Proposals: proposal.NewPipeline(expiredClock, nil),
+	}
+	approval := decision(proposed, v1alpha1.DecisionApproved, "")
+	approval.Spec.Approver = aliceUser
+	raw, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := validator.Handle(t.Context(), webhookadmission.Request{
+		Operation: admissionv1.Create, Namespace: testenv.Namespace,
+		Object: runtime.RawExtension{Raw: raw}, UserInfo: authenticationv1.UserInfo{Username: aliceUser},
+	})
+	if response.Allowed || response.Result == nil || !strings.Contains(response.Result.Message, "expired") {
+		t.Fatalf("expired admission response = %+v, want an expiry refusal", response)
+	}
 	requireUndecided(t, env, proposed.Name, v1alpha1.PhaseProposed)
+
+	// The actual API path must also refuse the decision, regardless of whether
+	// the independent expiry controller has already advanced the phase.
+	env.Clock.Step(time.Hour)
+	err = alice.Create(t.Context(), decision(proposed, v1alpha1.DecisionApproved, ""))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "expired") {
+		t.Fatalf("expired API decision = %v, want an expiry refusal", err)
+	}
+	after := env.Get(t, proposed.Name)
+	if after.Status.Decision != nil ||
+		(after.Status.Phase != v1alpha1.PhaseProposed && after.Status.Phase != v1alpha1.PhaseExpired) {
+		t.Fatalf("after expiry refusal: phase = %s, decision = %+v", after.Status.Phase, after.Status.Decision)
+	}
+	var stored v1alpha1.TriageApprovalList
+	if err := env.Client.List(t.Context(), &stored, client.InNamespace(testenv.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Items) != 0 {
+		t.Fatalf("expired decisions stored = %d, want none", len(stored.Items))
+	}
 }
 
 func TestApprovalOfARevalidatedProposalNeedsTheNewHash(t *testing.T) {
@@ -307,11 +356,15 @@ func TestADecisionIsAppliedOnceAndCannotBeReplayed(t *testing.T) {
 
 	t.Run("the same Approval again", func(t *testing.T) {
 		again := decision(proposed, v1alpha1.DecisionApproved, "")
-		requireRefusal(t, bob.Create(t.Context(), again), "only a Proposed Triage")
+		if err := bob.Create(t.Context(), again); !apierrors.IsAlreadyExists(err) {
+			t.Errorf("repeated Approval returned %v, want AlreadyExists", err)
+		}
 	})
 	t.Run("a Rejection after an Approval", func(t *testing.T) {
 		reversal := decision(proposed, v1alpha1.DecisionRejected, "changed my mind")
-		requireRefusal(t, bob.Create(t.Context(), reversal), "only a Proposed Triage")
+		if err := bob.Create(t.Context(), reversal); !apierrors.IsAlreadyExists(err) {
+			t.Errorf("opposing decision returned %v, want AlreadyExists", err)
+		}
 	})
 	got := env.Get(t, proposed.Name).Status
 	// The server hands an Approved Triage to the Executor, so it may already be Executing.
@@ -329,14 +382,26 @@ func TestSimultaneousDecisionsApplyExactlyOne(t *testing.T) {
 	alice := approverClient(t, env, aliceUser)
 
 	outcomes := []v1alpha1.DecisionOutcome{v1alpha1.DecisionApproved, v1alpha1.DecisionRejected}
+	results := make(chan error, 8)
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Go(func() {
-			// Refusals are expected for most of these; the admitted ones race.
-			_ = alice.Create(context.WithoutCancel(t.Context()), decision(proposed, outcomes[i%2], "race"))
+			results <- alice.Create(context.WithoutCancel(t.Context()), decision(proposed, outcomes[i%2], "race"))
 		})
 	}
 	wg.Wait()
+	close(results)
+	created := 0
+	for err := range results {
+		if err == nil {
+			created++
+		} else if !apierrors.IsAlreadyExists(err) {
+			t.Errorf("a competing decision returned %v, want AlreadyExists", err)
+		}
+	}
+	if created != 1 {
+		t.Fatalf("%d decisions were created for the same Proposal, want exactly one", created)
+	}
 
 	tr := env.WaitFor(t, proposed.Name, "a decision is applied", func(tr *v1alpha1.Triage) bool {
 		return tr.Status.Phase != v1alpha1.PhaseProposed
@@ -359,6 +424,31 @@ func TestSimultaneousDecisionsApplyExactlyOne(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if again := env.Get(t, proposed.Name).Status; !matches(again) || *again.Decision != *first {
 		t.Errorf("the decision changed from %+v (%s) to %+v (%s)", first, tr.Status.Phase, again.Decision, again.Phase)
+	}
+	var decisions v1alpha1.TriageApprovalList
+	if err := env.Client.List(t.Context(), &decisions, client.InNamespace(testenv.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions.Items) != 1 {
+		t.Errorf("stored %d TriageApprovals for a single Proposal, want one", len(decisions.Items))
+	}
+}
+
+func TestCustomOrGeneratedDecisionNamesCannotBypassTheProposalDecisionSlot(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources())
+	deploy(t, env, workload{name: checkout})
+	proposed := proposedTriage(t, env, checkout)
+	alice := approverClient(t, env, aliceUser)
+
+	for _, generated := range []bool{false, true} {
+		approval := decision(proposed, v1alpha1.DecisionApproved, "")
+		approval.Name, approval.GenerateName = "custom-decision", ""
+		if generated {
+			approval.Name, approval.GenerateName = "", "custom-decision-"
+		}
+		requireRefusal(t, alice.Create(t.Context(), approval), "deterministic")
+		requireUndecided(t, env, proposed.Name, v1alpha1.PhaseProposed)
 	}
 }
 
@@ -446,7 +536,7 @@ func TestForgedApproverIsRefusedWhenTheStampingWebhookIsMissing(t *testing.T) {
 	// Without the mutating webhook nothing overwrites a client-supplied identity,
 	// so the validating webhook must refuse a value that is not the requester's.
 	mutating := &admissionregistrationv1.MutatingWebhookConfiguration{
-		Name: "pagerless-server",
+		Name: server.DefaultServerServiceAccount,
 	}
 	if err := env.Client.Delete(t.Context(), mutating); err != nil {
 		t.Fatalf("delete the mutating webhook configuration: %v", err)

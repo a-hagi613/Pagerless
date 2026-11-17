@@ -74,9 +74,6 @@ func startDecisionCluster(t *testing.T) *decisionCluster {
 		return e.PatchResources(decisionNamespace)
 	}))
 	env.GrantApprover(t, decisionUser)
-	if err := env.Client.Create(t.Context(), &corev1.Namespace{Name: decisionNamespace}); err != nil {
-		t.Fatal(err)
-	}
 	return &decisionCluster{env: env, kubeconfig: env.KubeconfigAs(t, decisionUser)}
 }
 

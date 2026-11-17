@@ -72,7 +72,7 @@ func TestNewTriageStartsAnAgentJob(t *testing.T) {
 			}
 		}
 	}
-	if len(audiences) != 1 || audiences[0] != "pagerless-server" {
+	if len(audiences) != 1 || audiences[0] != agentapi.Audience {
 		t.Errorf("projected token audiences = %v, want [pagerless-server]", audiences)
 	}
 	if owner := job.OwnerReferences; len(owner) != 1 || owner[0].Kind != "Triage" || owner[0].Name != created.Name {
@@ -112,7 +112,7 @@ func TestAgentServiceAccountHasNoWritePermissions(t *testing.T) {
 		{"rbac.authorization.k8s.io", "clusterrolebindings", ""},
 	}
 	for _, w := range writes {
-		for _, verb := range []string{"create", "update", "patch", "delete", "deletecollection"} {
+		for _, verb := range []string{"create", updateVerb, "patch", "delete", "deletecollection"} {
 			if env.Can(t, user, groups, verb, w.group, w.resource, w.subresource) {
 				t.Errorf("the agent service account may %s %s/%s %s", verb, w.group, w.resource, w.subresource)
 			}

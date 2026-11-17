@@ -389,7 +389,6 @@ func execute(ctx context.Context, kubeconfig string, args ...string) (string, er
 func startCluster(t testing.TB) (*testenv.Env, string) {
 	t.Helper()
 	env := testenv.Start(t)
-	mustCreate(t, env, &corev1.Namespace{Name: sandbox})
 	return env, kubeconfigFor(t, env.Config)
 }
 

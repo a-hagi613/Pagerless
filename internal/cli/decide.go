@@ -41,12 +41,11 @@ func submitDecision(
 	ctx context.Context, cl client.Client, tr *v1alpha1.Triage, outcome v1alpha1.DecisionOutcome, reason string,
 ) (*v1alpha1.TriageApproval, error) {
 	verb := "approve"
-	prefix := "approval-"
 	if outcome == v1alpha1.DecisionRejected {
-		verb, prefix = "reject", "rejection-"
+		verb = "reject"
 	}
 	approval := &v1alpha1.TriageApproval{
-		GenerateName: tr.Name + "-" + prefix, Namespace: TriageNamespace,
+		Name: v1alpha1.TriageApprovalName(tr, tr.Status.Proposal.Hash), Namespace: TriageNamespace,
 		Spec: v1alpha1.TriageApprovalSpec{
 			Triage:       tr.Name,
 			ProposalHash: tr.Status.Proposal.Hash,

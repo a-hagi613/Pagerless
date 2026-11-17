@@ -49,7 +49,7 @@ const (
 	PhaseExpired Phase = "Expired"
 	// PhaseInvalid is terminal: the Proposal failed Validation twice.
 	PhaseInvalid Phase = "Invalid"
-	// PhaseFailed is terminal: the agent errored or exhausted its budget.
+	// PhaseFailed is terminal: an agent or execution failed, a budget was exhausted, or a duplicate was suppressed.
 	PhaseFailed Phase = "Failed"
 )
 
@@ -81,6 +81,8 @@ const (
 	ReasonAgentEndedWithoutReport = "AgentEndedWithoutReport"
 	// ReasonAgentJobMissing means the agent Job disappeared before the agent reported.
 	ReasonAgentJobMissing = "AgentJobMissing"
+	// ReasonDuplicate means another Active Triage is canonical for the same Workload.
+	ReasonDuplicate = "Duplicate"
 )
 
 // Condition types and reasons that Validation and the Proposal lifecycle record.
