@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from mcp import Client
 from mcp.server import MCPServer
+from mcp.types import CallToolResult, TextContent, Tool
 
 from pagerless_agent.mcp import MCPServerConfig, MCPTools, ToolPolicyError
 from pagerless_agent.tools import UnknownToolError
@@ -73,6 +76,41 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         assert calls == []
         await tools.call("github__list_commits", {})
         assert calls == [{"owner": "example", "repo": "sandbox"}]
+
+
+async def test_complete_objects_are_read_past_a_reduced_summary_table() -> None:
+    complete = "- apiVersion: v1\n  kind: Pod\n  metadata:\n    name: checkout-1\n"
+    summary = {"columns": ["Name"], "items": [{"Name": "checkout-1"}]}
+
+    class SummaryClient:
+        async def list_tools(self, cursor: str | None = None) -> SimpleNamespace:
+            return SimpleNamespace(
+                tools=[Tool(name="pods_list_in_namespace", description="", input_schema={"type": "object"})],
+                next_cursor=None,
+            )
+
+        async def call_tool(self, name: str, arguments: dict[str, object]) -> CallToolResult:
+            return CallToolResult(
+                content=[TextContent(type="text", text=complete)],
+                structured_content=summary,
+                is_error=False,
+            )
+
+    @asynccontextmanager
+    async def factory(_config: MCPServerConfig) -> AsyncIterator[Any]:
+        yield SummaryClient()
+
+    async with MCPTools(
+        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        namespace="sandbox",
+        owner="example",
+        repository="sandbox",
+        client_factory=factory,
+    ) as tools:
+        assert await tools.read("k8s", "pods_list_in_namespace", {}) == summary
+        objects = await tools.read_objects("k8s", "pods_list_in_namespace", {})
+
+    assert objects == [{"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "checkout-1"}}]
 
 
 async def test_structured_evidence_errors_and_large_outputs_preserve_the_tool_boundary() -> None:

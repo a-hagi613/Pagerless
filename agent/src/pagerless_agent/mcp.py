@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import httpx2
+import yaml
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
@@ -166,6 +167,26 @@ class MCPTools:
             return json.loads(text)
         except ValueError:
             return text
+
+    async def read_objects(self, server: ServerName, tool: str, arguments: dict[str, Any]) -> Any:
+        """Read complete objects when a server also returns a reduced summary table.
+
+        kubernetes-mcp-server reports a list of columns and summary rows as the
+        structured result, while the complete objects arrive as YAML text.
+        """
+        result = await self._invoke(f"{server}__{tool}", arguments)
+        if result.is_error:
+            raise ToolPolicyError(f"{server}__{tool} failed: {_result_text(result)[:500]}")
+        text = _result_text(result)
+        try:
+            value = yaml.safe_load(text)
+        except yaml.YAMLError as error:
+            raise ToolPolicyError(f"{server}__{tool} returned unparseable evidence") from error
+        if value is not None:
+            return value
+        if result.structured_content is not None:
+            return result.structured_content
+        raise ToolPolicyError(f"{server}__{tool} returned no evidence")
 
     async def _invoke(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
         if name not in self._tools:

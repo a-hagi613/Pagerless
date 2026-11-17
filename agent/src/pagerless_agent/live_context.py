@@ -45,7 +45,7 @@ class MCPContextSource:
             )
         )
         selector = _selector(_object(_object(workload.get("spec")).get("selector")))
-        pod_list = await self._tools.read(
+        pod_list = await self._tools.read_objects(
             "k8s",
             "pods_list_in_namespace",
             {
