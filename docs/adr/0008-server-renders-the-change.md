@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
+- **Amended by:** [ADR-0021](0021-rollback-may-revert-declared-dependency-paths.md)
 
 ## Context
 
@@ -13,7 +14,7 @@ During Validation, `pagerless-server` renders the exact change: a git patch on a
 
 `pagerless-executor` applies the stored patch byte-for-byte and refuses if it does not apply cleanly.
 
-For Rollback, the parameter is a single commit, which must be among the last 20 commits touching the Workload's path. The patch is the revert of that commit.
+For Rollback, the parameter is a single commit, which must be among the last 20 commits touching the Workload's path or a path the Workload declares in `pagerless.dev/depends-on-paths` (ADR-0021). The patch is the revert of that commit.
 
 ## Consequences
 
