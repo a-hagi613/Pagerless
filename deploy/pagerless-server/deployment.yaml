@@ -24,6 +24,8 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        # Give the non-root server write access to the emptyDir volumes.
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -94,7 +96,9 @@ spec:
           secret:
             secretName: argocd-read
         - name: temporary
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
         # The token that authenticates the server to pagerless-executor (ADR-0014). Its audience is the Executor's,
         # so no other service accepts it, and the kubelet rotates it in place.
         - name: executor-token
