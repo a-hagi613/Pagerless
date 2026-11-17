@@ -98,7 +98,7 @@ metadata:
 stringData:
   type: helm
   name: agentgateway
-  url: oci://cr.agentgateway.dev/charts
+  url: cr.agentgateway.dev/charts
   enableOCI: "true"
 EOF
 
