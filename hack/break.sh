@@ -18,7 +18,7 @@ available_scenarios() {
 scenario="${1:-}"
 [ -n "$scenario" ] || die "usage: make break SCENARIO=<name>. Scenarios: $(available_scenarios)"
 
-# Scenario 9 is applied outside Git by design (ADR-0019): a Chaos Mesh
+# Scenario 9 is applied outside Git by design (#16): a Chaos Mesh
 # experiment is a cluster object, so the Sandbox repository keeps its
 # known-good manifests and no Action on the menu can fix the failure.
 if [ "$scenario" = cpu ]; then

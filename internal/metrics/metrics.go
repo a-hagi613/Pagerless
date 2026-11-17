@@ -27,7 +27,7 @@ const (
 	MetricDecisions = "pagerless_decisions_total"
 	// MetricVerifications counts Verification outcomes.
 	MetricVerifications = "pagerless_verifications_total"
-	// MetricTimeToRecovered is the time from Triage creation to Recovered.
+	// MetricTimeToRecovered is the time from the Triage's start to Recovered.
 	MetricTimeToRecovered = "pagerless_time_to_recovered_seconds"
 	// MetricInputTokens is the input tokens one Triage's investigation read.
 	MetricInputTokens = "pagerless_triage_input_tokens"
@@ -77,7 +77,7 @@ func New(reader client.Reader) *Metrics {
 		}, []string{"outcome"}),
 		timeToRecovered: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: MetricTimeToRecovered,
-			Help: "Seconds from Triage creation to the Recovered phase.",
+			Help: "Seconds from the Triage start to the Recovered phase.",
 			// A Triage is bounded by the five-minute agent budget and the five-minute Verification window, but a
 			// pull request may wait for a human to merge it, so the buckets reach one hour.
 			Buckets: []float64{30, 60, 120, 300, 600, 900, 1800, 3600},
