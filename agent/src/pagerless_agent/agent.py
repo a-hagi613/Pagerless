@@ -44,6 +44,7 @@ from pagerless_agent.contract import (
     ReportError,
     StepEvent,
     StepKind,
+    Usage,
     normalize_proposal,
     proposal_tool_schema,
     validation_errors,
@@ -57,6 +58,7 @@ from pagerless_agent.model import (
     ToolCall,
     ToolSpec,
 )
+from pagerless_agent.pricing import cost_usd
 from pagerless_agent.server import ServerClient, ServerError, ServerRefusedError
 from pagerless_agent.settings import Target
 from pagerless_agent.tools import ContextSource, ToolRegistry, UnknownToolError, new_nonce, present
@@ -127,6 +129,9 @@ class Agent:
         self._server = server
         self._limits = limits or Limits()
         self._budget = Budget(limits=self._limits, clock=clock)
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._cost_usd = 0.0
         self._nonce = nonce or new_nonce()
         self._record_finding = ToolSpec(
             name=prompts.RECORD_FINDING,
@@ -257,7 +262,16 @@ class Agent:
         return self._next_after(state, accepted="submit")
 
     async def _submit(self, state: _State) -> _State:
-        report = Report(diagnosis=state["diagnosis"], findings=state["findings"], proposal=state["proposal"])
+        report = Report(
+            diagnosis=state["diagnosis"],
+            findings=state["findings"],
+            proposal=state["proposal"],
+            usage=Usage(
+                inputTokens=self._input_tokens,
+                outputTokens=self._output_tokens,
+                costUSD=self._cost_usd,
+            ),
+        )
         answer = await self._server.post_report(report)
         if answer.accepted:
             return {"outcome": Outcome("reported", "The report was accepted.", phase=answer.phase)}
@@ -302,6 +316,9 @@ class Agent:
         )
         response = await self._within_budget(lambda: self._provider.complete(request))
         self._budget.spend_input_tokens(response.usage.input_tokens)
+        self._input_tokens += response.usage.input_tokens
+        self._output_tokens += response.usage.output_tokens
+        self._cost_usd += cost_usd(response.usage.input_tokens, response.usage.output_tokens)
         return response
 
     async def _call_tool(self, call: ToolCall) -> tuple[str, bool]:

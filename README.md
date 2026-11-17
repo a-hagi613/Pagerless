@@ -23,10 +23,17 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 - **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching.
 - **CLI:** the Go/Cobra `kubectl-triage` plugin, using the selected kube context.
 - **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md).
-- **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment.
+- **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment, with a provisioned Grafana dashboard for Pagerless's own behaviour.
+- **History:** an append-only SQLite record of every Phase change and every step event, with terminal Triages deleted after seven days while their history remains.
 - **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
 
-The React dashboard and its API, SQLite history, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+The React dashboard and its API, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+
+## History, retention and metrics
+
+`pagerless-server` appends a snapshot of a Triage's status to SQLite on every Phase change, and appends each step event as it arrives. The database is append-only: the application cannot update or delete a row, and the Triage resource remains the source of truth for an Active Triage. The server keeps the database on a PersistentVolumeClaim so it survives a restart.
+
+The retention controller deletes a Triage seven days after the time in `status.terminalAt`. Deleting the resource does not delete its history. The metrics API on port 9090 exports Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and the tokens and cost of each Triage; the provisioned Grafana dashboard charts them.
 
 ## Safety boundaries
 
@@ -122,7 +129,7 @@ Triages are stored in `pagerless`; the Workload namespace is independent. The pl
 
 `make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster.
 
-The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and can be opened with:
+The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and the provisioned **Pagerless** dashboard, which charts Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and tokens and cost per Triage. It can be opened with:
 
 ```bash
 kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
@@ -133,7 +140,7 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 ## Roadmap
 
 1. **Phase 1: core loop locally.** Complete: the genuine live OOMKilled capture, free Replay validation through Recovered on kind, credential-free end-to-end CI, and the public `v0.1.0` runtime images. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
-2. **Phase 2: complete the local product.** Add the custom React/shadcn dashboard with embedded Grafana panels, SQLite history, RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway and Keycloak, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
+2. **Phase 2: complete the local product.** Add the custom React/shadcn dashboard with embedded Grafana panels, RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway and Keycloak, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
 3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
 
 ## Documentation

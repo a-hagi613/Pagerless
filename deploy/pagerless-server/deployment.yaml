@@ -35,6 +35,8 @@ spec:
           args:
             - --agent-image=ghcr.io/a-hagi613/pagerless-agent:0.1.0
             - --report-url=http://pagerless-server.pagerless.svc:8080
+            - --metrics-bind-address=:9090
+            - --history-path=/var/lib/pagerless/history.db
             - --alert-namespaces=sandbox
             - --executor-url=http://pagerless-executor.pagerless.svc:8080
             - --argocd-url=http://argocd-server.argocd.svc
@@ -56,6 +58,8 @@ spec:
               containerPort: 9443
             - name: health
               containerPort: 8081
+            - name: metrics
+              containerPort: 9090
           livenessProbe:
             httpGet:
               path: /healthz
@@ -92,6 +96,9 @@ spec:
             - name: github-read
               mountPath: /var/run/pagerless/github-read
               readOnly: true
+            # The append-only history survives a server restart, so a Triage's record is not lost with its pod.
+            - name: history
+              mountPath: /var/lib/pagerless
       volumes:
         - name: alertmanager-token
           secret:
@@ -118,3 +125,6 @@ spec:
         - name: webhook-certs
           emptyDir:
             medium: Memory
+        - name: history
+          persistentVolumeClaim:
+            claimName: pagerless-history

@@ -72,9 +72,12 @@ func run() error {
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
 			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
-		agentImage     = flag.String("agent-image", "", "agent container image")
-		reportURL      = flag.String("report-url", "", "base URL that agent Jobs use to reach the report API")
-		reportBind     = flag.String("report-bind-address", ":8080", "address the agent report API listens on")
+		agentImage  = flag.String("agent-image", "", "agent container image")
+		reportURL   = flag.String("report-url", "", "base URL that agent Jobs use to reach the report API")
+		reportBind  = flag.String("report-bind-address", ":8080", "address the agent report API listens on")
+		metricsBind = flag.String("metrics-bind-address", ":9090", "address the Prometheus metrics API listens on")
+		historyPath = flag.String("history-path", "/var/lib/pagerless/history.db",
+			"SQLite file that records Triage snapshots and steps")
 		healthBind     = flag.String("health-probe-bind-address", ":8081", "address the health probes listen on")
 		webhookPort    = flag.Int("webhook-port", 9443, "port the admission webhooks listen on")
 		webhookCertDir = flag.String("webhook-cert-dir", "/var/run/pagerless/webhook-certs",
@@ -170,6 +173,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen for the report API: %w", err)
 	}
+	metricsListener, err := net.Listen("tcp", *metricsBind)
+	if err != nil {
+		return fmt.Errorf("listen for the metrics API: %w", err)
+	}
 	var sandboxReadToken func() (string, error)
 	if *sandboxReadTokenFile != "" {
 		sandboxReadToken = tokenFromFile(*sandboxReadTokenFile)
@@ -180,6 +187,8 @@ func run() error {
 		AgentServerURL:       *reportURL,
 		AgentRuntime:         agentRuntimeFromEnvironment(),
 		ReportListener:       listener,
+		MetricsListener:      metricsListener,
+		HistoryPath:          *historyPath,
 		ExecutorURL:          *executorURL,
 		ExecutorToken:        tokenFromFile(*executorTokenFile),
 		ArgoCDURL:            *argoCDURL,

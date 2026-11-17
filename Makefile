@@ -15,7 +15,8 @@ generate: ## Generate the deepcopy methods for the API types.
 	go tool controller-gen object paths=./api/...
 
 manifests: ## Generate the CustomResourceDefinitions.
-	go tool controller-gen crd paths=./api/... output:crd:dir=$(CRD_DIR)
+	# Cost is an estimate in USD, so the status carries a bounded JSON number for it.
+	go tool controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=$(CRD_DIR)
 
 build-cli: ## Build the kubectl-triage plugin into bin/.
 	go build -o bin/kubectl-triage ./cmd/kubectl-triage

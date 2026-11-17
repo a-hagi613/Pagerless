@@ -16,6 +16,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,7 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
 )
@@ -74,6 +76,12 @@ type Env struct {
 	ServerConfig *rest.Config
 	// ReportURL is the base URL of the agent API.
 	ReportURL string
+	// MetricsURL is the base URL of the Prometheus metrics API.
+	MetricsURL string
+	// HistoryPath is the SQLite file the server appends history to.
+	HistoryPath string
+	// History is the server's history, opened for reading by the test.
+	History *history.Store
 	// Clock is the clock that pagerless-server reads, so tests can control timestamps.
 	Clock *clocktesting.FakeClock
 	// Sandbox is a local bare git repository that stands in for the Sandbox.
@@ -97,6 +105,7 @@ type options struct {
 	proposalPoll     time.Duration
 	executionPoll    time.Duration
 	verificationPoll time.Duration
+	retentionPoll    time.Duration
 	agentDeadline    time.Duration
 	agentRuntime     controller.AgentRuntimeConfig
 	alertNamespaces  []string
@@ -128,11 +137,21 @@ func WithAlertmanagerToken(source func() (string, error)) Option {
 	return func(o *options) { o.alertToken = source }
 }
 
+// WithRetentionPollInterval sets how often the retention controller checks a terminal Triage. The fake clock only
+// advances when a test steps it, so a test that observes the deletion boundary sets a short interval; every other
+// test keeps the server's one-minute default and does no retention work.
+func WithRetentionPollInterval(d time.Duration) Option {
+	return func(o *options) { o.retentionPoll = d }
+}
+
 // Start runs the API server, installs the manifests of pagerless-server and
 // pagerless-executor, and runs both. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
-	o := options{executionPoll: defaultExecutionPoll, verificationPoll: defaultVerificationPoll}
+	o := options{
+		executionPoll:    defaultExecutionPoll,
+		verificationPoll: defaultVerificationPoll,
+	}
 	o.alertToken = func() (string, error) { return AlertmanagerToken, nil }
 	for _, opt := range opts {
 		opt(&o)
@@ -213,12 +232,20 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if err != nil {
 		t.Fatalf("listen for the report API: %v", err)
 	}
+	metricsListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the metrics API: %v", err)
+	}
+	t.Cleanup(func() { _ = metricsListener.Close() })
+	historyPath := filepath.Join(t.TempDir(), "history.db")
 	env := &Env{
 		Config:         cfg,
 		Client:         c,
 		Clientset:      clientset,
 		ServerConfig:   serverConfig,
 		ReportURL:      "http://" + listener.Addr().String(),
+		MetricsURL:     "http://" + metricsListener.Addr().String(),
+		HistoryPath:    historyPath,
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
 		t:              t,
@@ -242,6 +269,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 		AgentServerURL:           env.ReportURL,
 		AgentRuntime:             o.agentRuntime,
 		ReportListener:           listener,
+		MetricsListener:          metricsListener,
+		HistoryPath:              historyPath,
 		ExecutorURL:              env.ExecutorURL,
 		ExecutorToken:            executorToken,
 		AgentDeadline:            o.agentDeadline,
@@ -252,6 +281,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		AlertmanagerURL:          env.Alertmanager.URL,
 		AlertmanagerToken:        o.alertToken,
 		VerificationPollInterval: o.verificationPoll,
+		RetentionPollInterval:    o.retentionPoll,
 		AlertNamespaces:          o.alertNamespaces,
 		Clock:                    env.Clock,
 		Validators:               validators,
@@ -274,7 +304,57 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("pagerless-server cache did not sync")
 	}
+	env.History, err = history.OpenReader(historyPath)
+	if err != nil {
+		t.Fatalf("open the Triage history for reading: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := env.History.Close(); err != nil {
+			t.Errorf("close the Triage history: %v", err)
+		}
+	})
+	waitForMetrics(t, env.MetricsURL)
 	return env
+}
+
+// waitForMetrics waits until the metrics API answers, so that the first scrape in a test cannot race the manager.
+func waitForMetrics(t testing.TB, baseURL string) {
+	t.Helper()
+	httpClient := &http.Client{Timeout: time.Second}
+	err := wait.PollUntilContextTimeout(
+		t.Context(), pollInterval, waitTimeout, true, func(context.Context) (bool, error) {
+			response, err := httpClient.Get(baseURL + "/metrics")
+			if err != nil {
+				return false, nil
+			}
+			defer func() { _ = response.Body.Close() }()
+			return response.StatusCode == http.StatusOK, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("the metrics API at %s did not start: %v", baseURL, err)
+	}
+}
+
+// WaitForGone polls until the Triage no longer exists.
+func (e *Env) WaitForGone(t testing.TB, name string) {
+	t.Helper()
+	key := types.NamespacedName{Namespace: Namespace, Name: name}
+	err := wait.PollUntilContextTimeout(
+		t.Context(), pollInterval, waitTimeout, true, func(ctx context.Context) (bool, error) {
+			var tr v1alpha1.Triage
+			if err := e.Client.Get(ctx, key, &tr); err != nil {
+				if errors.IsNotFound(err) {
+					return true, nil
+				}
+				return false, err
+			}
+			return false, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("waiting for Triage %s to be deleted: %v", name, err)
+	}
 }
 
 func repoRoot(t testing.TB) string {

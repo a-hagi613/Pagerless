@@ -4,10 +4,11 @@ metadata:
   name: pagerless-server
   namespace: pagerless
 rules:
-  # Creates a Triage for each opted-in alert (internal/alerts).
+  # Creates a Triage for each opted-in alert (internal/alerts), and deletes a terminal Triage after its
+  # seven-day retention period (internal/controller.RetentionReconciler).
   - apiGroups: [pagerless.dev]
     resources: [triages]
-    verbs: [create, get, list, watch]
+    verbs: [create, delete, get, list, watch]
   - apiGroups: [pagerless.dev]
     resources: [triages/status]
     verbs: [get, update, patch]

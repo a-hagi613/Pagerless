@@ -446,6 +446,12 @@ spec:
                     is Rollback
                   rule: 'self.action == ''Rollback'' ? (has(self.parameters) && has(self.parameters.rollback))
                     : (!has(self.parameters) || !has(self.parameters.rollback))'
+              startedAt:
+                description: |-
+                  StartedAt is when pagerless-server put the Triage in the Pending phase. It is the start of the time to
+                  Recovered that Pagerless exports.
+                format: date-time
+                type: string
               stepCount:
                 description: StepCount is the total number of steps the agent reported.
                 format: int32
@@ -483,6 +489,12 @@ spec:
                 maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
+              terminalAt:
+                description: |-
+                  TerminalAt is when the Triage reached its terminal phase. The retention controller deletes the Triage
+                  seven days later. It is empty until the Triage is terminal.
+                format: date-time
+                type: string
               toolCallCount:
                 description: ToolCallCount is the number of tool calls the agent reported.
                 format: int32
@@ -492,6 +504,35 @@ spec:
                   joined the Triage.
                 format: int32
                 type: integer
+              usage:
+                description: Usage is the model usage of the investigation, as the
+                  agent reported it in its accepted report.
+                properties:
+                  costUSD:
+                    description: CostUSD is the estimated cost of the model calls
+                      in United States dollars.
+                    maximum: 100
+                    minimum: 0
+                    type: number
+                  inputTokens:
+                    description: InputTokens counts every input token the investigation's
+                      model calls read, including cached tokens.
+                    format: int64
+                    maximum: 10000000
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: OutputTokens counts every output token the investigation's
+                      model calls wrote.
+                    format: int64
+                    maximum: 1000000
+                    minimum: 0
+                    type: integer
+                required:
+                - costUSD
+                - inputTokens
+                - outputTokens
+                type: object
               validationAttempts:
                 description: ValidationAttempts is the number of Proposals from the
                   agent that failed Validation.

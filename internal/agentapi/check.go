@@ -2,6 +2,7 @@ package agentapi
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -16,6 +17,12 @@ const (
 	MaxFindingSummaryLen = 1000
 	MaxStepSummaryLength = 300
 	MaxToolNameLength    = 128
+	// MaxInputTokens bounds the input tokens one investigation may report.
+	MaxInputTokens int64 = 10_000_000
+	// MaxOutputTokens bounds the output tokens one investigation may report.
+	MaxOutputTokens int64 = 1_000_000
+	// MaxCostUSD bounds the model cost one investigation may report.
+	MaxCostUSD float64 = 100
 )
 
 var (
@@ -87,6 +94,35 @@ func (r Report) Check() []ValidationError {
 		errs = append(errs, checkFinding(fmt.Sprintf("findings[%d]", i), f)...)
 	}
 	errs = append(errs, checkProposedAction("proposal", r.Proposal)...)
+	errs = append(errs, checkUsage("usage", r.Usage)...)
+	return errs
+}
+
+// checkUsage verifies that the reported model usage is inside the bounds the CRD declares.
+func checkUsage(path string, usage *v1alpha1.Usage) []ValidationError {
+	if usage == nil {
+		return nil
+	}
+	var errs []ValidationError
+	if usage.InputTokens < 0 || usage.InputTokens > MaxInputTokens {
+		errs = append(errs, ValidationError{
+			Field:   path + ".inputTokens",
+			Message: fmt.Sprintf("inputTokens must be between 0 and %d", MaxInputTokens),
+		})
+	}
+	if usage.OutputTokens < 0 || usage.OutputTokens > MaxOutputTokens {
+		errs = append(errs, ValidationError{
+			Field:   path + ".outputTokens",
+			Message: fmt.Sprintf("outputTokens must be between 0 and %d", MaxOutputTokens),
+		})
+	}
+	if math.IsNaN(usage.CostUSD) || math.IsInf(usage.CostUSD, 0) ||
+		usage.CostUSD < 0 || usage.CostUSD > MaxCostUSD {
+		errs = append(errs, ValidationError{
+			Field:   path + ".costUSD",
+			Message: fmt.Sprintf("costUSD must be between 0 and %g", MaxCostUSD),
+		})
+	}
 	return errs
 }
 

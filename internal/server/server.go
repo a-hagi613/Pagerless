@@ -19,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -28,6 +29,8 @@ import (
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/history"
+	"github.com/a-hagi613/pagerless/internal/metrics"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
@@ -61,6 +64,10 @@ type Config struct {
 	AgentRuntime controller.AgentRuntimeConfig
 	// ReportListener is the listener the report API serves on. It is required.
 	ReportListener net.Listener
+	// MetricsListener is the listener the Prometheus metrics API serves on. It is required.
+	MetricsListener net.Listener
+	// HistoryPath is the SQLite file that records Triage snapshots and steps. It is required.
+	HistoryPath string
 	// ExecutorURL is the base URL of pagerless-executor. It is required.
 	ExecutorURL string
 	// ExecutorToken returns the projected service account token, with the audience
@@ -113,6 +120,12 @@ type Config struct {
 	// VerificationPollInterval is how often Verification checks a Triage.
 	// It defaults to controller.DefaultVerificationPollInterval.
 	VerificationPollInterval time.Duration
+	// Retention is how long a terminal Triage is kept before it is deleted.
+	// It defaults to controller.DefaultRetention, seven days.
+	Retention time.Duration
+	// RetentionPollInterval bounds how long the retention controller waits before it checks a terminal Triage
+	// again. It defaults to controller.DefaultRetentionPollInterval.
+	RetentionPollInterval time.Duration
 
 	// WebhookHost, WebhookPort, and WebhookCertDir configure the admission webhook server.
 	WebhookHost    string
@@ -162,7 +175,16 @@ func (c Config) validate() error {
 	case c.WebhookListener != nil && c.WebhookCertDir == "":
 		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
-	return c.AgentRuntime.ValidateRecording()
+	if err := c.AgentRuntime.ValidateRecording(); err != nil {
+		return err
+	}
+	switch {
+	case c.HistoryPath == "":
+		return errors.New("a history path is required")
+	case c.MetricsListener == nil:
+		return errors.New("a metrics listener is required")
+	}
+	return nil
 }
 
 func (c Config) withDefaults() Config {
@@ -196,6 +218,12 @@ func (c Config) withDefaults() Config {
 	if c.VerificationPollInterval == 0 {
 		c.VerificationPollInterval = controller.DefaultVerificationPollInterval
 	}
+	if c.Retention == 0 {
+		c.Retention = controller.DefaultRetention
+	}
+	if c.RetentionPollInterval == 0 {
+		c.RetentionPollInterval = controller.DefaultRetentionPollInterval
+	}
 	return c
 }
 
@@ -220,6 +248,17 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("create manager: %w", err)
 	}
 
+	historyStore, err := history.Open(cfg.HistoryPath)
+	if err != nil {
+		return nil, fmt.Errorf("open the Triage history: %w", err)
+	}
+	if err := mgr.Add(closeHistory(historyStore)); err != nil {
+		_ = historyStore.Close()
+		return nil, fmt.Errorf("add the Triage history: %w", err)
+	}
+	metricsAPI := metrics.New(mgr.GetClient())
+	recorder := &recorder{history: historyStore, metrics: metricsAPI}
+
 	validators := cfg.Validators
 	if validators == nil {
 		validators = proposal.DefaultValidators()
@@ -235,7 +274,12 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 	proposals := proposal.NewPipeline(cfg.Clock, validators)
 
-	store := &triage.StatusStore{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}
+	store := &triage.StatusStore{
+		Client:   mgr.GetClient(),
+		Reader:   mgr.GetAPIReader(),
+		Clock:    cfg.Clock,
+		Recorder: recorder,
+	}
 	reconciler := &controller.TriageReconciler{
 		Client: mgr.GetClient(),
 		Scheme: scheme,
@@ -293,6 +337,17 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("set up the verification controller: %w", err)
 	}
 
+	retention := &controller.RetentionReconciler{
+		Client:       mgr.GetClient(),
+		Reader:       mgr.GetAPIReader(),
+		Clock:        cfg.Clock,
+		Retention:    cfg.Retention,
+		PollInterval: cfg.RetentionPollInterval,
+	}
+	if err := retention.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the retention controller: %w", err)
+	}
+
 	webhooks := mgr.GetWebhookServer()
 	webhooks.Register(admissionpkg.CreatePath, &webhook.Admission{Handler: &admissionpkg.CreateValidator{
 		Reader:    mgr.GetAPIReader(),
@@ -330,8 +385,11 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	mux := http.NewServeMux()
 	mux.Handle(alerts.Path, receiver)
 	mux.Handle("/", handler)
-	if err := mgr.Add(reportAPI(cfg.ReportListener, mux)); err != nil {
+	if err := mgr.Add(serve("report API", cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
+	}
+	if err := mgr.Add(serve("metrics API", cfg.MetricsListener, metricsAPI.Handler())); err != nil {
+		return nil, fmt.Errorf("add the metrics API: %w", err)
 	}
 
 	if cfg.HealthProbeAddress != "" {
@@ -345,8 +403,8 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	return mgr, nil
 }
 
-// reportAPI returns a runnable that serves the agent API until the manager stops.
-func reportAPI(listener net.Listener, handler http.Handler) manager.Runnable {
+// serve returns a runnable that serves handler on listener until the manager stops.
+func serve(name string, listener net.Listener, handler http.Handler) manager.Runnable {
 	srv := &http.Server{Handler: handler, ReadHeaderTimeout: readHeaderTimeout}
 	return manager.RunnableFunc(func(ctx context.Context) error {
 		errc := make(chan error, 1)
@@ -356,11 +414,46 @@ func reportAPI(listener net.Listener, handler http.Handler) manager.Runnable {
 			if errors.Is(err, http.ErrServerClosed) {
 				return nil
 			}
-			return fmt.Errorf("serve the report API: %w", err)
+			return fmt.Errorf("serve the %s: %w", name, err)
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 			defer cancel()
 			return srv.Shutdown(shutdownCtx)
 		}
 	})
+}
+
+// closeHistory closes the history database when the manager stops.
+func closeHistory(store *history.Store) manager.Runnable {
+	return manager.RunnableFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return store.Close()
+	})
+}
+
+// recorder writes the append-only history and updates the Prometheus metrics after a status write. A history or
+// metrics failure is logged and never fails the request: the Triage resource is the source of truth (ADR-0001).
+type recorder struct {
+	history *history.Store
+	metrics *metrics.Metrics
+}
+
+// PhaseChanged records a Triage snapshot on every Phase change and updates the metrics.
+func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Triage, now time.Time) {
+	r.metrics.ObservePhaseChange(before, after, now)
+	if before.Status.Phase == after.Status.Phase {
+		return
+	}
+	if err := r.history.AppendSnapshot(ctx, after, now); err != nil {
+		logf.FromContext(ctx).Error(err, "record the Triage snapshot", "triage", after.Name)
+	}
+}
+
+// StepRecorded appends one step event to the history.
+func (r *recorder) StepRecorded(
+	ctx context.Context, tr *v1alpha1.Triage, step v1alpha1.Step, finding *v1alpha1.Finding,
+) {
+	if err := r.history.AppendStep(ctx, tr, step, finding); err != nil {
+		logf.FromContext(ctx).Error(err, "record the Triage step", "triage", tr.Name)
+	}
 }
