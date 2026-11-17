@@ -4,7 +4,7 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 . "$repo_root/hack/versions.env"
-python=(uv run --no-project --python "$PYTHON_VERSION")
+python=(uv run --no-project --python "$PYTHON_VERSION" python)
 python_executable="$("${python[@]}" -c 'import sys; print(sys.executable)')"
 python=("$python_executable")
 PYTHONPATH="$script_dir" "${python[@]}" -m unittest discover -s "$script_dir" -p 'test_*.py'
@@ -67,6 +67,10 @@ printf 'PAGERLESS_E2E_TLS_CERT_FILE=%q\n' "$state/certs/tls.crt" >>"$state/confi
 printf 'PAGERLESS_E2E_TLS_KEY_FILE=%q\n' "$state/certs/tls.key" >>"$state/config.env"
 printf 'PAGERLESS_E2E_KUBECONFORM_BIN=%q\n' "$state/bin/kubeconform" >>"$state/config.env"
 unset read_token write_token
+# The server, Executor, and relay read the adapter CA and tokens when they
+# start. Roll their pod templates whenever this run's material changes so a
+# reused cluster never keeps credentials from the previous run.
+config_checksum="$(cat "$state/config.env" "$state/certs/ca.crt" | sha256sum | cut -d ' ' -f 1)"
 if ! kind get clusters | grep -qx "$KIND_CLUSTER_NAME"; then created=1; fi
 export PAGERLESS_ENV_FILE="$state/config.env" PAGERLESS_E2E=1
 export PLATFORM_REPO_URL=https://github.com/a-hagi613/pagerless
@@ -97,6 +101,10 @@ done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment pagerless-server --type strategic --patch-file "$script_dir/patches/pagerless-server.yaml"
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment pagerless-executor --type strategic --patch-file "$script_dir/patches/pagerless-executor.yaml"
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment mcp-github --type strategic --patch-file "$script_dir/patches/github-mcp-relay.yaml"
+for deployment in pagerless-server pagerless-executor mcp-github; do
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment "$deployment" --type=merge \
+		--patch "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"pagerless.dev/config-checksum\":\"$config_checksum\"}}}}}"
+done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch '{"data":{"PAGERLESS_REPLAY_FILE":"/app/recordings/synthetic-oom.json"}}'
 for deployment in pagerless-server pagerless-executor mcp-github; do kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout status "deployment/$deployment" --timeout=180s; done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless-e2e port-forward deployment/sandbox-adapter 18443:8443 18080:8080 >"$state/port-forward.log" 2>&1 &

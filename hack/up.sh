@@ -36,7 +36,9 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 		die "E2E GitHub MCP traffic must use the isolated loopback relay."
 fi
 
+reused_cluster=0
 if kind get clusters | grep -qx "$KIND_CLUSTER_NAME"; then
+	reused_cluster=1
 	echo "Reusing the kind cluster $KIND_CLUSTER_NAME."
 else
 	kind create cluster --name "$KIND_CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 180s
@@ -102,6 +104,15 @@ kc -n argocd create secret generic sandbox-repository \
 	kc apply -f -
 
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	# The adapter reads its certificate, key, and tokens only when it starts.
+	# A checksum on the pod template makes a reused cluster replace the pod
+	# whenever the generated TLS material or credentials change, instead of
+	# leaving it with values that no longer match the rest of the stack.
+	adapter_checksum="$({
+		cat "$PAGERLESS_E2E_CA_FILE" "$PAGERLESS_E2E_TLS_CERT_FILE" "$PAGERLESS_E2E_TLS_KEY_FILE"
+		printf '%s' "$GITHUB_READ_TOKEN"
+		printf '%s' "$GITHUB_WRITE_TOKEN"
+	} | sha256sum | cut -d ' ' -f 1)"
 	kc -n pagerless-e2e create secret tls sandbox-adapter-tls \
 		--cert="$PAGERLESS_E2E_TLS_CERT_FILE" --key="$PAGERLESS_E2E_TLS_KEY_FILE" \
 		--dry-run=client -o yaml | kc apply -f -
@@ -110,7 +121,16 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 		--from-file=write-token=<(printf '%s' "$GITHUB_WRITE_TOKEN") \
 		--dry-run=client -o yaml | kc apply -f -
 	kc apply -f "$REPO_ROOT/evals/e2e/manifests/adapter.yaml"
+	kc -n pagerless-e2e patch deployment sandbox-adapter --type=merge \
+		--patch "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"pagerless.dev/config-checksum\":\"$adapter_checksum\"}}}}}"
 	kc -n pagerless-e2e rollout status deployment/sandbox-adapter --timeout=180s
+	if [ "$reused_cluster" = 1 ]; then
+		# Argo CD caches the Sandbox repository certificate and credential. A
+		# reused cluster has just replaced both, so the repo server must reload
+		# them before the Sandbox Application can sync.
+		kc -n argocd rollout restart deployment/argocd-repo-server
+		kc -n argocd rollout status deployment/argocd-repo-server --timeout=180s
+	fi
 fi
 
 helm template pagerless-root "$REPO_ROOT/deploy/root" \
