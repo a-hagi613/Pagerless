@@ -106,7 +106,45 @@ Select `MODEL_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` in the ignored setup 
 
 The genuine OOMKilled recording at `evals/replay/oom.json` was captured from one live investigation, and its provenance records the agent Job, proposal hash, model and token usage. Its durable claim, retrieval, credential checks, normalization and provenance workflow are documented in [evals/replay](evals/replay/README.md). Synthetic test responses are kept separate and are never promoted as live evidence. Development and CI remain on Replay by default.
 
+## Cloud session (EKS)
+
+`make cloud-up` creates the whole environment on Amazon EKS and `make cloud-down` destroys it. The same Argo CD app-of-apps deploys the same stack as kind; the platform underneath is the only difference. The design is [ADR-0009](docs/adr/0009-eks-network-without-nat-or-load-balancers.md), [ADR-0010](docs/adr/0010-cost-model.md) and [ADR-0024](docs/adr/0024-budget-guardrail-stays-outside-terraform.md); [infra/README.md](infra/README.md) describes the configuration.
+
+A session is the only billable state in this repository. It exists to run one live Triage on managed Kubernetes, and it is destroyed as soon as that is done.
+
+### Prerequisites
+
+- An AWS account, with credentials for it in the environment (`AWS_PROFILE=pagerless`), Terraform 1.17.2, Helm v4.3.2 and kubectl v1.37.0. The account is fixed at `207567775100` in the configuration, and both commands refuse to run anywhere else.
+- The state bucket, created once: `cd infra/bootstrap && terraform init && terraform apply`.
+- The keyless CI identity, created once: `cd infra/ci && terraform init && terraform apply`. It is what the pull request plan and the nightly teardown use.
+- The same two fine-grained Sandbox tokens that the local workflow needs (ADR-0015), read from `.env` as `GITHUB_READ_TOKEN` and `GITHUB_WRITE_TOKEN` or `SANDBOX_READ_TOKEN` and `SANDBOX_WRITE_TOKEN`, plus `SANDBOX_URL`. They are stored as Kubernetes Secrets at bootstrap and never written to Git or printed.
+- No AWS key is needed for the model. The agent Job assumes an IAM role through EKS Pod Identity (`pagerless-agent-bedrock`), which may call only `us.amazon.nova-2-lite-v1:0`.
+
+### The commands
+
+```bash
+export AWS_PROFILE=pagerless
+make cloud-up      # Terraform, Argo CD, Karpenter, Secrets, the root Application
+make cloud-down    # terraform destroy, then the teardown check
+```
+
+`make cloud-up` prints the port-forward commands when the stack is healthy. There is no public endpoint other than the EKS API: the dashboard and Grafana are reached with `kubectl port-forward` on the `pagerless-eks` context.
+
+```bash
+export PAGERLESS_KUBE_CONTEXT=pagerless-eks
+make break SCENARIO=oom
+kubectl triage --context pagerless-eks list
+```
+
+### Session limits
+
+- At most two hours, and at most two sessions in a month; a second session only if the first failed.
+- The cluster must not span 03:17 UTC, when the nightly workflow destroys whatever is left.
+- Every session ends with `make cloud-down`, whose teardown check fails if any billable `project=pagerless` resource remains. The state bucket and the two CI roles are the only resources that persist, and neither bills.
+- The USD 5 monthly hard cap, its deny action and its role are managed by hand and stay outside Terraform (ADR-0024), so a `terraform destroy` can never remove them.
+
 ## CLI reference
+
 
 - `kubectl triage <pod/name | deploy/name | sts/name>` starts or joins a Triage; `--namespace` selects the Workload namespace and `--hint` adds human guidance.
 - `kubectl triage list` lists Triages. `list -o json` and `list -o yaml` return structured output.

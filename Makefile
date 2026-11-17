@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images test test-go test-agent lint lint-go lint-agent up dev e2e down break reset
+.PHONY: help generate manifests build-cli build-images test test-go test-agent lint lint-go lint-agent up dev e2e down break reset cloud-up cloud-down cloud-check
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -62,3 +62,21 @@ break: ## Inject a Scenario into the Sandbox, for example make break SCENARIO=oo
 
 reset: ## Force-reset the Sandbox to the known-good tag.
 	bash hack/reset.sh
+
+cloud-up: ## Create the EKS session, deploy the stack, and wait for it to be healthy.
+	bash hack/cloud-up.sh
+
+cloud-down: ## Destroy the EKS session and prove that nothing billable remains.
+	bash hack/cloud-down.sh
+
+cloud-check: ## Check formatting, validation and lint of every Terraform configuration.
+	terraform -chdir=infra fmt -check -recursive
+	cd infra/bootstrap && terraform init -backend=false -input=false && terraform validate
+	cd infra/ci && terraform init -backend=false -input=false && terraform validate
+	cd infra && terraform init -backend=false -input=false && terraform validate
+	cd infra && tflint --init && tflint --recursive
+	bash -n hack/cloud-up.sh hack/cloud-down.sh hack/cloud-teardown-check.sh
+	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/ec2nodeclass.yaml pagerless pagerless-karpenter-node >/dev/null
+	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/nodepool.yaml pagerless pagerless-karpenter-node >/dev/null
+	grep -q '__CLUSTER_NAME__' deploy/cloud/karpenter/nodepool.yaml
+	grep -q '__NODE_ROLE_NAME__' deploy/cloud/karpenter/ec2nodeclass.yaml
