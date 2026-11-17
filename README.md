@@ -39,19 +39,19 @@ The retention controller deletes a Triage seven days after the time in `status.t
 
 ## Dashboard
 
-`pagerless-server` serves the dashboard on port 8082. The Triage list merges the latest SQLite snapshot of every Triage with the live resources, so a row survives retention, and filters by Phase, Workload, Trigger source and time range. The detail view shows the live steps over Server-Sent Events, the Findings with their sources, the Diagnosis, the rendered change, the decision and execution, the Verification timeline, the Narrative, and embedded Grafana panels for the Workload's metrics and logs. The panels carry deep links, so the telemetry is one click away when an iframe cannot load. The API is read-only and uses the server's own Kubernetes client and history; it never writes.
+`pagerless-server` serves the dashboard on port 8082. The Triage list merges the latest SQLite snapshot of every Triage with the live resources, so a row survives retention, and filters by Phase, Workload, Trigger source and time range. The detail view shows the live steps over Server-Sent Events, the Findings with their sources, the Diagnosis, the rendered change, the Approve and Reject controls while the Triage is Proposed, the decision and execution, the Verification timeline, the Narrative, and embedded Grafana panels for the Workload's metrics and logs. The panels carry deep links, so the telemetry is one click away when an iframe cannot load. Approvers sign in through Keycloak; their decision is a TriageApproval that `pagerless-server` creates under its own service account with the verified user asserted as the approver, and the webhook accepts that only for a member of `pagerless-approvers` (ADR-0020). Start Triage creates a Triage for a chosen Workload with an optional Hint.
 
-The dashboard is built with Node 22.17.1 and the pinned dependencies in [`dashboard/package-lock.json`](dashboard/package-lock.json), and its output is embedded in the server binary at compile time. Local access:
+The dashboard is built with Node 22.17.1 and the pinned dependencies in [`dashboard/package-lock.json`](dashboard/package-lock.json), and its output is embedded in the server binary at compile time. Local access uses port 8080, because that is the origin the realm's dashboard client allows for the sign-in redirect:
 
 ```bash
 make dashboard-build   # npm ci && npm run build into dashboard/dist
 make build-images      # or build the server image, which runs the build in a Node stage
-kubectl --context kind-pagerless -n pagerless port-forward svc/pagerless-server 8082:8082
-# open http://localhost:8082
+kubectl --context kind-pagerless -n pagerless port-forward svc/pagerless-server 8080:8082
+# open http://localhost:8080
 kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Grafana embeds at `http://localhost:3000`, which is configurable with `--grafana-url`; the dashboard references are configurable with `--grafana-workload-dashboard-uid` and `--grafana-logs-dashboard-uid`. The dashboards themselves are provisioned from `deploy/observability/dashboards`. The HTTP API, its filters and the event-stream format are documented in [docs/dashboard.md](docs/dashboard.md). Dashboard sign-in and approvals are not part of this view; they are added with Keycloak.
+Grafana embeds at `http://localhost:3000`, which is configurable with `--grafana-url`; the dashboard references are configurable with `--grafana-workload-dashboard-uid` and `--grafana-logs-dashboard-uid`. The dashboards themselves are provisioned from `deploy/observability/dashboards`. Sign-in, the write endpoints, Start Triage, and the Playwright smoke test are documented in [docs/dashboard.md](docs/dashboard.md).
 
 ## Safety boundaries
 
@@ -171,7 +171,7 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 - [Glossary](GLOSSARY.md): the project's domain vocabulary.
 - [Scenarios and the answer key](docs/scenarios.md): the failure injections, both injection paths, and the expected Proposal for each Scenario.
 - [Architecture Decision Records](docs/adr/README.md): significant decisions and their rationale.
-- [Dashboard API and build](docs/dashboard.md): the read-only HTTP endpoints, the event stream and the Grafana configuration.
+- [Dashboard API and build](docs/dashboard.md): Keycloak sign-in, decisions, Start Triage, the HTTP endpoints, the event stream and the Grafana configuration.
 - [Server manifests and admission boundaries](deploy/pagerless-server/README.md).
 - [Read-only MCP services](deploy/mcp/README.md).
 - [Chaos Mesh](deploy/chaos-mesh/README.md).

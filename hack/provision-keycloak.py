@@ -30,6 +30,7 @@ KUBERNETES_ISSUER = "https://kubernetes.default.svc.cluster.local"
 AGENT_CLIENT = "pagerless-agent"
 AGENT_SERVICE_ACCOUNT = "pagerless-agent"
 DASHBOARD_CLIENT = "pagerless-dashboard"
+SERVER_CLIENT = "pagerless-server"
 APPROVERS_GROUP = "pagerless-approvers"
 DASHBOARD_REDIRECTS = ["http://localhost:8080/*", "http://127.0.0.1:8080/*"]
 
@@ -271,6 +272,66 @@ def ensure_dashboard_client(admin):
     return secret
 
 
+def ensure_server_client(admin):
+    """Create the client whose service account reads approver group membership.
+
+    The admission webhook asks this client's service account whether an asserted
+    approver belongs to the approvers group, so the client needs exactly the
+    realm-management roles that read users and groups (ADR-0020). It has no
+    browser flow and no other permission.
+    """
+    saved = existing_secret(DASHBOARD_SECRET, PAGERLESS_NAMESPACE)
+    found = clients(admin, SERVER_CLIENT)
+    if found:
+        client = found[0]
+    else:
+        client = {
+            "clientId": SERVER_CLIENT,
+            "enabled": True,
+            "publicClient": False,
+            "standardFlowEnabled": False,
+            "implicitFlowEnabled": False,
+            "directAccessGrantsEnabled": False,
+            "serviceAccountsEnabled": True,
+            "clientAuthenticatorType": "client-secret",
+        }
+    secret = saved.get("server-client-secret") or client.get("secret") or ""
+    if not secret or set(secret) == {"*"}:
+        secret = secrets.token_hex(32)
+    client.update({
+        "enabled": True,
+        "publicClient": False,
+        "standardFlowEnabled": False,
+        "implicitFlowEnabled": False,
+        "directAccessGrantsEnabled": False,
+        "serviceAccountsEnabled": True,
+        "clientAuthenticatorType": "client-secret",
+        "secret": secret,
+    })
+    if found:
+        admin.require("PUT", f"/admin/realms/{REALM}/clients/{client['id']}", client)
+    else:
+        admin.require("POST", f"/admin/realms/{REALM}/clients", client)
+        client = clients(admin, SERVER_CLIENT)[0]
+
+    service_account = admin.require(
+        "GET", f"/admin/realms/{REALM}/clients/{client['id']}/service-account-user")
+    realm_management = clients(admin, "realm-management")
+    if not realm_management:
+        raise RuntimeError("the realm has no realm-management client")
+    management_id = realm_management[0]["id"]
+    roles = [
+        admin.require("GET", f"/admin/realms/{REALM}/clients/{management_id}/roles/{name}")
+        for name in ("view-users", "query-groups")
+    ]
+    admin.require(
+        "POST",
+        f"/admin/realms/{REALM}/users/{service_account['id']}/role-mappings/clients/{management_id}",
+        roles,
+    )
+    return secret
+
+
 def main():
     credentials = existing_secret(CREDENTIALS_SECRET, KEYCLOAK_NAMESPACE)
     if "admin-password" not in credentials:
@@ -283,13 +344,16 @@ def main():
         ensure_kubernetes_identity_provider(admin)
         ensure_agent_client(admin, subject)
         client_secret = ensure_dashboard_client(admin)
+        server_secret = ensure_server_client(admin)
         issuer = f"http://keycloak.{KEYCLOAK_NAMESPACE}.svc.cluster.local:8080/realms/{REALM}"
     apply_secret(DASHBOARD_SECRET, PAGERLESS_NAMESPACE, {
         "client-id": DASHBOARD_CLIENT,
         "client-secret": client_secret,
+        "server-client-id": SERVER_CLIENT,
+        "server-client-secret": server_secret,
         "issuer": issuer,
     })
-    print(f"Provisioned realm {REALM}, group {APPROVERS_GROUP}, and the agent and dashboard clients.")
+    print(f"Provisioned realm {REALM}, group {APPROVERS_GROUP}, and the agent, dashboard, and server clients.")
 
 
 if __name__ == "__main__":
