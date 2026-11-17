@@ -29,7 +29,7 @@ Optional guidance a human attaches when starting a Triage, passed to the agent a
 _Avoid_: note, prompt, instruction
 
 **Context Bundle**:
-The fixed set of evidence Pagerless gathers before the agent's first model call: Workload status, pod states, events, recent logs, Argo CD status, and recent Sandbox commits.
+The fixed set of evidence Pagerless gathers before the agent's first model call: Workload status, pod states, events, recent logs, Argo CD status, the active chaos experiments that target the Workload, and recent Sandbox commits.
 _Avoid_: context, prefetch, snapshot
 
 **Finding**:
@@ -93,6 +93,10 @@ _Avoid_: demo repo, GitOps repo, test repo
 **Scenario**:
 One repeatable, injectable failure, such as an OOMKilled pod, a bad image tag, or a prompt injection in logs, that serves as both a demonstration and an evaluation case.
 _Avoid_: test case, fault, chaos experiment
+
+**Experiment**:
+An active Chaos Mesh object, such as a StressChaos CPU burn, that targets a Workload's pods from outside Git. Its name is the external cause a Diagnosis cites when no Action on the menu can fix the failure.
+_Avoid_: chaos job, injector
 
 **Replay**:
 Running the agent against recorded model responses for a Scenario instead of a live model, at no cost and with deterministic results.
