@@ -108,7 +108,13 @@ jobs:
           PAGERLESS_E2E_REQUIRE_PASS: "1"
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
           PLATFORM_REVISION: ${{ github.sha }}
-        run: bash evals/e2e/run.sh
+        run: |
+          set -euo pipefail
+          if [ "$PAGERLESS_E2E_RECORDING" = "1" ] && [ "$PAGERLESS_E2E_SCENARIOS" != "oom" ]; then
+            echo "Recording is supported only for the measured oom Scenario." >&2
+            exit 1
+          fi
+          bash evals/e2e/run.sh
 
       - name: Upload evaluation results
         if: always()
