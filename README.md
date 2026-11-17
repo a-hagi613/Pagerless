@@ -150,7 +150,7 @@ Triages are stored in `pagerless`; the Workload namespace is independent. The pl
 
 ## Development checks and services
 
-`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
+`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make validate` renders every chart and kustomization and checks it with the pinned kubeconform. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
 
 The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and the provisioned **Pagerless** dashboard, which charts Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and tokens and cost per Triage. It can be opened with:
 
