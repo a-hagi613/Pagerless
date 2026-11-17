@@ -143,7 +143,7 @@ func requireBoundedApproverBootstrap(t *testing.T, env *testenv.Env, config stri
 				}
 			}
 		}
-		if candidate.RoleRef.Name == "pagerless-server" {
+		if candidate.RoleRef.Name == serverName {
 			for _, subject := range candidate.Subjects {
 				if subject.Kind == rbacv1.ServiceAccountKind && subject.Name == server.DefaultServerServiceAccount {
 					dedicated = true

@@ -162,7 +162,7 @@ func TestServiceMonitorScrapesTheServerMetrics(t *testing.T) {
 	if !slices.Equal(monitor.Spec.NamespaceSelector.MatchNames, []string{pagerlessName}) {
 		t.Errorf("namespaceSelector = %v, want the pagerless namespace", monitor.Spec.NamespaceSelector.MatchNames)
 	}
-	if got := monitor.Spec.Selector.MatchLabels["app.kubernetes.io/name"]; got != "pagerless-server" {
+	if got := monitor.Spec.Selector.MatchLabels["app.kubernetes.io/name"]; got != serverName {
 		t.Errorf("selector = %v, want the pagerless-server Service", monitor.Spec.Selector.MatchLabels)
 	}
 	if len(monitor.Spec.Endpoints) != 1 || monitor.Spec.Endpoints[0].Port != "metrics" {

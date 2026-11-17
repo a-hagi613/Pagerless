@@ -41,7 +41,7 @@ func TestServerCannotCreateJobsThatEscapeTheAgentBoundary(t *testing.T) {
 		mutate func(*corev1.PodSpec)
 	}{
 		{"Executor identity", func(p *corev1.PodSpec) { p.ServiceAccountName = executorServiceAccount }},
-		{"server identity", func(p *corev1.PodSpec) { p.ServiceAccountName = "pagerless-server" }},
+		{"server identity", func(p *corev1.PodSpec) { p.ServiceAccountName = serverName }},
 		{"automatic API token", func(p *corev1.PodSpec) { p.AutomountServiceAccountToken = new(true) }},
 		{"write Secret volume", func(p *corev1.PodSpec) {
 			p.Volumes = append(p.Volumes, corev1.Volume{Name: "write-secret",

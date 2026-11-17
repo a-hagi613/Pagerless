@@ -473,7 +473,7 @@ func TestExecutorAcceptsOnlyPagerlessServer(t *testing.T) {
 	}{
 		{"no token", "", http.StatusUnauthorized, executorapi.ReasonUnauthenticated},
 		{"garbage", "not-a-token", http.StatusUnauthorized, executorapi.ReasonUnauthenticated},
-		{"the server's token for another audience", env.TokenForAccount(t, "pagerless-server", "pagerless-server"),
+		{"the server's token for another audience", env.TokenForAccount(t, serverName, serverName),
 			http.StatusUnauthorized, executorapi.ReasonUnauthenticated},
 		{
 			"the agent's token for the Executor's audience",
