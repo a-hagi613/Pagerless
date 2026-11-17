@@ -37,6 +37,26 @@ cluster_arn="arn:aws:eks:${CLOUD_REGION}:${CLOUD_ACCOUNT_ID}:cluster/${CLOUD_CLU
 # because a failed session may already have lost its control plane and the
 # destroy below must still run.
 if kubectl --context "$CLOUD_CONTEXT" get nodes >/dev/null 2>&1; then
+	echo "Stopping Argo CD before removing anything it manages."
+
+	# The Applications sync with automated prune and selfHeal, so a namespace or
+	# claim deleted while they exist is recreated within seconds. Delete the root
+	# Application first, with a foreground cascade, which removes the child
+	# Applications it manages, then any that remain, and refuse to continue until
+	# none is left: everything below assumes nothing will reconcile.
+	kc -n argocd delete application root --cascade=foreground --ignore-not-found --wait=true --timeout=10m >/dev/null 2>&1 || true
+	kc -n argocd get applications -o name 2>/dev/null | while IFS= read -r application; do
+		[ -n "$application" ] || continue
+		kc -n argocd delete "$application" --cascade=foreground --ignore-not-found --wait=false >/dev/null 2>&1 || true
+	done
+	for _ in $(seq 1 60); do
+		[ -z "$(kc -n argocd get applications -o name 2>/dev/null)" ] && break
+		sleep 5
+	done
+	if [ -n "$(kc -n argocd get applications -o name 2>/dev/null)" ]; then
+		die "Argo CD still has Applications; they would recreate what this teardown deletes. Delete them, then retry."
+	fi
+
 	echo "Removing the Karpenter capacity and the persistent claims before the destroy."
 
 	# Deleting the NodePool stops new provisioning; deleting the NodeClaims drains
