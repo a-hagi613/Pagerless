@@ -57,6 +57,8 @@ type Config struct {
 	AgentImage string
 	// AgentServerURL is the base URL that agent Jobs use to reach the report API. It is required.
 	AgentServerURL string
+	// AgentRuntime configures the model provider and read-only MCP services of agent Jobs.
+	AgentRuntime controller.AgentRuntimeConfig
 	// ReportListener is the listener the report API serves on. It is required.
 	ReportListener net.Listener
 	// ExecutorURL is the base URL of pagerless-executor. It is required.
@@ -239,6 +241,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			ServiceAccount: cfg.AgentServiceAccount,
 			ServerURL:      cfg.AgentServerURL,
 			Deadline:       int64(cfg.AgentDeadline.Seconds()),
+			Runtime:        cfg.AgentRuntime,
 		},
 		Proposals:    proposals,
 		Clock:        cfg.Clock,

@@ -34,6 +34,34 @@ const (
 	EnvTriggeringPod = "PAGERLESS_TRIGGERING_POD"
 	// EnvHint is the human Hint, when there is one.
 	EnvHint = "PAGERLESS_HINT"
+	// EnvModelProvider selects replay, anthropic, or bedrock.
+	EnvModelProvider = "PAGERLESS_MODEL_PROVIDER"
+	// EnvMCPKubernetesURL locates the read-only Kubernetes MCP endpoint.
+	EnvMCPKubernetesURL = "PAGERLESS_MCP_KUBERNETES_URL"
+	// EnvMCPGrafanaURL locates the read-only Grafana MCP endpoint.
+	EnvMCPGrafanaURL = "PAGERLESS_MCP_GRAFANA_URL"
+	// EnvMCPArgoCDURL locates the read-only Argo CD MCP endpoint.
+	EnvMCPArgoCDURL = "PAGERLESS_MCP_ARGOCD_URL"
+	// EnvMCPGitHubURL locates the read-only GitHub MCP endpoint.
+	EnvMCPGitHubURL = "PAGERLESS_MCP_GITHUB_URL"
+	// EnvMCPGrafanaToken authenticates callers to the Grafana MCP server.
+	EnvMCPGrafanaToken = "PAGERLESS_MCP_GRAFANA_TOKEN"
+	// EnvMCPArgoCDToken authenticates callers to the Argo CD MCP server.
+	EnvMCPArgoCDToken = "PAGERLESS_MCP_ARGOCD_TOKEN"
+	// EnvMCPGitHubToken is the read-only Sandbox token used by GitHub MCP.
+	EnvMCPGitHubToken = "PAGERLESS_MCP_GITHUB_TOKEN"
+	// EnvReplayFile names a captured Replay recording in the agent image.
+	EnvReplayFile = "PAGERLESS_REPLAY_FILE"
+	// EnvRecordingFile names the output of an explicitly requested live recording.
+	EnvRecordingFile = "PAGERLESS_RECORDING_FILE"
+	// EnvSandboxOwner scopes GitHub reads to the Sandbox owner.
+	EnvSandboxOwner = "PAGERLESS_SANDBOX_OWNER"
+	// EnvSandboxRepo scopes GitHub reads to the Sandbox repository.
+	EnvSandboxRepo = "PAGERLESS_SANDBOX_REPO"
+	// EnvArgoCDApplication scopes Argo CD reads to the Sandbox application.
+	EnvArgoCDApplication = "PAGERLESS_ARGOCD_APPLICATION"
+	// EnvAllowedNamespaces scopes Kubernetes reads to these comma-separated namespaces.
+	EnvAllowedNamespaces = "PAGERLESS_ALLOWED_NAMESPACES"
 )
 
 // EventsPath is the path an agent posts step events to.

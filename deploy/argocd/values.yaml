@@ -3,8 +3,17 @@
 # within seconds (spec #1). The jitter is removed so the interval is exact.
 configs:
   cm:
+    accounts.pagerless: apiKey
+    accounts.pagerless.enabled: "true"
     timeout.reconciliation: 10s
     timeout.reconciliation.jitter: 0s
+  params:
+    server.insecure: true
+  rbac:
+    policy.default: role:pagerless-none
+    policy.csv: |
+      p, role:pagerless-read, applications, get, default/sandbox, allow
+      g, pagerless, role:pagerless-read
 
 # Phase 1 uses only the Argo CD API and controllers. SSO, notifications, and
 # ApplicationSets are not needed for the local loop.

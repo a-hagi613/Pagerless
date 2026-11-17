@@ -19,6 +19,8 @@ spec:
           value: {{ required "sandbox.repoURL is required" .Values.sandbox.repoURL | quote }}
         - name: sandbox.targetRevision
           value: {{ required "sandbox.targetRevision is required" .Values.sandbox.targetRevision | quote }}
+        - name: mcp.githubHost
+          value: {{ .Values.mcp.githubHost | quote }}
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd

@@ -29,11 +29,18 @@ spec:
       containers:
         - name: server
           image: ghcr.io/a-hagi613/pagerless-server:0.1.0
+          imagePullPolicy: IfNotPresent
           args:
             - --agent-image=ghcr.io/a-hagi613/pagerless-agent:0.1.0
             - --report-url=http://pagerless-server.pagerless.svc:8080
             - --alert-namespaces=sandbox
             - --executor-url=http://pagerless-executor.pagerless.svc:8080
+            - --argocd-url=http://argocd-server.argocd.svc
+            - --alertmanager-url=http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+            - --sandbox-read-token-file=/var/run/pagerless/github-read/token
+          envFrom:
+            - configMapRef:
+                name: pagerless-agent-config
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -71,7 +78,23 @@ spec:
             - name: executor-token
               mountPath: /var/run/secrets/pagerless/executor
               readOnly: true
+            - name: argocd-token
+              mountPath: /var/run/secrets/pagerless/argocd
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+            - name: github-read
+              mountPath: /var/run/pagerless/github-read
+              readOnly: true
       volumes:
+        - name: github-read
+          secret:
+            secretName: github-read
+        - name: argocd-token
+          secret:
+            secretName: argocd-read
+        - name: temporary
+          emptyDir: {}
         # The token that authenticates the server to pagerless-executor (ADR-0014). Its audience is the Executor's,
         # so no other service accepts it, and the kubelet rotates it in place.
         - name: executor-token

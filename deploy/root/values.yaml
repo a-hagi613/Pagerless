@@ -8,3 +8,6 @@ platform:
 sandbox:
   repoURL: ""
   targetRevision: main
+
+mcp:
+  githubHost: ""

@@ -15,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
@@ -80,10 +82,10 @@ func run() error {
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
 			"service account that pagerless-server runs as")
 		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
-		sandboxURL    = flag.String("sandbox-url", "",
+		sandboxURL    = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
 			"git URL of the Sandbox; PatchResources is accepted only when it is set")
 		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
-		patchable     = flag.String("patch-namespaces", "",
+		patchable     = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
 			"comma-separated namespaces whose Workloads PatchResources may change")
 		executorURL = flag.String("executor-url", "",
 			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
@@ -148,6 +150,7 @@ func run() error {
 		Namespace:            *namespace,
 		AgentImage:           *agentImage,
 		AgentServerURL:       *reportURL,
+		AgentRuntime:         agentRuntimeFromEnvironment(),
 		ReportListener:       listener,
 		ExecutorURL:          *executorURL,
 		ExecutorToken:        tokenFromFile(*executorTokenFile),
@@ -174,6 +177,25 @@ func run() error {
 		return fmt.Errorf("run manager: %w", err)
 	}
 	return nil
+}
+
+// agentRuntimeFromEnvironment copies the non-secret configuration supplied by the bootstrap.
+// Provider and MCP credentials are referenced directly by agent Jobs, not read by the server.
+func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
+	return controller.AgentRuntimeConfig{
+		Provider:          os.Getenv(agentapi.EnvModelProvider),
+		KubernetesURL:     os.Getenv(agentapi.EnvMCPKubernetesURL),
+		GrafanaURL:        os.Getenv(agentapi.EnvMCPGrafanaURL),
+		ArgoCDURL:         os.Getenv(agentapi.EnvMCPArgoCDURL),
+		GitHubURL:         os.Getenv(agentapi.EnvMCPGitHubURL),
+		ReplayFile:        os.Getenv(agentapi.EnvReplayFile),
+		RecordingFile:     os.Getenv(agentapi.EnvRecordingFile),
+		SandboxOwner:      os.Getenv(agentapi.EnvSandboxOwner),
+		SandboxRepo:       os.Getenv(agentapi.EnvSandboxRepo),
+		ArgoCDApplication: os.Getenv(agentapi.EnvArgoCDApplication),
+		AllowedNamespaces: os.Getenv(agentapi.EnvAllowedNamespaces),
+		AWSRegion:         os.Getenv("AWS_REGION"),
+	}
 }
 
 // parseNamespaces splits the comma-separated list of alert namespaces and

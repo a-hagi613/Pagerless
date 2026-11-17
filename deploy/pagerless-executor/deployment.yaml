@@ -29,6 +29,7 @@ spec:
       containers:
         - name: executor
           image: ghcr.io/a-hagi613/pagerless-executor:0.1.0
+          imagePullPolicy: IfNotPresent
           args:
             - --github-token-file=/var/run/pagerless/github/token
           env:

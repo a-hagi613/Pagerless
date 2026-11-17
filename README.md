@@ -56,6 +56,7 @@ Prerequisites, at the versions pinned in [`hack/versions.env`](hack/versions.env
 
 - Docker Desktop, with at least 8 GiB of memory for the engine.
 - kind v0.33.0, kubectl v1.37.0, and Helm v4.3.2, on the `PATH`.
+- uv 0.13.8, which provisions the local read-only MCP accounts with managed Python 3.14.10.
 - GitHub CLI v2.104.0, required by `make break` and `make reset`.
 - GNU make. On Windows, run every command in WSL Ubuntu.
 
@@ -68,6 +69,8 @@ Steps:
 5. Run `make down` to delete the cluster. It keeps `.env`.
 
 The observability stack runs in the `monitoring` namespace: kube-prometheus-stack, Loki, Tempo, and the OpenTelemetry Collector, which ships the container logs of every Workload to Loki. Its values are in [`deploy/observability`](deploy/observability/README.md). Grafana is reachable with `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`, and it has Loki and Tempo data sources.
+
+`make up` also deploys the four [read-only MCP services](deploy/mcp/README.md) and provisions their Grafana Viewer and Sandbox-scoped Argo CD accounts. Replay is the default model provider. To capture a live run, select `MODEL_PROVIDER=anthropic` and set `ANTHROPIC_API_KEY` in the git-ignored `.env`; credentials are passed to agent Jobs through individual Secret keys. Existing `.env` settings are preserved when setup adds missing values.
 
 ## CLI
 

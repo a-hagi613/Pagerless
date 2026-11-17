@@ -50,6 +50,8 @@ type AgentJobConfig struct {
 	ServerURL string
 	// Deadline is the Job's active deadline.
 	Deadline int64
+	// Runtime selects the provider and read-only MCP endpoints.
+	Runtime AgentRuntimeConfig
 }
 
 // buildAgentJob returns the Job that runs the agent for a Triage. The agent
@@ -71,6 +73,7 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 	if spec.Hint != "" {
 		env = append(env, corev1.EnvVar{Name: agentapi.EnvHint, Value: spec.Hint})
 	}
+	env = append(env, cfg.Runtime.environment()...)
 	labels := map[string]string{
 		"app.kubernetes.io/name": "pagerless-agent",
 		TriageLabel:              triage.Name,
@@ -95,9 +98,10 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 					},
 					Containers: []corev1.Container{{
-						Name:  agentContainerName,
-						Image: cfg.Image,
-						Env:   env,
+						Name:            agentContainerName,
+						Image:           cfg.Image,
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						Env:             env,
 						SecurityContext: &corev1.SecurityContext{
 							AllowPrivilegeEscalation: new(false),
 							ReadOnlyRootFilesystem:   new(true),
@@ -112,13 +116,15 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 								corev1.ResourceMemory: resource.MustParse("512Mi"),
 							},
 						},
-						VolumeMounts: []corev1.VolumeMount{{
+						VolumeMounts: []corev1.VolumeMount{{Name: "temporary", MountPath: "/tmp"}, {
 							Name:      tokenVolumeName,
 							MountPath: tokenMountPath,
 							ReadOnly:  true,
 						}},
 					}},
-					Volumes: []corev1.Volume{{
+					Volumes: []corev1.Volume{{Name: "temporary",
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					}, {
 						Name: tokenVolumeName,
 						Projected: &corev1.ProjectedVolumeSource{
 							Sources: []corev1.VolumeProjection{{

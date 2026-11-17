@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
@@ -94,6 +95,7 @@ type options struct {
 	executionPoll    time.Duration
 	verificationPoll time.Duration
 	agentDeadline    time.Duration
+	agentRuntime     controller.AgentRuntimeConfig
 	alertNamespaces  []string
 }
 
@@ -223,6 +225,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		Namespace:                Namespace,
 		AgentImage:               AgentImage,
 		AgentServerURL:           env.ReportURL,
+		AgentRuntime:             o.agentRuntime,
 		ReportListener:           listener,
 		ExecutorURL:              env.ExecutorURL,
 		ExecutorToken:            executorToken,

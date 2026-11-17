@@ -1,0 +1,5 @@
+apiVersion: v2
+name: pagerless-mcp
+description: Read-only evidence services for Pagerless agent Jobs.
+type: application
+version: 0.1.0

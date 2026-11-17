@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pagerless-server
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: {{ required "platform.repoURL is required" .Values.platform.repoURL | quote }}
+    targetRevision: {{ required "platform.targetRevision is required" .Values.platform.targetRevision | quote }}
+    path: deploy/pagerless-server
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pagerless
+  # The server provisions its own webhook CA; bootstrap restarts it after runtime configuration changes.
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      name: pagerless-server
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: pagerless-server
+      jqPathExpressions:
+        - .webhooks[].clientConfig.caBundle
+    - group: apps
+      kind: Deployment
+      name: pagerless-server
+      namespace: pagerless
+      jqPathExpressions:
+        - .spec.template.metadata.annotations["kubectl.kubernetes.io/restartedAt"]
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m

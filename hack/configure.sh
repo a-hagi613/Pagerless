@@ -75,19 +75,40 @@ if [ -z "${MODEL_PROVIDER:-}" ]; then
 	changed=1
 fi
 
+if [ "$MODEL_PROVIDER" = "anthropic" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+	ask_token "Anthropic API key"
+	ANTHROPIC_API_KEY="$REPLY_TOKEN"
+	changed=1
+fi
+
+if [ "$MODEL_PROVIDER" = "bedrock" ]; then
+	if [ -z "${AWS_REGION:-}" ]; then
+		read -r -p "AWS region for Bedrock: " AWS_REGION
+		[ -n "$AWS_REGION" ] || die "AWS_REGION must not be empty."
+		changed=1
+	fi
+	if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+		echo "Set inference-scoped AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and AWS_SESSION_TOKEN for temporary credentials)." >&2
+		die "Host AWS profiles are not mounted into agent Jobs. Export their temporary credentials before make up."
+	fi
+fi
+
 if [ "$changed" -eq 0 ]; then
-	echo "Using the existing .env. Delete it to be prompted again."
+	echo "Using the existing $ENV_FILE. Delete it to be prompted again."
 	exit 0
 fi
 
 umask 077
-tmp="$(mktemp "$REPO_ROOT/.env.XXXXXX")"
-cat >"$tmp" <<EOF
-# Local configuration written by hack/configure.sh. Git-ignored; do not commit.
-SANDBOX_URL='$SANDBOX_URL'
-GITHUB_READ_TOKEN='$GITHUB_READ_TOKEN'
-GITHUB_WRITE_TOKEN='$GITHUB_WRITE_TOKEN'
-MODEL_PROVIDER='$MODEL_PROVIDER'
-EOF
+tmp="$(mktemp "${ENV_FILE}.XXXXXX")"
+if [ -f "$ENV_FILE" ]; then
+	cat "$ENV_FILE" >"$tmp"
+fi
+printf '\n# Local configuration written by hack/configure.sh. Git-ignored; do not commit.\n' >>"$tmp"
+for name in SANDBOX_URL GITHUB_READ_TOKEN GITHUB_WRITE_TOKEN MODEL_PROVIDER \
+	ANTHROPIC_API_KEY AWS_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+	if [ -n "${!name:-}" ]; then
+		printf '%s=%q\n' "$name" "${!name}" >>"$tmp"
+	fi
+done
 mv "$tmp" "$ENV_FILE"
 echo "Wrote $ENV_FILE"
