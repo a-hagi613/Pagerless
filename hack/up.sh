@@ -71,6 +71,23 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 		kc apply -f -
 fi
 
+# Argo CD treats an OCI Helm chart as a repository, and only a registered
+# repository with enableOCI lets it pull the agentgateway charts.
+kc apply -f - <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agentgateway-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: helm
+  name: agentgateway
+  url: oci://cr.agentgateway.dev/charts
+  enableOCI: "true"
+EOF
+
 kc create namespace pagerless-system --dry-run=client -o yaml | kc apply -f -
 kc create namespace pagerless --dry-run=client -o yaml | kc apply -f -
 kc create namespace keycloak --dry-run=client -o yaml | kc apply -f -
