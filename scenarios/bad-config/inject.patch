@@ -1,0 +1,13 @@
+diff --git a/workloads/checkout/deployment.yaml b/workloads/checkout/deployment.yaml
+index 3e51275..3c5eba2 100644
+--- a/workloads/checkout/deployment.yaml
++++ b/workloads/checkout/deployment.yaml
+@@ -24,7 +24,7 @@ spec:
+           command:
+             - python
+             - -c
+-            - "import time; held = bytearray(48 * 1024 * 1024); time.sleep(10 ** 9)"
++            - "import sys; sys.stderr.write('checkout: invalid configuration: unknown payment provider\\n'); sys.exit(1)"
+           resources:
+             requests:
+               memory: 64Mi

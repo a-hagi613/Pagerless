@@ -2,7 +2,7 @@
 # Commits a Scenario's injection to the Sandbox. The change goes through a pull
 # request with auto-merge (ADR-0011), so it merges only after the kubeconform
 # check passes. The script then waits for Argo CD to sync the merge commit and
-# for the Workload to report OOMKilled.
+# for the Workload to report the failure that the Scenario describes.
 set -euo pipefail
 
 # shellcheck source=hack/lib.sh
@@ -10,10 +10,15 @@ set -euo pipefail
 load_versions
 load_env
 
+# available_scenarios lists the Scenarios that scenarios/ defines.
+available_scenarios() {
+	(cd "$REPO_ROOT/scenarios" && find . -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | paste -sd ', ' -)
+}
+
 scenario="${1:-}"
-[ -n "$scenario" ] || die "usage: make break SCENARIO=<name>, for example make break SCENARIO=oom"
+[ -n "$scenario" ] || die "usage: make break SCENARIO=<name>. Scenarios: $(available_scenarios)"
 patch_file="$REPO_ROOT/scenarios/$scenario/inject.patch"
-[ -f "$patch_file" ] || die "unknown Scenario '$scenario': $patch_file does not exist."
+[ -f "$patch_file" ] || die "unknown Scenario '$scenario': $patch_file does not exist. Scenarios: $(available_scenarios)"
 
 require_env SANDBOX_URL GITHUB_WRITE_TOKEN
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
@@ -70,11 +75,22 @@ fi
 cd "$work/sandbox"
 git checkout --quiet -b "$branch"
 git apply "$patch_file"
+case "$scenario" in
+oom)
+	injected="lowers the checkout memory request and limit below the memory the container allocates, so the kernel terminates it with OOMKilled" ;;
+bad-config)
+	injected="commits a checkout configuration that the container refuses at start, so it exits and restarts with CrashLoopBackOff" ;;
+bad-image-tag)
+	injected="points the checkout container at an image tag that does not exist, so the kubelet cannot pull it" ;;
+unschedulable)
+	injected="requests more memory than any node offers, so the checkout pod stays Pending" ;;
+*)
+	injected="injects the $scenario Scenario" ;;
+esac
 git commit --quiet -am "Inject the $scenario Scenario into checkout
 
-The Scenario patch lowers the memory request and limit of the container that
-holds the buffer below the memory it allocates, so the kernel terminates it
-with OOMKilled. Pagerless remediates the change through a pull request."
+The Scenario patch $injected.
+Pagerless remediates the change through a pull request."
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	git_e2e push --quiet origin "$branch"
 	e2e_client=(uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/evals/e2e/client.py" --repository "$PAGERLESS_E2E_REPOSITORY")
@@ -110,34 +126,66 @@ echo "Merged as $merge_sha. Waiting for Argo CD to sync it."
 # The Workload is expected to be unhealthy after this sync, so only the sync is awaited.
 wait_for_application sandbox "$merge_sha" 300 synced
 
-deadline=$((SECONDS + 240))
-while :; do
-	reasons="$(kc -n sandbox get pods -l app.kubernetes.io/name=checkout \
-		-o jsonpath='{range .items[*]}{.status.containerStatuses[*].lastState.terminated.reason}{"\n"}{end}' 2>/dev/null || true)"
-	if grep -q OOMKilled <<<"$reasons"; then
-		break
-	fi
-	[ "$SECONDS" -lt "$deadline" ] || die "the checkout Workload did not report OOMKilled within 4 minutes."
-	sleep 5
-done
+# wait_for_checkout waits until the checkout pods answer the query with a value
+# that matches the pattern, so that every Scenario confirms the failure it
+# injected instead of assuming it.
+wait_for_checkout() {
+	local query="$1" pattern="$2" observed="$3" deadline=$((SECONDS + 240)) output
+	while :; do
+		output="$(kc -n sandbox get pods -l app.kubernetes.io/name=checkout -o jsonpath="$query" 2>/dev/null || true)"
+		if grep -qE "$pattern" <<<"$output"; then
+			return 0
+		fi
+		[ "$SECONDS" -lt "$deadline" ] || die "the checkout Workload did not report $observed within 4 minutes."
+		sleep 5
+	done
+}
 
-echo "The $scenario Scenario is injected. The checkout Workload reports OOMKilled."
+last_terminated='{range .items[*]}{.status.containerStatuses[*].lastState.terminated.reason}{"\n"}{end}'
+waiting='{range .items[*]}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}'
+unschedulable='{range .items[*]}{.status.conditions[?(@.type=="PodScheduled")].reason}{"\n"}{end}'
 
-# The OOMKilled alert reaches Alertmanager after kube-state-metrics reports the
-# termination and Prometheus evaluates the rule. The Alertmanager API is read
-# through the API server, so no port-forward is needed.
-alerts_path="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-alertmanager:http-web/proxy/api/v2/alerts?active=true"
-deadline=$((SECONDS + 300))
-while :; do
-	alerts="$(kc get --raw "$alerts_path" 2>/dev/null || true)"
-	if grep -q '"alertname":"ContainerOOMKilled"' <<<"$alerts" &&
-		grep -q '"pagerless_triage":"true"' <<<"$alerts" &&
-		grep -q '"deployment":"checkout"' <<<"$alerts"; then
-		break
-	fi
-	[ "$SECONDS" -lt "$deadline" ] || die "the ContainerOOMKilled alert for checkout did not fire in Alertmanager within 5 minutes."
-	sleep 5
-done
+case "$scenario" in
+oom)
+	wait_for_checkout "$last_terminated" '^OOMKilled$' "OOMKilled"
+	echo "The checkout Workload reports OOMKilled."
 
-echo "The ContainerOOMKilled alert is firing in Alertmanager for the checkout Workload."
+	# The OOMKilled alert reaches Alertmanager after kube-state-metrics reports the
+	# termination and Prometheus evaluates the rule. The Alertmanager API is read
+	# through the API server, so no port-forward is needed.
+	alerts_path="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-alertmanager:http-web/proxy/api/v2/alerts?active=true"
+	deadline=$((SECONDS + 300))
+	while :; do
+		alerts="$(kc get --raw "$alerts_path" 2>/dev/null || true)"
+		if grep -q '"alertname":"ContainerOOMKilled"' <<<"$alerts" &&
+			grep -q '"pagerless_triage":"true"' <<<"$alerts" &&
+			grep -q '"deployment":"checkout"' <<<"$alerts"; then
+			break
+		fi
+		[ "$SECONDS" -lt "$deadline" ] || die "the ContainerOOMKilled alert for checkout did not fire in Alertmanager within 5 minutes."
+		sleep 5
+	done
+	echo "The ContainerOOMKilled alert is firing in Alertmanager for the checkout Workload."
+	;;
+bad-config)
+	wait_for_checkout "$waiting" '^CrashLoopBackOff$' "CrashLoopBackOff"
+	echo "The checkout Workload reports CrashLoopBackOff."
+	;;
+bad-image-tag)
+	wait_for_checkout "$waiting" '^(ErrImagePull|ImagePullBackOff)$' "ErrImagePull or ImagePullBackOff"
+	echo "The checkout Workload reports a failed image pull."
+	;;
+unschedulable)
+	wait_for_checkout "$unschedulable" '^Unschedulable$' "Unschedulable"
+	echo "The checkout pod is Pending because it requests more memory than any node offers."
+	;;
+esac
+
+echo "The $scenario Scenario is injected."
+if [ "$scenario" != oom ]; then
+	cat <<EOF
+This Scenario has no opted-in alert rule, so start its Triage yourself:
+  kubectl --context kind-${KIND_CLUSTER_NAME} triage --namespace sandbox deploy/checkout
+EOF
+fi
 echo "Restore the Sandbox with: make reset"

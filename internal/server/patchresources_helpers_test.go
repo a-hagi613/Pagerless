@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,12 +28,24 @@ func withPatchResources() testenv.Option {
 	})
 }
 
+// withSandboxActions starts the harness with Validation accepting the Actions
+// that change the Sandbox through a pull request in Phase 2.
+func withSandboxActions() testenv.Option {
+	return testenv.WithValidators(func(e *testenv.Env) map[v1alpha1.Action]proposal.ActionValidator {
+		return e.SandboxActions(sandboxNamespace)
+	})
+}
+
 // workload describes one Workload in the cluster and its manifest in the Sandbox.
 type workload struct {
 	name string
 	// annotation overrides the source path annotation. noAnnotation leaves it out.
 	annotation   string
 	noAnnotation bool
+	// dependsOn are the dependency paths declared in the Workload's annotations.
+	dependsOn []string
+	// requests and limits replace the manifest's container resources when set.
+	requests, limits map[string]string
 	// noLive leaves the Workload out of the cluster. noManifest leaves it out of the Sandbox.
 	noLive, noManifest bool
 	// mutateLive changes the Deployment in the cluster, so that it differs from its manifest.
@@ -50,6 +63,9 @@ func (w workload) manifest() string {
 			path = w.sourcePath()
 		}
 		annotations = fmt.Sprintf("  annotations:\n    %s: %s\n", v1alpha1.AnnotationSourcePath, path)
+		if len(w.dependsOn) > 0 {
+			annotations += fmt.Sprintf("    %s: %s\n", v1alpha1.AnnotationDependsOnPaths, strings.Join(w.dependsOn, ","))
+		}
 	}
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
@@ -69,13 +85,45 @@ metadata:
       containers:
         - name: app
           image: registry.invalid/%[1]s:1.0
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              memory: 256Mi
-`, w.name, annotations)
+%[3]s`, w.name, annotations, w.resources())
+}
+
+// const requests that every Workload in the harness declares.
+const (
+	requestCPU     = "100m"
+	memoryResource = "memory"
+	requestMemory  = "128Mi"
+	limitMemory    = "256Mi"
+)
+
+// resources renders the container's resources, defaulting to the values that
+// every Workload in the harness starts with.
+func (w workload) resources() string {
+	requests := w.requests
+	if requests == nil {
+		requests = map[string]string{"cpu": requestCPU, memoryResource: requestMemory}
+	}
+	limits := w.limits
+	if limits == nil {
+		limits = map[string]string{memoryResource: limitMemory}
+	}
+	var b strings.Builder
+	b.WriteString("          resources:\n")
+	for _, section := range []struct {
+		name   string
+		values map[string]string
+	}{{"requests", requests}, {"limits", limits}} {
+		b.WriteString("            " + section.name + ":\n")
+		names := make([]string, 0, len(section.values))
+		for name := range section.values {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			fmt.Fprintf(&b, "              %s: %s\n", name, section.values[name])
+		}
+	}
+	return b.String()
 }
 
 // deploy commits the Workload's manifest to the Sandbox and creates the Workload in the cluster.
@@ -140,6 +188,18 @@ func startTriage(t *testing.T, env *testenv.Env, name string) (string, *testenv.
 	t.Helper()
 	created := env.CreateTriage(t, testenv.NewTriage(name))
 	return created.Name, env.StartAgent(t, created.Name)
+}
+
+// rollbackReport is a report whose Proposal reverts one Sandbox commit.
+func rollbackReport(commit string) agentapi.Report {
+	return agentapi.Report{
+		Diagnosis: "The last change to the file the Workload reads broke it, so that change should be reverted.",
+		Findings:  []v1alpha1.Finding{logFinding},
+		Proposal: v1alpha1.ProposedAction{
+			Action:     v1alpha1.ActionRollback,
+			Parameters: &v1alpha1.ActionParameters{Rollback: &v1alpha1.RollbackParameters{Commit: commit}},
+		},
+	}
 }
 
 // gitApplyCheck reports whether the patch applies cleanly to a fresh clone of the Sandbox.

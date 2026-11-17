@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,6 +49,40 @@ func (r *BareRepo) Commit(path, content, message string) string {
 	git(r.t, r.work, "commit", "--message", message)
 	git(r.t, r.work, "push", "origin", "HEAD:main")
 	return r.Head()
+}
+
+// CommitAll writes the files and commits them together on main, pushes, and
+// returns the new commit. The files are written in path order, so the commit is
+// reproducible.
+func (r *BareRepo) CommitAll(files map[string]string, message string) string {
+	r.t.Helper()
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	for _, path := range paths {
+		full := filepath.Join(r.work, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+			r.t.Fatalf("create directory for %s: %v", path, err)
+		}
+		if err := os.WriteFile(full, []byte(files[path]), 0o600); err != nil {
+			r.t.Fatalf("write %s: %v", path, err)
+		}
+		git(r.t, r.work, "add", path)
+	}
+	git(r.t, r.work, "commit", "--message", message)
+	git(r.t, r.work, "push", "origin", "HEAD:main")
+	return r.Head()
+}
+
+// Tag points the tag at main, pushes it, and returns the commit it names.
+func (r *BareRepo) Tag(name string) string {
+	r.t.Helper()
+	head := r.Head()
+	git(r.t, r.work, "tag", "--force", name, head)
+	git(r.t, r.work, "push", "--quiet", "--force", "origin", "refs/tags/"+name)
+	return head
 }
 
 // Symlink commits a symbolic link on main, pushes, and returns the new commit.
