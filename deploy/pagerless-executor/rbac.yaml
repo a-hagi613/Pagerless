@@ -47,3 +47,34 @@ subjects:
   - kind: ServiceAccount
     name: pagerless-executor
     namespace: pagerless
+---
+# RestartWorkload executes live (ADR-0002): the Executor deletes the Workload's
+# pods one at a time and reads the Workload and its pods to wait for each
+# replacement. The Role limits that write to the Sandbox namespace, where the
+# demo Workloads live.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pagerless-executor-restart
+  namespace: sandbox
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, delete]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pagerless-executor-restart
+  namespace: sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pagerless-executor-restart
+subjects:
+  - kind: ServiceAccount
+    name: pagerless-executor
+    namespace: pagerless

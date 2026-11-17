@@ -992,6 +992,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic", extra = ["bedrock"] },
+    { name = "boto3" },
     { name = "httpx" },
     { name = "httpx2" },
     { name = "langgraph" },
@@ -1012,6 +1013,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", extras = ["bedrock"], specifier = "==2.9.0" },
+    { name = "boto3", specifier = "==1.44.4" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "httpx2", specifier = "==2.16.2" },
     { name = "langgraph", specifier = "==1.2.22" },

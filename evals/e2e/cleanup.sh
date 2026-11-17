@@ -2,7 +2,7 @@
 # Sourced by the E2E runner; all variables and PIDs belong to that one run.
 cleanup_e2e() {
 	local result="$1" preserve_state=0 process
-	for process in "${observer:-}" "${forward:-}"; do
+	for process in "${observer:-}" "${forward:-}" "${sampler:-}"; do
 		if [ -n "$process" ]; then
 			kill "$process" 2>/dev/null || true
 			wait "$process" 2>/dev/null || true

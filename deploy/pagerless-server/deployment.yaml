@@ -35,6 +35,25 @@ spec:
           args:
             - --agent-image=ghcr.io/a-hagi613/pagerless-agent:0.1.0
             - --report-url=http://pagerless-server.pagerless.svc:8080
+            - --metrics-bind-address=:9090
+            - --dashboard-bind-address=:8082
+            # The browser reaches Grafana through its own port-forward, so the panel URLs use the reader's
+            # localhost. The dashboard UIDs default to the dashboards in deploy/observability/dashboards.
+            - --grafana-url=http://localhost:3000
+            # Sign-in runs against Keycloak. The browser reaches the dashboard on localhost:8080 through a
+            # port-forward, which is also the redirect URI the realm allows, and it is plain HTTP, so the
+            # session and flow cookies cannot be marked Secure there. Set the flag to true behind TLS.
+            - --dashboard-base-url=http://localhost:8080
+            - --dashboard-cookie-secure=false
+            - --oidc-issuer=http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless
+            - --oidc-client-id=pagerless-dashboard
+            - --oidc-client-secret-file=/var/run/pagerless/keycloak/client-secret
+            - --keycloak-base-url=http://keycloak.keycloak.svc.cluster.local:8080
+            - --keycloak-admin-client-id=pagerless-server
+            - --keycloak-admin-client-secret-file=/var/run/pagerless/keycloak/server-client-secret
+            - --approvers-group=pagerless-approvers
+            - --workload-namespaces=sandbox
+            - --history-path=/var/lib/pagerless/history.db
             - --alert-namespaces=sandbox
             - --executor-url=http://pagerless-executor.pagerless.svc:8080
             - --argocd-url=http://argocd-server.argocd.svc
@@ -56,6 +75,10 @@ spec:
               containerPort: 9443
             - name: health
               containerPort: 8081
+            - name: metrics
+              containerPort: 9090
+            - name: dashboard
+              containerPort: 8082
           livenessProbe:
             httpGet:
               path: /healthz
@@ -92,6 +115,14 @@ spec:
             - name: github-read
               mountPath: /var/run/pagerless/github-read
               readOnly: true
+            # The Keycloak identity: the dashboard client's secret completes the sign-in, and the server
+            # client's secret reads approver group membership (ADR-0020). Neither is in this repository.
+            - name: keycloak
+              mountPath: /var/run/pagerless/keycloak
+              readOnly: true
+            # The append-only history survives a server restart, so a Triage's record is not lost with its pod.
+            - name: history
+              mountPath: /var/lib/pagerless
       volumes:
         - name: alertmanager-token
           secret:
@@ -99,6 +130,9 @@ spec:
         - name: github-read
           secret:
             secretName: github-read
+        - name: keycloak
+          secret:
+            secretName: pagerless-keycloak-dashboard
         - name: argocd-token
           secret:
             secretName: argocd-read
@@ -118,3 +152,6 @@ spec:
         - name: webhook-certs
           emptyDir:
             medium: Memory
+        - name: history
+          persistentVolumeClaim:
+            claimName: pagerless-history

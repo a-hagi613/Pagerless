@@ -8,7 +8,16 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from pagerless_agent.bundle import BundleEvent, Commit, ContextBundle, PodLogs, PodState, WorkloadRef
+from pagerless_agent.bundle import (
+    MAX_EXPERIMENTS,
+    BundleEvent,
+    Commit,
+    ContextBundle,
+    Experiment,
+    PodLogs,
+    PodState,
+    WorkloadRef,
+)
 from pagerless_agent.mcp import MCPTools, ToolPolicyError
 from pagerless_agent.settings import Target
 
@@ -16,6 +25,10 @@ _MAX_PODS = 10
 _MAX_LOG_PODS = 3
 _MAX_CONTAINERS = 3
 _MAX_TEXT = 4000
+# The Chaos Mesh experiment kinds that can make a Workload fail without any
+# defect in its own manifests, so that NoAction is the correct Proposal.
+_EXPERIMENT_KINDS = ("StressChaos",)
+_EXPERIMENT_API_VERSION = "chaos-mesh.org/v1alpha1"
 
 
 class ContextReadError(ValueError):
@@ -30,7 +43,7 @@ class MCPContextSource:
         self._clock = clock
 
     async def gather(self, target: Target) -> ContextBundle:
-        """Read Workload status, ordered pods, events, logs, Argo CD status, and Sandbox commits."""
+        """Read Workload status, ordered pods, events, logs, Argo CD status, experiments, commits."""
         gathered_at = self._clock()
         workload = _object(
             await self._tools.read(
@@ -111,6 +124,7 @@ class MCPContextSource:
                 logs.append(PodLogs(pod=name, container=container_name, lines=_text(lines)[:_MAX_TEXT]))
 
         application = _object(await self._tools.read("argocd", "get_application", {}))
+        experiments = await self._experiments(target, _pod_labels(workload))
         commits = [
             _commit(c) for c in _items(await self._tools.read("github", "list_commits", {"perPage": 20}))
         ]
@@ -124,8 +138,41 @@ class MCPContextSource:
             events=events,
             logs=tuple(logs),
             argocd_status=_text(application.get("status", {}))[:_MAX_TEXT],
+            experiments=experiments,
             commits=tuple(commits[:20]),
         )
+
+    async def _experiments(self, target: Target, labels: dict[str, str]) -> tuple[Experiment, ...]:
+        """Read the active experiments that select the Workload's pods.
+
+        Only experiments whose selector admits the Workload's namespace and
+        whose label selector is satisfied by the Workload's pod labels are
+        reported. An experiment with no label selector selects every pod in the
+        namespace, so it matches. Selector fields the agent does not evaluate,
+        such as an explicit pod list, never prevent a reported match.
+        """
+        found: list[Experiment] = []
+        for kind in _EXPERIMENT_KINDS:
+            listed = await self._tools.read_objects(
+                "k8s",
+                "resources_list",
+                {"apiVersion": _EXPERIMENT_API_VERSION, "kind": kind, "namespace": target.namespace},
+            )
+            for item in _items(listed):
+                spec = _object(item.get("spec", {}))
+                if not _matches(_object(spec.get("selector", {})), target.namespace, labels):
+                    continue
+                if not _active(item):
+                    continue
+                found.append(
+                    Experiment(
+                        name=str(_object(item.get("metadata"))["name"]),
+                        kind=kind,
+                        target=f"{target.kind} {target.namespace}/{target.name}",
+                        duration=_duration(spec.get("duration")),
+                    )
+                )
+        return tuple(found[:MAX_EXPERIMENTS])
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -201,6 +248,60 @@ def _commit(value: dict[str, Any]) -> Commit:
 
 def _text(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _pod_labels(workload: dict[str, Any]) -> dict[str, str]:
+    """Return the labels that every pod of the Workload carries."""
+    labels: dict[str, str] = {}
+    template = _object(_object(workload.get("spec", {})).get("template", {}))
+    for source in (
+        _object(_object(template.get("metadata", {})).get("labels", {})),
+        _object(_object(workload.get("spec", {})).get("selector", {})).get("matchLabels", {}),
+    ):
+        for key, value in source.items():
+            labels[str(key)] = str(value)
+    return labels
+
+
+def _matches(selector: dict[str, Any], namespace: str, labels: dict[str, str]) -> bool:
+    """Report whether a Chaos Mesh selector can select the Workload's pods."""
+    namespaces = selector.get("namespaces") or []
+    if not isinstance(namespaces, list) or any(not isinstance(ns, str) for ns in namespaces):
+        raise ContextReadError("an experiment selector has a malformed namespace list")
+    if namespaces and namespace not in namespaces:
+        return False
+    # Chaos Mesh stores the label selector as one map of key to value.
+    label_selector = selector.get("labelSelectors") or {}
+    if not isinstance(label_selector, dict):
+        raise ContextReadError("an experiment selector has a malformed label selector")
+    return all(labels.get(str(key)) == str(value) for key, value in label_selector.items())
+
+
+def _active(experiment: dict[str, Any]) -> bool:
+    """Report whether the controller still runs the experiment.
+
+    Chaos Mesh records the injection in the `AllInjected` and `AllRecovered`
+    conditions. An experiment whose duration has elapsed reports
+    `AllRecovered=True` and is no longer a cause, so it is not evidence.
+    """
+    status = _object(experiment.get("status", {}))
+    desired = _object(status.get("experiment", {})).get("desiredPhase")
+    if desired in {"Stop", "Paused"}:
+        return False
+    for condition in status.get("conditions") or []:
+        condition = _object(condition)
+        if condition.get("status") == "True" and condition.get("type") in {"AllRecovered", "Paused"}:
+            return False
+    return True
+
+
+def _duration(value: Any) -> str:
+    """Render an experiment's duration as Chaos Mesh writes it."""
+    if value is None or value == "":
+        return "none (until the experiment is removed)"
+    if not isinstance(value, str):
+        raise ContextReadError("an experiment has a malformed duration")
+    return value
 
 
 def _selector(selector: dict[str, Any]) -> str:

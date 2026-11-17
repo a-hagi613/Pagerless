@@ -53,6 +53,23 @@ def complete_lines(buffer: bytearray) -> list[bytes]:
     return lines
 
 
+def failure_detail() -> str:
+    """Return the Triage's phase, conditions and recent steps, without tool output."""
+    current = triage_snapshot()
+    if current is None:
+        return "no checkout Triage exists"
+    status = current.get("status", {})
+    conditions = "; ".join(
+        f"{condition.get('type')}={condition.get('status')} reason={condition.get('reason')} "
+        f"message={condition.get('message')}"
+        for condition in status.get("conditions", [])
+    )
+    steps = " | ".join(
+        f"{step.get('kind')}: {step.get('summary')}" for step in status.get("steps", [])[-5:]
+    )
+    return f"phase={status.get('phase')} conditions=[{conditions}] steps=[{steps}]"
+
+
 def collect(history: Path, snapshot: Path, timeout: int) -> None:
     command = [
         "kubectl",
@@ -119,7 +136,7 @@ def collect(history: Path, snapshot: Path, timeout: int) -> None:
                         "Expired",
                         "Rejected",
                     }:
-                        raise RuntimeError(f"the checkout Triage ended in {phase}")
+                        raise RuntimeError(f"the checkout Triage ended in {phase}: {failure_detail()}")
         raise RuntimeError("the checkout Triage did not reach Recovered before timeout")
     finally:
         signal.signal(signal.SIGTERM, previous)
@@ -140,7 +157,9 @@ def wait_proposed(timeout: int) -> str:
             if phase == "Proposed":
                 return current["metadata"]["name"]
             if phase in {"Failed", "Invalid", "Expired", "Rejected", "NotRecovered"}:
-                raise RuntimeError(f"the checkout Triage ended in {phase} before Approval")
+                raise RuntimeError(
+                    f"the checkout Triage ended in {phase} before Approval: {failure_detail()}"
+                )
         time.sleep(2)
     raise RuntimeError("the checkout Triage did not reach Proposed before timeout")
 

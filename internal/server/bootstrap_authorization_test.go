@@ -115,12 +115,44 @@ func TestAuthorizationBootstrapReusesSecretsAndBindsOnlyTheCurrentUser(t *testin
 
 func requireBoundedApproverBootstrap(t *testing.T, env *testenv.Env, config string, binding rbacv1.RoleBinding) {
 	t.Helper()
-	for _, account := range []string{"pagerless-agent", server.DefaultServerServiceAccount, executorServiceAccount} {
-		user := "system:serviceaccount:pagerless:" + account
-		groups := []string{"system:authenticated", "system:serviceaccounts"}
-		if env.Can(t, user, groups, "create", "pagerless.dev", "triageapprovals", "") {
-			t.Errorf("bootstrap enabled %s to create Approvals", user)
+	authenticated := []string{"system:authenticated", "system:serviceaccounts"}
+	// The human bootstrap may bind only the current user (ADR-0004).
+	for _, account := range []string{server.DefaultAgentServiceAccount, executorServiceAccount} {
+		user := "system:serviceaccount:" + testenv.Namespace + ":" + account
+		if env.Can(t, user, authenticated, "create", "pagerless.dev", "triageapprovals", "") {
+			t.Errorf("the user bootstrap gave %s approval rights", user)
 		}
+	}
+	// ADR-0020: pagerless-server creates the Approval it asserts under its own
+	// identity, from its own dedicated Role, never from the user bootstrap.
+	serverUser := "system:serviceaccount:" + testenv.Namespace + ":" + server.DefaultServerServiceAccount
+	serverGroups := append(slices.Clone(authenticated), "system:serviceaccounts:"+testenv.Namespace)
+	if !env.Can(t, serverUser, serverGroups, "create", "pagerless.dev", "triageapprovals", "") {
+		t.Errorf("pagerless-server lacks its own dedicated permission to create Approvals")
+	}
+	var allBindings rbacv1.RoleBindingList
+	if err := env.Client.List(t.Context(), &allBindings, client.InNamespace(testenv.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	dedicated := false
+	for _, candidate := range allBindings.Items {
+		if candidate.RoleRef.Name == testenv.ApproverRole {
+			for _, subject := range candidate.Subjects {
+				if subject.Kind != rbacv1.UserKind {
+					t.Errorf("the approver Role is bound to %s %s, want only users", subject.Kind, subject.Name)
+				}
+			}
+		}
+		if candidate.RoleRef.Name == serverName {
+			for _, subject := range candidate.Subjects {
+				if subject.Kind == rbacv1.ServiceAccountKind && subject.Name == server.DefaultServerServiceAccount {
+					dedicated = true
+				}
+			}
+		}
+	}
+	if !dedicated {
+		t.Errorf("pagerless-server's approval permission does not come from its own pagerless-server RoleBinding")
 	}
 	// Existing user-managed bindings are never overwritten, even if they reuse bootstrap's deterministic name.
 	binding.Subjects = append(binding.Subjects,

@@ -28,6 +28,11 @@ func (a Action) DeliveredByPullRequest() bool {
 	}
 }
 
+// ExecutesLive reports whether the Executor carries out the Action against the
+// cluster rather than as a Sandbox pull request: RestartWorkload. NoAction
+// executes nothing.
+func (a Action) ExecutesLive() bool { return a == ActionRestartWorkload }
+
 // Reasons recorded on the Failed condition of a Triage whose execution ended it.
 const (
 	// ReasonExecutionRefused means the Executor refused to execute the approved Proposal.

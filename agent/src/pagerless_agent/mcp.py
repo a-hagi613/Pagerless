@@ -1,11 +1,11 @@
-"""Direct MCP connections with an explicit read-only, per-investigation policy."""
+"""MCP connections through agentgateway with an explicit read-only, per-investigation policy."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import httpx2
@@ -14,10 +14,21 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import CallToolResult, TextContent
 
+from pagerless_agent.keycloak import TokenProvider
 from pagerless_agent.model import ToolSpec
 from pagerless_agent.tools import MAX_TOOL_OUTPUT_CHARS, ToolResult, UnknownToolError
 
 ServerName = Literal["k8s", "grafana", "argocd", "github"]
+
+# Every MCP server is reached through agentgateway. The path selects the route
+# whose AgentgatewayPolicy allowlists that server's tools.
+GATEWAY_ENDPOINTS: dict[ServerName, str] = {
+    "k8s": "/mcp/kubernetes",
+    "grafana": "/mcp/grafana",
+    "argocd": "/mcp/argocd",
+    "github": "/mcp/github",
+}
+
 
 # Read-only server modes and Kubernetes RBAC remain independent boundaries.
 _ALLOWED_TOOLS: dict[str, frozenset[str]] = {
@@ -45,7 +56,12 @@ _ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     ),
     "github": frozenset({"list_commits", "get_commit", "get_file_contents", "get_pull_request"}),
 }
-_KINDS = frozenset({"Pod", "Deployment", "StatefulSet", "ReplicaSet", "Event"})
+# Each MCP tool is allowlisted by name. The Kubernetes resource kind is not
+# filtered here on purpose: agentgateway's route-level AgentgatewayPolicy refuses
+# a `resources_get` or `resources_list` whose `kind` is Secret (ADR-0022), and a
+# denial the client made first would never reach the gateway's audit log. The
+# Kubernetes MCP server's own denied-resource configuration and read-only Role
+# remain the final boundaries.
 _MAX_DISCOVERY_PAGES = 20
 
 
@@ -55,21 +71,41 @@ class ToolPolicyError(ValueError):
 
 @dataclass(frozen=True)
 class MCPServerConfig:
-    """One read-only server endpoint and its optional inbound bearer token."""
+    """One MCP gateway route and the token source that authenticates every request."""
 
     name: ServerName
     url: str
-    token: str | None = field(default=None, repr=False)
+    token_source: TokenProvider
+
+
+def gateway_endpoints(base_url: str) -> tuple[tuple[ServerName, str], ...]:
+    """Return the gateway route for every server, in a deterministic order."""
+    base = base_url.rstrip("/")
+    return tuple((name, base + path) for name, path in GATEWAY_ENDPOINTS.items())
 
 
 @asynccontextmanager
 async def connect(config: MCPServerConfig) -> AsyncIterator[Client]:
-    """Own a bounded Streamable HTTP connection with endpoint-specific authentication."""
-    headers = {"Authorization": f"Bearer {config.token}"} if config.token else {}
-    async with httpx2.AsyncClient(headers=headers, timeout=httpx2.Timeout(30, read=60)) as http:
+    """Own a bounded Streamable HTTP connection authenticated on every request."""
+    async with httpx2.AsyncClient(
+        auth=_GatewayToken(config.token_source), timeout=httpx2.Timeout(30, read=60)
+    ) as http:
         transport = streamable_http_client(config.url, http_client=http, max_sse_event_size=1 << 20)
         async with Client(transport, read_timeout_seconds=60) as client:
             yield client
+
+
+class _GatewayToken(httpx2.Auth):
+    """Attach a current Keycloak access token to each request agentgateway receives."""
+
+    def __init__(self, source: TokenProvider) -> None:
+        self._source = source
+
+    async def async_auth_flow(
+        self, request: httpx2.Request
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
+        request.headers["Authorization"] = f"Bearer {await self._source.access_token()}"
+        yield request
 
 
 class MCPTools:
@@ -199,10 +235,6 @@ class MCPTools:
             if args.get("namespace", self._namespace) != self._namespace:
                 raise ToolPolicyError("Kubernetes reads are restricted to the Workload's namespace")
             args["namespace"] = self._namespace
-            if tool in {"resources_get", "resources_list"}:
-                kind = args.get("kind")
-                if kind not in _KINDS or args.get("apiVersion") not in {"v1", "apps/v1", "events.k8s.io/v1"}:
-                    raise ToolPolicyError("this Kubernetes resource kind is not allowlisted")
         elif server == "github":
             if (
                 args.get("owner", self._owner) != self._owner

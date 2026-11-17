@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,12 +28,26 @@ func withPatchResources() testenv.Option {
 	})
 }
 
+// withSandboxActions starts the harness with Validation accepting the Actions
+// that change the Sandbox through a pull request in Phase 2.
+func withSandboxActions() testenv.Option {
+	return testenv.WithValidators(func(e *testenv.Env) map[v1alpha1.Action]proposal.ActionValidator {
+		return e.SandboxActions(sandboxNamespace)
+	})
+}
+
 // workload describes one Workload in the cluster and its manifest in the Sandbox.
 type workload struct {
 	name string
+	// replicas is the manifest's replica count. It defaults to one.
+	replicas int32
 	// annotation overrides the source path annotation. noAnnotation leaves it out.
 	annotation   string
 	noAnnotation bool
+	// dependsOn are the dependency paths declared in the Workload's annotations.
+	dependsOn []string
+	// requests and limits replace the manifest's container resources when set.
+	requests, limits map[string]string
 	// noLive leaves the Workload out of the cluster. noManifest leaves it out of the Sandbox.
 	noLive, noManifest bool
 	// mutateLive changes the Deployment in the cluster, so that it differs from its manifest.
@@ -42,6 +57,14 @@ type workload struct {
 // sourcePath is where the Workload's manifest lives in the Sandbox.
 func (w workload) sourcePath() string { return "apps/" + w.name + "/deployment.yaml" }
 
+// replicaCount is the manifest's replica count, one when it is unset.
+func (w workload) replicaCount() int32 {
+	if w.replicas == 0 {
+		return 1
+	}
+	return w.replicas
+}
+
 func (w workload) manifest() string {
 	annotations := ""
 	if !w.noAnnotation {
@@ -50,6 +73,9 @@ func (w workload) manifest() string {
 			path = w.sourcePath()
 		}
 		annotations = fmt.Sprintf("  annotations:\n    %s: %s\n", v1alpha1.AnnotationSourcePath, path)
+		if len(w.dependsOn) > 0 {
+			annotations += fmt.Sprintf("    %s: %s\n", v1alpha1.AnnotationDependsOnPaths, strings.Join(w.dependsOn, ","))
+		}
 	}
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
@@ -57,7 +83,7 @@ metadata:
   name: %[1]s
   namespace: sandbox
 %[2]sspec:
-  replicas: 1
+  replicas: %[3]d
   selector:
     matchLabels:
       app: %[1]s
@@ -69,13 +95,45 @@ metadata:
       containers:
         - name: app
           image: registry.invalid/%[1]s:1.0
-          resources:
-            requests:
-              cpu: 100m
-              memory: 128Mi
-            limits:
-              memory: 256Mi
-`, w.name, annotations)
+%[4]s`, w.name, annotations, w.replicaCount(), w.resources())
+}
+
+// const requests that every Workload in the harness declares.
+const (
+	requestCPU     = "100m"
+	memoryResource = "memory"
+	requestMemory  = "128Mi"
+	limitMemory    = "256Mi"
+)
+
+// resources renders the container's resources, defaulting to the values that
+// every Workload in the harness starts with.
+func (w workload) resources() string {
+	requests := w.requests
+	if requests == nil {
+		requests = map[string]string{"cpu": requestCPU, memoryResource: requestMemory}
+	}
+	limits := w.limits
+	if limits == nil {
+		limits = map[string]string{memoryResource: limitMemory}
+	}
+	var b strings.Builder
+	b.WriteString("          resources:\n")
+	for _, section := range []struct {
+		name   string
+		values map[string]string
+	}{{"requests", requests}, {"limits", limits}} {
+		b.WriteString("            " + section.name + ":\n")
+		names := make([]string, 0, len(section.values))
+		for name := range section.values {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			fmt.Fprintf(&b, "              %s: %s\n", name, section.values[name])
+		}
+	}
+	return b.String()
 }
 
 // deploy commits the Workload's manifest to the Sandbox and creates the Workload in the cluster.
@@ -135,11 +193,33 @@ func patchReport(container string, requests, limits corev1.ResourceList) agentap
 	}
 }
 
+// reportUsage is the model usage that the tests' agents report. Its cost is the sum of the published Haiku 5.5
+// rates for 1,200 input and 300 output tokens.
+var reportUsage = v1alpha1.Usage{InputTokens: 1_200, OutputTokens: 300, CostUSD: 0.00027}
+
+// withUsage attaches model usage to a report.
+func withUsage(report agentapi.Report, usage v1alpha1.Usage) agentapi.Report {
+	report.Usage = &usage
+	return report
+}
+
 // startTriage creates a Triage for the Workload and returns its stand-in agent.
 func startTriage(t *testing.T, env *testenv.Env, name string) (string, *testenv.StandInAgent) {
 	t.Helper()
 	created := env.CreateTriage(t, testenv.NewTriage(name))
 	return created.Name, env.StartAgent(t, created.Name)
+}
+
+// rollbackReport is a report whose Proposal reverts one Sandbox commit.
+func rollbackReport(commit string) agentapi.Report {
+	return agentapi.Report{
+		Diagnosis: "The last change to the file the Workload reads broke it, so that change should be reverted.",
+		Findings:  []v1alpha1.Finding{logFinding},
+		Proposal: v1alpha1.ProposedAction{
+			Action:     v1alpha1.ActionRollback,
+			Parameters: &v1alpha1.ActionParameters{Rollback: &v1alpha1.RollbackParameters{Commit: commit}},
+		},
+	}
 }
 
 // gitApplyCheck reports whether the patch applies cleanly to a fresh clone of the Sandbox.

@@ -68,6 +68,12 @@ func initializeRepository(ctx context.Context, directory, source, revision strin
 	if err := runGit(ctx, "", "--git-dir", directory, "fetch", "--depth=1", source, revision); err != nil {
 		return "", fmt.Errorf("fetch the pinned Sandbox base revision: %w", err)
 	}
+	// Validation of an unschedulable Workload compares against the request that
+	// the Sandbox's known-good tag declares, so the tag must exist locally.
+	if err := runGit(ctx, "", "--git-dir", directory, "fetch", "--depth=1", source,
+		"refs/tags/known-good:refs/tags/known-good"); err != nil {
+		return "", fmt.Errorf("fetch the Sandbox known-good tag: %w", err)
+	}
 	// The pinned revision may be an annotated tag. A branch tip must be a
 	// commit, so peel it before updating the reference.
 	output, err := gitOutput(ctx, directory, "rev-parse", "--verify", "FETCH_HEAD^{commit}")

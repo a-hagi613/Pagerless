@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
@@ -26,11 +29,14 @@ const DefaultVerificationPollInterval = 10 * time.Second
 // VerificationReconciler decides whether a Workload recovered after its merged pull request (ADR-0006). It moves
 // an Executing Triage whose pull request has merged to Verifying once Argo CD reports the application Synced and
 // Healthy at the merge commit, observes the Workload for the window, and ends the Triage as Recovered or
-// NotRecovered. A NotRecovered Triage starts a Follow-up Triage. Every decision is made by deterministic code, and
-// the reconciler writes nothing but status and the Follow-up Triage (ADR-0001).
+// NotRecovered. A NotRecovered Triage starts a Follow-up Triage. After a terminal outcome the reconciler starts
+// the Narrative Job, which never changes the outcome. Every decision is made by deterministic code, and the
+// reconciler writes nothing but status and the jobs and Triage it starts (ADR-0001).
 type VerificationReconciler struct {
-	// Client creates Follow-up Triages.
+	// Client creates Follow-up Triages and the Narrative Job.
 	Client client.Client
+	// Scheme sets the Narrative Job's owner reference.
+	Scheme *runtime.Scheme
 	// Status is the only writer of Triage status, and reads Triages directly from the API server.
 	Status *triage.StatusStore
 	// Verifier runs the checks.
@@ -41,12 +47,16 @@ type VerificationReconciler struct {
 	Window time.Duration
 	// PollInterval is how often a Triage is checked. It defaults to DefaultVerificationPollInterval.
 	PollInterval time.Duration
+	// NarrativeJob configures the Job that writes the Narrative of a concluded Triage.
+	NarrativeJob AgentJobConfig
 }
 
-// SetupWithManager registers the reconciler for Triages.
+// SetupWithManager registers the reconciler for Triages and the Jobs it watches.
 func (r *VerificationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.Triage{}).
+		// The Narrative Job's completion or failure is what drives the last status write of a Triage.
+		Owns(&batchv1.Job{}).
 		Named("verification").
 		// The test harness runs several managers in one process, which
 		// controller-runtime's process-wide name check would refuse.
@@ -68,7 +78,8 @@ func (r *VerificationReconciler) pollInterval() time.Duration {
 	return r.PollInterval
 }
 
-// Reconcile advances one Triage that is Executing with a merged pull request, Verifying, or NotRecovered.
+// Reconcile advances one Triage that is Executing with a merged pull request, Verifying, or has reached a
+// terminal Verification outcome and still needs its Narrative or Follow-up Triage.
 func (r *VerificationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	result, err := r.reconcile(ctx, req)
 	if err != nil && ctx.Err() != nil {
@@ -84,7 +95,7 @@ func (r *VerificationReconciler) reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	switch cached.Status.Phase {
-	case v1alpha1.PhaseExecuting, v1alpha1.PhaseVerifying, v1alpha1.PhaseNotRecovered:
+	case v1alpha1.PhaseExecuting, v1alpha1.PhaseVerifying, v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered:
 	default:
 		return ctrl.Result{}, nil
 	}
@@ -101,22 +112,33 @@ func (r *VerificationReconciler) reconcile(ctx context.Context, req ctrl.Request
 		return r.awaitSync(ctx, &tr)
 	case v1alpha1.PhaseVerifying:
 		return r.observe(ctx, &tr)
-	case v1alpha1.PhaseNotRecovered:
-		return ctrl.Result{}, r.ensureFollowUp(ctx, &tr)
+	case v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered:
+		// The Follow-up Triage comes first: the Narrative is secondary and must never delay it.
+		if tr.Status.Phase == v1alpha1.PhaseNotRecovered {
+			if err := r.ensureFollowUp(ctx, &tr); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, r.ensureNarrative(ctx, &tr)
 	default:
 		return ctrl.Result{}, nil
 	}
 }
 
-// awaitSync starts Verification once the pull request has merged and Argo CD has synced the merge commit.
+// awaitSync starts Verification once the pull request has merged and Argo CD has synced the merge commit,
+// or, for an Action that executed live, once its result is recorded and Argo CD reports the application Synced.
 func (r *VerificationReconciler) awaitSync(ctx context.Context, tr *v1alpha1.Triage) (ctrl.Result, error) {
-	if tr.Status.Execution == nil || tr.Status.Execution.MergeCommit == "" {
+	execution := tr.Status.Execution
+	if execution == nil {
+		return ctrl.Result{}, nil
+	}
+	if !live(tr) && execution.MergeCommit == "" {
 		// The execution reconciler records the merge commit, which triggers another reconcile.
 		return ctrl.Result{}, nil
 	}
-	synced, err := r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+	synced, err := r.synced(ctx, tr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("check that Argo CD synced the merge commit: %w", err)
+		return ctrl.Result{}, fmt.Errorf("check that Argo CD synced the change: %w", err)
 	}
 	if !synced.Passed {
 		return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
@@ -136,9 +158,27 @@ func (r *VerificationReconciler) awaitSync(ctx context.Context, tr *v1alpha1.Tri
 		return ctrl.Result{}, err
 	}
 	if started.Status.Phase == v1alpha1.PhaseVerifying {
-		logf.FromContext(ctx).Info("verification started", "triage", key.Name, "mergeCommit", tr.Status.Execution.MergeCommit)
+		logf.FromContext(ctx).Info("verification started", "triage", key.Name,
+			"mergeCommit", execution.MergeCommit, "live", live(tr))
 	}
 	return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
+}
+
+// synced checks the Argo CD status that applies to the Action: the merge commit
+// for a pull request Action, and no revision for an Action that changed no commit.
+func (r *VerificationReconciler) synced(
+	ctx context.Context, tr *v1alpha1.Triage,
+) (v1alpha1.VerificationCheck, error) {
+	if live(tr) {
+		return r.Verifier.LiveSynced(ctx)
+	}
+	return r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+}
+
+// live reports whether the Triage's Action executes against the cluster rather
+// than as a Sandbox pull request.
+func live(tr *v1alpha1.Triage) bool {
+	return tr.Status.Proposal != nil && tr.Status.Proposal.Action.ExecutesLive()
 }
 
 // observe watches the Workload for restarts throughout the observation window and decides only after it ends.
@@ -177,9 +217,9 @@ func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triag
 		return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
 	}
 
-	synced, err := r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+	synced, err := r.synced(ctx, tr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("check that Argo CD still has the merge commit synced and healthy: %w", err)
+		return ctrl.Result{}, fmt.Errorf("check that Argo CD still has the change synced and healthy: %w", err)
 	}
 	rollout, err := r.Verifier.Rollout(ctx, tr.Spec.Workload)
 	if err != nil {
@@ -220,10 +260,55 @@ func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triag
 		return ctrl.Result{}, err
 	}
 	logf.FromContext(ctx).Info("verification ended", "triage", key.Name, "phase", concluded.Status.Phase)
+	// The Follow-up Triage comes first: the Narrative is secondary and must never delay it.
 	if concluded.Status.Phase == v1alpha1.PhaseNotRecovered {
-		return ctrl.Result{}, r.ensureFollowUp(ctx, concluded)
+		if err := r.ensureFollowUp(ctx, concluded); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.ensureNarrative(ctx, concluded)
+}
+
+// ensureNarrative starts the Narrative Job of a Triage whose Verification has
+// ended, unless it already records a Narrative. The Job is named deterministically,
+// so a crash between recording the name and creating the Job repairs on the next
+// reconcile. A Job that failed is left alone: it writes no status, so the
+// Verification outcome and every other field stay as they were.
+func (r *VerificationReconciler) ensureNarrative(ctx context.Context, tr *v1alpha1.Triage) error {
+	if tr.Status.Narrative != "" {
+		return nil
+	}
+	job := buildNarrativeJob(tr, r.NarrativeJob)
+	if err := controllerutil.SetControllerReference(tr, job, r.Scheme); err != nil {
+		return fmt.Errorf("own the Narrative Job: %w", err)
+	}
+	// The record of the Job's name authorizes its pod at the agent API, so it is
+	// written before the Job can start.
+	recorded, err := r.Status.Update(ctx, client.ObjectKeyFromObject(tr), func(latest *v1alpha1.Triage) error {
+		if latest.Status.NarrativeJobName == "" {
+			latest.Status.NarrativeJobName = job.Name
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if recorded.Status.Narrative != "" {
+		return nil
+	}
+	if err := r.Client.Create(ctx, job); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("create the Narrative Job: %w", err)
+		}
+		var existing batchv1.Job
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(job), &existing); err != nil {
+			return fmt.Errorf("get the existing Narrative Job: %w", err)
+		}
+		if !metav1.IsControlledBy(&existing, tr) {
+			return fmt.Errorf("narrative Job %s exists and is not owned by Triage %s", existing.Name, tr.Name)
+		}
+	}
+	return nil
 }
 
 // setCheck records the result of a check, replacing an earlier result of the same check.

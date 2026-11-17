@@ -1,12 +1,12 @@
 // Package executorapi defines the contract between pagerless-server and
 // pagerless-executor (ADR-0005, ADR-0014): the server asks the Executor to
 // execute one Triage's Proposal by its hash, and the Executor answers with the
-// pull request it opened.
+// pull request it opened, or with the result of the Action it carried out live.
 //
 // The server authenticates with a projected service account token whose
 // audience is Audience. A request is idempotent per Proposal hash: repeating
 // it returns the pull request that the first request opened, with its current
-// state.
+// state, or the pods that the first request restarted.
 package executorapi
 
 import (
@@ -51,7 +51,9 @@ const (
 	PullRequestClosed PullRequestState = "Closed"
 )
 
-// Response is the Executor's answer to a request it carried out.
+// Response is the Executor's answer to a request it carried out. It holds
+// either the pull request that delivers the Proposal, or the result of an
+// Action that executed live.
 type Response struct {
 	// PullRequestURL is the pull request that delivers the Proposal.
 	PullRequestURL string `json:"pullRequestURL"`
@@ -59,6 +61,12 @@ type Response struct {
 	State PullRequestState `json:"state"`
 	// MergeCommit is the commit that merged the pull request, once merged.
 	MergeCommit string `json:"mergeCommit,omitempty"`
+	// Live reports that the Action was carried out against the cluster, so the
+	// response holds no pull request.
+	Live bool `json:"live,omitempty"`
+	// RestartedPods lists the pods that a live RestartWorkload deleted, in the
+	// order it deleted them.
+	RestartedPods []string `json:"restartedPods,omitempty"`
 }
 
 // Reason classifies why the Executor refused a request.
@@ -179,7 +187,7 @@ func (c *Client) Execute(ctx context.Context, triage, proposalHash string) (*Res
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-	if answer.PullRequestURL == "" {
+	if !answer.Live && answer.PullRequestURL == "" {
 		return nil, errors.New("the Executor answered without a pull request URL")
 	}
 	return &answer, nil

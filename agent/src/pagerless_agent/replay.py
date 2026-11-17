@@ -135,14 +135,21 @@ class ReplayProvider:
 
 
 class RecordingProvider:
-    """Wraps a live provider and records its responses, normalized, for Replay."""
+    """Wraps a live provider and records its responses, normalized, for Replay.
 
-    def __init__(self, inner: ModelProvider, *, scenario: str, model: str) -> None:
+    `workload` names the Workload when a call carries no Context Bundle, as the
+    Narrative's does, so that its recording is still checked for the Workload's
+    pod names.
+    """
+
+    def __init__(
+        self, inner: ModelProvider, *, scenario: str, model: str, workload: str | None = None
+    ) -> None:
         self._inner = inner
         self._scenario = scenario
         self._model = model
         self._turns: list[RecordedTurn] = []
-        self._workload: str | None = None
+        self._workload = workload
         self._call_ids = 0
 
     async def complete(self, request: ModelRequest) -> ModelResponse:
@@ -157,7 +164,8 @@ class RecordingProvider:
             calls.append({**call, "id": f"call_{self._call_ids}"})
         payload["tool_calls"] = calls
         self._turns.append(RecordedTurn(stage=request.stage, response=ModelResponse.model_validate(payload)))
-        self._workload = request.bundle.workload.name
+        if request.bundle is not None:
+            self._workload = request.bundle.workload.name
         return response
 
     def recording(self) -> Recording:

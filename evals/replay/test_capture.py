@@ -118,3 +118,62 @@ def test_synthetic_or_credential_containing_artifacts_cannot_be_promoted(
     artifact.write_bytes(b'{"response":"test-secret-key"}')
     with pytest.raises(RuntimeError, match="contains a credential"):
         capture.validate_recording(artifact, ("test-secret-key",))
+
+
+def narrative_document(**overrides: Any) -> dict[str, Any]:
+    document: dict[str, Any] = {
+        "format": "pagerless.dev/replay",
+        "version": 1,
+        "scenario": "narrative",
+        "model": capture.ANTHROPIC_MODEL,
+        "workload": "checkout",
+        "turns": [
+            {
+                "stage": "narrative",
+                "response": {
+                    "text": "The checkout Deployment recovered.",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            }
+        ],
+    }
+    document.update(overrides)
+    return document
+
+
+def test_a_narrative_recording_is_exactly_one_call(tmp_path: Path) -> None:
+    artifact = tmp_path / "narrative.json"
+    artifact.write_text(json.dumps(narrative_document()), encoding="utf-8")
+    assert len(capture.validate_narrative_recording(artifact).turns) == 1
+
+    for turns, message in (
+        (narrative_document()["turns"] * 2, "exactly one call"),
+        (
+            [{"stage": "investigate", "response": {"usage": {"input_tokens": 1, "output_tokens": 1}}}],
+            "exactly one call",
+        ),
+        (
+            [{"stage": "narrative", "response": {"text": " ", "usage": {"input_tokens": 1, "output_tokens": 1}}}],
+            "is empty",
+        ),
+    ):
+        artifact.write_text(json.dumps(narrative_document(turns=turns)), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=message):
+            capture.validate_narrative_recording(artifact)
+
+
+def test_a_narrative_recording_of_another_scenario_cannot_be_promoted(tmp_path: Path) -> None:
+    artifact = tmp_path / "narrative.json"
+    artifact.write_text(json.dumps(narrative_document(scenario="oom")), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not a live Haiku Narrative"):
+        capture.validate_narrative_recording(artifact)
+    artifact.write_text(json.dumps(narrative_document()), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="contains a credential"):
+        capture.validate_narrative_recording(artifact, ("The checkout",))
+
+
+def test_the_repository_narrative_recording_has_the_shape_the_job_plays() -> None:
+    recording = capture.Recording.load(Path(__file__).with_name("narrative.json"))
+    assert (recording.scenario, recording.workload) == ("narrative", "checkout")
+    assert [turn.stage for turn in recording.turns] == [capture.Stage.NARRATIVE]
+    assert recording.turns[0].response.text.strip()
