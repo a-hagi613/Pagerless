@@ -13,6 +13,9 @@ import (
 // defaultVerificationPoll is how often the harness's server checks a Triage that is being verified.
 const defaultVerificationPoll = 100 * time.Millisecond
 
+// appContainer is the name of the one container in the pods that tests create.
+const appContainer = "app"
+
 // WithVerificationPollInterval sets how often pagerless-server checks an Executing Triage for a sync and observes
 // a Verifying Triage.
 func WithVerificationPollInterval(d time.Duration) Option {
@@ -66,13 +69,13 @@ func (e *Env) CreateWorkloadPod(
 		Namespace: namespace,
 		Labels:    labels,
 		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "registry.invalid/app:1.0"}},
+			Containers: []corev1.Container{{Name: appContainer, Image: "registry.invalid/app:1.0"}},
 		},
 	}
 	if err := e.Client.Create(t.Context(), pod); err != nil {
 		t.Fatalf("create pod %s: %v", name, err)
 	}
-	status := corev1.ContainerStatus{Name: "app", Ready: termination == nil}
+	status := corev1.ContainerStatus{Name: appContainer, Ready: termination == nil}
 	if termination == nil {
 		status.State.Running = &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(e.Clock.Now())}
 	} else {

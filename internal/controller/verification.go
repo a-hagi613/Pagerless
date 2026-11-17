@@ -125,15 +125,20 @@ func (r *VerificationReconciler) reconcile(ctx context.Context, req ctrl.Request
 	}
 }
 
-// awaitSync starts Verification once the pull request has merged and Argo CD has synced the merge commit.
+// awaitSync starts Verification once the pull request has merged and Argo CD has synced the merge commit,
+// or, for an Action that executed live, once its result is recorded and Argo CD reports the application Synced.
 func (r *VerificationReconciler) awaitSync(ctx context.Context, tr *v1alpha1.Triage) (ctrl.Result, error) {
-	if tr.Status.Execution == nil || tr.Status.Execution.MergeCommit == "" {
+	execution := tr.Status.Execution
+	if execution == nil {
+		return ctrl.Result{}, nil
+	}
+	if !live(tr) && execution.MergeCommit == "" {
 		// The execution reconciler records the merge commit, which triggers another reconcile.
 		return ctrl.Result{}, nil
 	}
-	synced, err := r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+	synced, err := r.synced(ctx, tr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("check that Argo CD synced the merge commit: %w", err)
+		return ctrl.Result{}, fmt.Errorf("check that Argo CD synced the change: %w", err)
 	}
 	if !synced.Passed {
 		return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
@@ -153,9 +158,27 @@ func (r *VerificationReconciler) awaitSync(ctx context.Context, tr *v1alpha1.Tri
 		return ctrl.Result{}, err
 	}
 	if started.Status.Phase == v1alpha1.PhaseVerifying {
-		logf.FromContext(ctx).Info("verification started", "triage", key.Name, "mergeCommit", tr.Status.Execution.MergeCommit)
+		logf.FromContext(ctx).Info("verification started", "triage", key.Name,
+			"mergeCommit", execution.MergeCommit, "live", live(tr))
 	}
 	return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
+}
+
+// synced checks the Argo CD status that applies to the Action: the merge commit
+// for a pull request Action, and no revision for an Action that changed no commit.
+func (r *VerificationReconciler) synced(
+	ctx context.Context, tr *v1alpha1.Triage,
+) (v1alpha1.VerificationCheck, error) {
+	if live(tr) {
+		return r.Verifier.LiveSynced(ctx)
+	}
+	return r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+}
+
+// live reports whether the Triage's Action executes against the cluster rather
+// than as a Sandbox pull request.
+func live(tr *v1alpha1.Triage) bool {
+	return tr.Status.Proposal != nil && tr.Status.Proposal.Action.ExecutesLive()
 }
 
 // observe watches the Workload for restarts throughout the observation window and decides only after it ends.
@@ -194,9 +217,9 @@ func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triag
 		return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
 	}
 
-	synced, err := r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+	synced, err := r.synced(ctx, tr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("check that Argo CD still has the merge commit synced and healthy: %w", err)
+		return ctrl.Result{}, fmt.Errorf("check that Argo CD still has the change synced and healthy: %w", err)
 	}
 	rollout, err := r.Verifier.Rollout(ctx, tr.Spec.Workload)
 	if err != nil {

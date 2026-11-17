@@ -53,6 +53,7 @@ func startExecutor(t testing.TB, env *Env) string {
 	token := func() (string, error) { return env.GitHub.Token(), nil }
 	runner, err := executor.New(executor.Config{
 		Reader:    reader,
+		Writer:    reader,
 		Namespace: Namespace,
 		Sandbox:   sandbox.Repository{URL: env.Sandbox.URL, Branch: SandboxBranch},
 		GitHub:    &executor.GitHub{APIURL: env.GitHub.URL, Repository: GitHubRepository, Token: token},

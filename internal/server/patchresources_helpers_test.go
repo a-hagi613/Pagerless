@@ -39,6 +39,8 @@ func withSandboxActions() testenv.Option {
 // workload describes one Workload in the cluster and its manifest in the Sandbox.
 type workload struct {
 	name string
+	// replicas is the manifest's replica count. It defaults to one.
+	replicas int32
 	// annotation overrides the source path annotation. noAnnotation leaves it out.
 	annotation   string
 	noAnnotation bool
@@ -54,6 +56,14 @@ type workload struct {
 
 // sourcePath is where the Workload's manifest lives in the Sandbox.
 func (w workload) sourcePath() string { return "apps/" + w.name + "/deployment.yaml" }
+
+// replicaCount is the manifest's replica count, one when it is unset.
+func (w workload) replicaCount() int32 {
+	if w.replicas == 0 {
+		return 1
+	}
+	return w.replicas
+}
 
 func (w workload) manifest() string {
 	annotations := ""
@@ -73,7 +83,7 @@ metadata:
   name: %[1]s
   namespace: sandbox
 %[2]sspec:
-  replicas: 1
+  replicas: %[3]d
   selector:
     matchLabels:
       app: %[1]s
@@ -85,7 +95,7 @@ metadata:
       containers:
         - name: app
           image: registry.invalid/%[1]s:1.0
-%[3]s`, w.name, annotations, w.resources())
+%[4]s`, w.name, annotations, w.replicaCount(), w.resources())
 }
 
 // const requests that every Workload in the harness declares.

@@ -87,6 +87,7 @@ func run() error {
 	}
 	runner, err := executor.New(executor.Config{
 		Reader:    reader,
+		Writer:    reader,
 		Namespace: *namespace,
 		Sandbox:   sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch},
 		GitHub:    &executor.GitHub{APIURL: *apiURL, Repository: *repository, Token: token},
