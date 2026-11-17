@@ -1,0 +1,32 @@
+# The Gateway API CRDs are vendored at a pinned release so that Argo CD can
+# install them without a second remote source. Agentgateway 1.7.0 supports
+# Gateway API 1.6.3.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gateway-api-crds
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: {{ required "platform.repoURL is required" .Values.platform.repoURL | quote }}
+    targetRevision: {{ required "platform.targetRevision is required" .Values.platform.targetRevision | quote }}
+    path: deploy/gateway-api-crds
+    directory:
+      include: standard-install.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agentgateway-system
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 20
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m

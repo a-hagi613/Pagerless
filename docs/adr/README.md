@@ -25,3 +25,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0019](0019-opentelemetry-demo-as-rendered-manifests.md) | The OpenTelemetry Demo is committed to the Sandbox as rendered manifests |
 | [0020](0020-dashboard-approvals-assert-the-approver.md) | Dashboard Approvals assert the approver rather than impersonate |
 | [0021](0021-rollback-may-revert-declared-dependency-paths.md) | Rollback may revert commits on a Workload's declared dependency paths |
+| [0022](0022-agentgateway-is-the-only-mcp-caller.md) | agentgateway is the only caller of the MCP servers |
