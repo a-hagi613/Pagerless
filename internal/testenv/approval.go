@@ -41,7 +41,8 @@ func (e *Env) asUser(user string) *rest.Config {
 	return cfg
 }
 
-// GrantApprover binds the pagerless-approver Role to the user.
+// GrantApprover binds the pagerless-approver Role to the user, and waits until
+// the authorizer lets that user create a TriageApproval.
 func (e *Env) GrantApprover(t testing.TB, user string) {
 	t.Helper()
 	binding := &rbacv1.RoleBinding{
@@ -52,6 +53,7 @@ func (e *Env) GrantApprover(t testing.TB, user string) {
 	if err := e.Client.Create(t.Context(), binding); err != nil {
 		t.Fatalf("bind %s to %s: %v", ApproverRole, user, err)
 	}
+	e.waitUntilCan(t, user, "create", "pagerless.dev", "triageapprovals", "")
 }
 
 // GrantReader lets the user read Triages and TriageApprovals in the harness
@@ -77,6 +79,7 @@ func (e *Env) GrantReader(t testing.TB, user string) {
 	if err := e.Client.Create(t.Context(), binding); err != nil {
 		t.Fatalf("bind a reader Role to %s: %v", user, err)
 	}
+	e.waitUntilCan(t, user, "get", "pagerless.dev", "triages", "")
 }
 
 // KubeconfigAs writes a kubeconfig file whose only context authenticates as

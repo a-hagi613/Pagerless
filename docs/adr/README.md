@@ -27,3 +27,5 @@ Each record captures one significant decision, along with its context and conseq
 | [0021](0021-rollback-may-revert-declared-dependency-paths.md) | Rollback may revert commits on a Workload's declared dependency paths |
 | [0022](0022-agentgateway-is-the-only-mcp-caller.md) | agentgateway is the only caller of the MCP servers |
 | [0023](0023-bedrock-uses-amazon-nova-2-lite.md) | Bedrock uses Amazon Nova 2 Lite through Converse |
+| [0024](0024-budget-guardrail-stays-outside-terraform.md) | The budget guardrail stays outside Terraform |
+| [0025](0025-the-agent-job-admits-the-pod-identity-token.md) | The agent Job admits the EKS Pod Identity token |

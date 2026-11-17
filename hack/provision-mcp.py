@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 
 
-CONTEXT = "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
+CONTEXT = os.environ.get("PAGERLESS_KUBE_CONTEXT") or "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
 NAMESPACE = "pagerless"
 GATEWAY_NAMESPACE = "agentgateway-system"
 GATEWAY_URL = "http://mcp-gateway." + GATEWAY_NAMESPACE + ".svc.cluster.local"

@@ -9,7 +9,7 @@ import secrets
 import subprocess
 import sys
 
-CONTEXT = "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
+CONTEXT = os.environ.get("PAGERLESS_KUBE_CONTEXT") or "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
 ALERT_SECRET = "pagerless-alertmanager"
 
 
