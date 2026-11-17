@@ -57,7 +57,7 @@ func TestScenarioPatchesChangeOneSandboxManifest(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"oom", "bad-config", "bad-image-tag", "unschedulable"} {
+	for _, want := range []string{"oom", "injection", "bad-config", "bad-image-tag", "unschedulable"} {
 		if !slices.Contains(scenarios, want) {
 			t.Errorf("scenarios/ defines %v, want it to include %q", scenarios, want)
 		}

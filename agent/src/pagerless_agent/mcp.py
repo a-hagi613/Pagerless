@@ -56,18 +56,12 @@ _ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     ),
     "github": frozenset({"list_commits", "get_commit", "get_file_contents", "get_pull_request"}),
 }
-# Each readable kind is bound to the API version that serves it, so that a read
-# cannot reach a custom resource outside the allowlisted group. StressChaos is
-# the only Chaos Mesh kind the agent may read, and only to see the external
-# cause of a failure (spec #16, Scenario 9).
-_READABLE_API_VERSIONS = {
-    "Pod": frozenset({"v1"}),
-    "Deployment": frozenset({"apps/v1"}),
-    "StatefulSet": frozenset({"apps/v1"}),
-    "ReplicaSet": frozenset({"apps/v1"}),
-    "Event": frozenset({"v1", "events.k8s.io/v1"}),
-    "StressChaos": frozenset({"chaos-mesh.org/v1alpha1"}),
-}
+# Each MCP tool is allowlisted by name. The Kubernetes resource kind is not
+# filtered here on purpose: agentgateway's route-level AgentgatewayPolicy refuses
+# a `resources_get` or `resources_list` whose `kind` is Secret (ADR-0022), and a
+# denial the client made first would never reach the gateway's audit log. The
+# Kubernetes MCP server's own denied-resource configuration and read-only Role
+# remain the final boundaries.
 _MAX_DISCOVERY_PAGES = 20
 
 
@@ -241,12 +235,6 @@ class MCPTools:
             if args.get("namespace", self._namespace) != self._namespace:
                 raise ToolPolicyError("Kubernetes reads are restricted to the Workload's namespace")
             args["namespace"] = self._namespace
-            if tool in {"resources_get", "resources_list"}:
-                kind = args.get("kind")
-                if kind not in _READABLE_API_VERSIONS or (
-                    args.get("apiVersion") not in _READABLE_API_VERSIONS[kind]
-                ):
-                    raise ToolPolicyError("this Kubernetes resource kind is not allowlisted")
         elif server == "github":
             if (
                 args.get("owner", self._owner) != self._owner

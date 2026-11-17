@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
@@ -56,12 +56,16 @@ class ScriptedProvider:
 
 
 class RecordedTools:
-    """Tools that answer with recorded outputs, keyed by tool name and arguments."""
+    """Tools that answer with recorded outputs, keyed by tool name and arguments.
+
+    An answer is either the text a tool returned or the whole ToolResult, so a
+    test can replay a failure such as the gateway's refusal of one call.
+    """
 
     def __init__(
         self,
         specs: list[ToolSpec],
-        answers: dict[tuple[str, str], str],
+        answers: Mapping[tuple[str, str], str | ToolResult],
         on_call: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         self._specs = specs
@@ -81,7 +85,8 @@ class RecordedTools:
         key = (name, json.dumps(arguments, sort_keys=True))
         if key not in self.answers:
             return ToolResult(text=f"no recorded answer for {key}", is_error=True)
-        return ToolResult(text=self.answers[key])
+        answer = self.answers[key]
+        return answer if isinstance(answer, ToolResult) else ToolResult(text=answer)
 
 
 def tool_key(tool: str, /, **arguments: Any) -> tuple[str, str]:

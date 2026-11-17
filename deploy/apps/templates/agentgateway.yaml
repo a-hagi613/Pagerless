@@ -9,7 +9,7 @@ metadata:
 spec:
   project: default
   sources:
-    - repoURL: oci://cr.agentgateway.dev/charts
+    - repoURL: cr.agentgateway.dev/charts
       chart: agentgateway
       targetRevision: v1.7.0
       helm:

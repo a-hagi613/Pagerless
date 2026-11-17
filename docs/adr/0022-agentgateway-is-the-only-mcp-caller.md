@@ -23,5 +23,6 @@ The gateway removes the Keycloak token before forwarding. For servers that still
 - One policy point controls every MCP tool call, and #25 can rely on its denials.
 - The MCP caller tokens exist in two namespaces: the servers' Secret and the gateway's Secret copy. The agent Job no longer references either.
 - A route-level denial is logged as an HTTP 403 without a tool name, because authorization runs before the MCP call is attributed. Allowed calls are logged with the method and tool, which is the audit record.
+- The agent's client filters a Kubernetes read by namespace but not by resource kind. A client-side refusal of a Secret would deny the call before the gateway could log it, so the route policy is the argument-level boundary, and the Kubernetes MCP server's own denied-resource configuration and read-only Role are the final ones. Scenario 10 needs the attempt to reach the gateway for its denial to be provable.
 - The gateway reads a bare token from the Secret and adds the `Bearer` prefix; the Secret must not contain one.
 - A new MCP tool needs an entry in `_ALLOWED_TOOLS` and in the route's policy. Adding only the former makes the tool invisible to the agent, not callable outside the allowlist.

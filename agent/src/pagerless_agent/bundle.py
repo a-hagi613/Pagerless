@@ -13,6 +13,10 @@ MAX_RENDERED_LOG_LINES = 50
 MAX_RENDERED_COMMITS = 20
 MAX_EXPERIMENTS = 10
 
+# The Markdown markers that give the bundle its structure. Evidence must not be
+# able to start one, or a log line could pass for a section of the bundle.
+_STRUCTURAL_MARKERS = ("#", "```", "~~~")
+
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -111,7 +115,7 @@ class ContextBundle(_Frozen):
         ]
         if self.triggering_pod:
             out.append(f"Triggering pod: {self.triggering_pod}")
-        out += ["", "## Workload status", self.workload_status, "", "## Pods"]
+        out += ["", "## Workload status", _evidence(self.workload_status), "", "## Pods"]
         for pod in self.pods:
             reason = (
                 f", last termination: {pod.last_termination_reason}" if pod.last_termination_reason else ""
@@ -122,13 +126,15 @@ class ContextBundle(_Frozen):
             )
         out += ["", "## Events (most recent last)"]
         for event in self.events[-MAX_RENDERED_EVENTS:]:
-            out.append(f"- {_iso(event.time)} {event.type} {event.reason} {event.object}: {event.message}")
+            out.append(
+                f"- {_iso(event.time)} {event.type} {event.reason} {event.object}: {_evidence(event.message)}"
+            )
         out += ["", "## Recent logs"]
         for logs in self.logs:
             lines = logs.lines.splitlines()[-MAX_RENDERED_LOG_LINES:]
             out.append(f"### {logs.pod} / {logs.container}")
-            out.extend(lines)
-        out += ["", "## Argo CD status", self.argocd_status, "", "## Active chaos experiments"]
+            out.extend(_evidence(line) for line in lines)
+        out += ["", "## Argo CD status", _evidence(self.argocd_status), "", "## Active chaos experiments"]
         if not self.experiments:
             out.append("- none")
         for experiment in self.experiments[:MAX_EXPERIMENTS]:
@@ -138,8 +144,29 @@ class ContextBundle(_Frozen):
             )
         out += ["", "## Recent Sandbox commits (newest first)"]
         for commit in self.commits[:MAX_RENDERED_COMMITS]:
-            out.append(f"- {commit.sha} {_iso(commit.time)} {commit.author}: {commit.message}")
+            out.append(f"- {commit.sha} {_iso(commit.time)} {commit.author}: {_evidence(commit.message)}")
         return "\n".join(out)
+
+
+def _evidence(text: str) -> str:
+    """Return untrusted text with any Markdown structure marker escaped.
+
+    Log lines, event messages, commit messages, and status blobs are written by
+    systems that an attacker may control. A line that starts with a heading or a
+    code fence would otherwise read as part of the bundle's structure, so a log
+    line could pass for a section such as "Active chaos experiments". Escaping
+    the marker keeps the text what it is: evidence.
+    """
+    return "\n".join(_escape_marker(line) for line in text.split("\n"))
+
+
+def _escape_marker(line: str) -> str:
+    """Prefix a line's Markdown structure marker with a backslash."""
+    body = line.lstrip(" ")
+    if body.startswith(_STRUCTURAL_MARKERS):
+        indent = line[: len(line) - len(body)]
+        return f"{indent}\\{body}"
+    return line
 
 
 def _iso(value: datetime) -> str:

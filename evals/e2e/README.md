@@ -1,7 +1,11 @@
 # Credential-free end-to-end harness
 
 `make e2e` runs the OOMKilled Scenario with the synthetic Replay fixture in a
-dedicated kind cluster. The harness uses separate generated read and write
+dedicated kind cluster. Set `PAGERLESS_E2E_SCENARIO` to run another Scenario
+that `make break` accepts; the harness plays `fixtures/synthetic-<scenario>.json`
+unless `PAGERLESS_E2E_RECORDING` names another recording in that directory, so
+`PAGERLESS_E2E_SCENARIO=injection` runs the prompt-injection Scenario end to end.
+The harness uses separate generated read and write
 tokens, a per-run TLS CA, and a test-only GitHub-compatible adapter. It invokes
 the ordinary `make break` path, validates the Sandbox manifests with pinned
 kubeconform v0.8.0 before allowing the adapter's required check to pass, and
@@ -12,8 +16,8 @@ refuses a check for a changed head and merges only the checked commit. The harne
 merge SHA, Argo CD health at that SHA, the Recovered phase, the full five-minute
 Verification window, and every deterministic Verification check.
 
-The fixture at `fixtures/synthetic-oom.json` is test data. It is not a live
-recording and is never copied to `/app/recordings/oom.json`. This test exercises
+The fixtures under `fixtures/` are test data. They are not live recordings and
+are never copied to `/app/recordings/oom.json`. This test exercises
 Pagerless integrations against the adapter; it does not test GitHub.com's
 external API, GitHub-hosted branch protection, or GitHub Actions.
 
