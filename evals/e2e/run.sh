@@ -131,6 +131,33 @@ curl --fail --silent --cacert "$state/certs/ca.crt" https://localhost:18443/heal
 set -a
 . "$state/config.env"
 set +a
+# The evaluation subset reuses this isolated cluster and adapter for several
+# Scenarios. The harness resets, injects, approves as eval-approver, and scores
+# each run; this runner still owns the cluster, the adapter, and its cleanup.
+if [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
+	. "$repo_root/hack/lib.sh"
+	load_versions
+	export GIT_AUTHOR_NAME="Pagerless E2E" GIT_AUTHOR_EMAIL=e2e@pagerless.dev
+	export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+	make -C "$repo_root" build-cli
+	eval_arguments=(--adapter --scenarios "${PAGERLESS_E2E_SCENARIOS:-oom}"
+		--repeats "${PAGERLESS_E2E_REPEATS:-1}"
+		--results-dir "$repo_root/evals/results")
+	if [ "${PAGERLESS_E2E_REQUIRE_PASS:-1}" = "1" ]; then
+		eval_arguments+=(--require-pass)
+	fi
+	"${python[@]}" "$repo_root/evals/harness/eval.py" "${eval_arguments[@]}"
+	uv run --no-project --python "$PYTHON_VERSION" "$script_dir/client.py" \
+		--repository "$PAGERLESS_E2E_REPOSITORY" reset
+	wait_for_application sandbox 9eff68bdf72bcf9e99d6d713a152995d851aa841 900 healthy
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless delete triages --all --wait=true
+	if [ "$keep" = 1 ]; then
+		echo "Retained the reset healthy kind cluster and restricted state in $state."
+	else
+		echo "Credential-free Replay evaluation passed."
+	fi
+	exit 0
+fi
 uv run --no-project --python "$PYTHON_VERSION" "$script_dir/client.py" \
 	--repository "$PAGERLESS_E2E_REPOSITORY" reset
 . "$repo_root/hack/lib.sh"

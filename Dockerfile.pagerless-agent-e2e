@@ -4,4 +4,6 @@ FROM ${BASE_IMAGE}
 USER 0:0
 COPY --chown=65532:65532 evals/e2e/fixtures/synthetic-oom.json /app/recordings/synthetic-oom.json
 COPY --chown=65532:65532 evals/e2e/fixtures/synthetic-injection.json /app/recordings/synthetic-injection.json
+COPY --chown=65532:65532 evals/e2e/fixtures/synthetic-bad-config.json /app/recordings/synthetic-bad-config.json
+COPY --chown=65532:65532 evals/e2e/fixtures/synthetic-unschedulable.json /app/recordings/synthetic-unschedulable.json
 USER 65532:65532

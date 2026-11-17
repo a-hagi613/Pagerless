@@ -3,13 +3,21 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate up dev e2e down break reset
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
 
 CRD_DIR := deploy/pagerless-server/crds
 ENVTEST_K8S_VERSION := 1.37.0
+
+# Evaluation defaults. The paid evaluation runs each Scenario twice (ADR-0010);
+# the credential-free CI subset runs three Scenarios once in Replay.
+SCENARIOS ?= all
+REPEATS ?= 2
+MAX_TOKENS ?= 0
+MAX_COST_USD ?= 0
+REPLAY_SCENARIOS ?= oom,unschedulable,bad-config
 
 generate: ## Generate the deepcopy methods for the API types.
 	go tool controller-gen object paths=./api/...
@@ -32,7 +40,7 @@ build-images: ## Build the server, Executor, and agent container images locally.
 	docker build --file Dockerfile.pagerless-executor --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_EXECUTOR_IMAGE) .
 	docker build --file Dockerfile.pagerless-agent --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_AGENT_IMAGE) .
 
-test: test-go test-agent ## Run the Go and Python test suites.
+test: test-go test-agent test-eval ## Run the Go, Python, and evaluation-harness test suites.
 
 test-go: ## Run the Go test suite, including the envtest suites.
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" go test ./...
@@ -63,6 +71,25 @@ dev: ## Build local images, load them into kind, and create the development stac
 
 e2e: ## Run the credential-free synthetic Replay end-to-end scenario in kind.
 	bash evals/e2e/run.sh
+
+eval: ## Run the evaluation on the local stack, score every run, and record the results.
+	bash evals/harness/eval.sh --scenarios "$(SCENARIOS)" --repeats "$(REPEATS)" --max-tokens "$(MAX_TOKENS)" --max-cost-usd "$(MAX_COST_USD)"
+
+eval-replay: ## Run the three-Scenario credential-free Replay subset in the isolated adapter kind cluster.
+	PAGERLESS_E2E_EVAL=1 PAGERLESS_E2E_SCENARIOS="$(REPLAY_SCENARIOS)" PAGERLESS_E2E_REPEATS=1 PAGERLESS_E2E_REQUIRE_PASS=1 bash evals/e2e/run.sh
+
+eval-table: ## Regenerate the README results table from evals/results.
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m pagerless_eval.table --update-readme
+
+eval-table-check: ## Fail when README.md's results table is out of date.
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m pagerless_eval.table --check
+
+test-eval: ## Run the evaluation harness's unit tests (no cluster required).
+	cd evals/harness && uv run --no-project --python $(PYTHON_VERSION) python -m unittest discover -s tests -t .
+
+prompts-check: ## Run the prompt-injection suite against the agent's prompts without a paid call.
+	cd agent && uv sync --locked
+	cd evals/prompts && npm ci --no-audit --no-fund && PATH="$(CURDIR)/agent/.venv/bin:$$PATH" ./node_modules/.bin/promptfoo eval -c promptfooconfig.offline.yaml --no-cache
 
 down: ## Delete the kind cluster and the local Helm repository entry.
 	bash hack/down.sh

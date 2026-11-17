@@ -5,6 +5,15 @@ dedicated kind cluster. Set `PAGERLESS_E2E_SCENARIO` to run another Scenario
 that `make break` accepts; the harness plays `fixtures/synthetic-<scenario>.json`
 unless `PAGERLESS_E2E_RECORDING` names another recording in that directory, so
 `PAGERLESS_E2E_SCENARIO=injection` runs the prompt-injection Scenario end to end.
+
+The same cluster and adapter also serve the evaluation's credential-free subset.
+`make eval-replay` sets `PAGERLESS_E2E_EVAL=1` and runs `oom`, `unschedulable`,
+and `bad-config` through `evals/harness`, which resets, injects, approves as the
+`eval-approver` user, and scores each run. CI runs that target as the
+kind-backed gate; `make e2e` remains available as the single-scenario check.
+The evaluation's evaluator contract and scoring rules are in
+[docs/evaluation.md](../../docs/evaluation.md).
+
 The harness uses separate generated read and write
 tokens, a per-run TLS CA, and a test-only GitHub-compatible adapter. It invokes
 the ordinary `make break` path, validates the Sandbox manifests with pinned
