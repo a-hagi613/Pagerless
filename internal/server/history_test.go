@@ -47,6 +47,15 @@ func TestHistoryRecordsEveryPhaseChange(t *testing.T) {
 	env := testenv.Start(t, withPatchResources())
 	name := recovered(t, env)
 
+	// The server writes the snapshot after it writes the status, so the admin client can observe Recovered before
+	// the history holds it. Wait for the terminal snapshot rather than racing the recorder.
+	eventually(t, "history records the terminal snapshot", func() bool {
+		snapshots, err := env.History.Snapshots(t.Context(), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(snapshots) > 0 && snapshots[len(snapshots)-1].Phase == v1alpha1.PhaseRecovered
+	})
 	snapshots, err := env.History.Snapshots(t.Context(), name)
 	if err != nil {
 		t.Fatal(err)

@@ -2,14 +2,17 @@
 // pagerless-server on every Phase change and for every step event, and is never read to decide anything about an
 // Active Triage: the Triage resource remains the source of truth (ADR-0001).
 //
-// Schema version 1 has two tables, each with a trigger that refuses UPDATE and a trigger that refuses DELETE:
+// Schema version 2 has two tables, each with a trigger that refuses UPDATE and a trigger that refuses DELETE:
 //
-//	triage_snapshots(id, triage_uid, namespace, name, phase, observed_at, status)
+//	triage_snapshots(id, triage_uid, namespace, name, phase, observed_at, created_at, spec, status)
 //	triage_steps(id, triage_uid, namespace, name, recorded_at, kind, tool, summary, finding)
 //
-// A snapshot stores the whole Triage status as JSON next to the phase and the time it was observed. A step stores
-// the bounded step the server accepted, with its Finding as JSON when the step carried one. History therefore
-// cannot be rewritten by the application.
+// A snapshot stores the whole Triage status and spec as JSON next to the phase, the time the Triage was created,
+// and the time the status was observed. The spec is recorded so the dashboard can still show the Workload and the
+// Trigger after retention has deleted the Triage resource. A step stores the bounded step the server accepted,
+// with its Finding as JSON when the step carried one. History therefore cannot be rewritten by the application.
+//
+// Version 2 added the created_at and spec columns; a version 1 database is upgraded in place.
 package history
 
 import (
@@ -28,7 +31,7 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	// snapshotsTable holds one row per Phase change.
@@ -46,6 +49,8 @@ var schema = []string{
 		name TEXT NOT NULL,
 		phase TEXT NOT NULL,
 		observed_at TEXT NOT NULL,
+		created_at TEXT,
+		spec TEXT,
 		status TEXT NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS ` + snapshotsTable + `_by_triage ON ` + snapshotsTable + ` (namespace, name, id)`,
@@ -92,6 +97,11 @@ type Snapshot struct {
 	Phase v1alpha1.Phase
 	// ObservedAt is when the server wrote the status.
 	ObservedAt time.Time
+	// CreatedAt is when the Triage was created. It is zero for a snapshot written by schema version 1.
+	CreatedAt time.Time
+	// Spec is the Triage's immutable spec, recorded so the dashboard can show the Workload and the Trigger after
+	// retention has deleted the Triage resource. It is zero for a snapshot written by schema version 1.
+	Spec v1alpha1.TriageSpec
 	// Status is the complete Triage status at that moment.
 	Status v1alpha1.TriageStatus
 }
@@ -179,10 +189,64 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("create the history schema: %w", err)
 		}
 	}
+	// A database written by schema version 1 has the tables but not the columns that version 2 added.
+	for _, column := range []struct{ name, definition string }{
+		{"created_at", "TEXT"},
+		{"spec", "TEXT"},
+	} {
+		if err := s.ensureColumn(ctx, snapshotsTable, column.name, column.definition); err != nil {
+			return err
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion)); err != nil {
 		return fmt.Errorf("record the history schema version: %w", err)
 	}
 	return nil
+}
+
+// ensureColumn adds a nullable column to a table that does not have it yet, so that an older database is upgraded
+// without rewriting any row.
+func (s *Store) ensureColumn(ctx context.Context, table, column, definition string) error {
+	found, err := s.hasColumn(ctx, table, column)
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, "ALTER TABLE "+table+" ADD COLUMN "+column+" "+definition); err != nil {
+		return fmt.Errorf("add the %s column to %s: %w", column, table, err)
+	}
+	return nil
+}
+
+// hasColumn reports whether the table already has the column.
+func (s *Store) hasColumn(ctx context.Context, table, column string) (bool, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("read the columns of %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			position   int
+			name       string
+			columnType string
+			notNull    int
+			fallback   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&position, &name, &columnType, &notNull, &fallback, &primaryKey); err != nil {
+			return false, fmt.Errorf("read a column of %s: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read the columns of %s: %w", table, err)
+	}
+	return false, nil
 }
 
 // AppendSnapshot records a Triage status at the moment the server wrote it. It appends; it never replaces an
@@ -192,10 +256,19 @@ func (s *Store) AppendSnapshot(ctx context.Context, tr *v1alpha1.Triage, at time
 	if err != nil {
 		return fmt.Errorf("encode the status of Triage %s: %w", tr.Name, err)
 	}
+	spec, err := json.Marshal(tr.Spec)
+	if err != nil {
+		return fmt.Errorf("encode the spec of Triage %s: %w", tr.Name, err)
+	}
+	var createdAt any
+	if !tr.CreationTimestamp.IsZero() {
+		createdAt = formatTime(tr.CreationTimestamp.Time)
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO `+snapshotsTable+` (triage_uid, namespace, name, phase, observed_at, status)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		string(tr.UID), tr.Namespace, tr.Name, string(tr.Status.Phase), formatTime(at), string(status),
+		`INSERT INTO `+snapshotsTable+` (triage_uid, namespace, name, phase, observed_at, created_at, spec, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(tr.UID), tr.Namespace, tr.Name, string(tr.Status.Phase), formatTime(at), createdAt,
+		string(spec), string(status),
 	)
 	if err != nil {
 		return fmt.Errorf("append a snapshot of Triage %s: %w", tr.Name, err)
@@ -230,7 +303,7 @@ func (s *Store) AppendStep(
 // Snapshots returns the snapshots of a Triage in the order they were appended.
 func (s *Store) Snapshots(ctx context.Context, triage string) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT triage_uid, namespace, name, phase, observed_at, status
+		`SELECT triage_uid, namespace, name, phase, observed_at, created_at, spec, status
 		 FROM `+snapshotsTable+` WHERE name = ? ORDER BY id`, triage)
 	if err != nil {
 		return nil, fmt.Errorf("read the snapshots of Triage %s: %w", triage, err)
@@ -238,28 +311,84 @@ func (s *Store) Snapshots(ctx context.Context, triage string) ([]Snapshot, error
 	defer func() { _ = rows.Close() }()
 	var snapshots []Snapshot
 	for rows.Next() {
-		var (
-			snapshot  Snapshot
-			phase     string
-			observed  string
-			statusRaw string
-		)
-		if err := rows.Scan(&snapshot.UID, &snapshot.Namespace, &snapshot.Triage, &phase, &observed, &statusRaw); err != nil {
+		snapshot, err := scanSnapshot(rows)
+		if err != nil {
 			return nil, fmt.Errorf("read a snapshot of Triage %s: %w", triage, err)
 		}
-		snapshot.Phase = v1alpha1.Phase(phase)
-		if snapshot.ObservedAt, err = parseTime(observed); err != nil {
-			return nil, fmt.Errorf("read the time of a snapshot of Triage %s: %w", triage, err)
-		}
-		if err := json.Unmarshal([]byte(statusRaw), &snapshot.Status); err != nil {
-			return nil, fmt.Errorf("decode a snapshot of Triage %s: %w", triage, err)
-		}
-		snapshots = append(snapshots, snapshot)
+		snapshots = append(snapshots, *snapshot)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the snapshots of Triage %s: %w", triage, err)
 	}
 	return snapshots, nil
+}
+
+// Latest returns the most recent snapshot of every Triage, most recently appended first. It is what the
+// dashboard's list starts from, so a Triage whose resource retention deleted still appears.
+func (s *Store) Latest(ctx context.Context) ([]Snapshot, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT s.triage_uid, s.namespace, s.name, s.phase, s.observed_at, s.created_at, s.spec, s.status
+		 FROM `+snapshotsTable+` s
+		 JOIN (SELECT namespace, name, MAX(id) AS id FROM `+snapshotsTable+` GROUP BY namespace, name) latest
+		   ON s.id = latest.id
+		 ORDER BY s.id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("read the latest snapshots: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var snapshots []Snapshot
+	for rows.Next() {
+		snapshot, err := scanSnapshot(rows)
+		if err != nil {
+			return nil, fmt.Errorf("read a latest snapshot: %w", err)
+		}
+		snapshots = append(snapshots, *snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the latest snapshots: %w", err)
+	}
+	return snapshots, nil
+}
+
+// scanner is the subset of *sql.Rows that scanSnapshot reads.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+// scanSnapshot reads one snapshot row in the column order that both queries select.
+func scanSnapshot(row scanner) (*Snapshot, error) {
+	var (
+		snapshot  Snapshot
+		phase     string
+		observed  string
+		created   sql.NullString
+		specRaw   sql.NullString
+		statusRaw string
+	)
+	if err := row.Scan(
+		&snapshot.UID, &snapshot.Namespace, &snapshot.Triage, &phase, &observed, &created, &specRaw, &statusRaw,
+	); err != nil {
+		return nil, err
+	}
+	snapshot.Phase = v1alpha1.Phase(phase)
+	var err error
+	if snapshot.ObservedAt, err = parseTime(observed); err != nil {
+		return nil, err
+	}
+	if created.Valid {
+		if snapshot.CreatedAt, err = parseTime(created.String); err != nil {
+			return nil, err
+		}
+	}
+	if specRaw.Valid && specRaw.String != "" {
+		if err := json.Unmarshal([]byte(specRaw.String), &snapshot.Spec); err != nil {
+			return nil, err
+		}
+	}
+	if err := json.Unmarshal([]byte(statusRaw), &snapshot.Status); err != nil {
+		return nil, err
+	}
+	return &snapshot, nil
 }
 
 // Steps returns the step events of a Triage in the order they were appended.

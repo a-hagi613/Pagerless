@@ -78,6 +78,8 @@ type Env struct {
 	ReportURL string
 	// MetricsURL is the base URL of the Prometheus metrics API.
 	MetricsURL string
+	// DashboardURL is the base URL of the dashboard and its read-only API.
+	DashboardURL string
 	// HistoryPath is the SQLite file the server appends history to.
 	HistoryPath string
 	// History is the server's history, opened for reading by the test.
@@ -237,6 +239,11 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("listen for the metrics API: %v", err)
 	}
 	t.Cleanup(func() { _ = metricsListener.Close() })
+	dashboardListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the dashboard: %v", err)
+	}
+	t.Cleanup(func() { _ = dashboardListener.Close() })
 	historyPath := filepath.Join(t.TempDir(), "history.db")
 	env := &Env{
 		Config:         cfg,
@@ -245,6 +252,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ServerConfig:   serverConfig,
 		ReportURL:      "http://" + listener.Addr().String(),
 		MetricsURL:     "http://" + metricsListener.Addr().String(),
+		DashboardURL:   "http://" + dashboardListener.Addr().String(),
 		HistoryPath:    historyPath,
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
@@ -270,6 +278,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 		AgentRuntime:             o.agentRuntime,
 		ReportListener:           listener,
 		MetricsListener:          metricsListener,
+		DashboardListener:        dashboardListener,
+		GrafanaURL:               "http://grafana.monitoring.test",
 		HistoryPath:              historyPath,
 		ExecutorURL:              env.ExecutorURL,
 		ExecutorToken:            executorToken,

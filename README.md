@@ -2,7 +2,7 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard, agentgateway, Keycloak and EKS deployment are later phases.
+> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented; Start Triage, dashboard sign-in and approvals, agentgateway, Keycloak and the EKS deployment are later work.
 
 ## The Phase 1 loop
 
@@ -26,15 +26,32 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 - **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md).
 - **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment, with a provisioned Grafana dashboard for Pagerless's own behaviour.
 - **History:** an append-only SQLite record of every Phase change and every step event, with terminal Triages deleted after seven days while their history remains.
+- **Dashboard:** a Vite, React, TypeScript, Tailwind CSS and shadcn/ui application that `pagerless-server` serves from its binary, with a Triage list, a Triage detail view that streams live steps over Server-Sent Events, and embedded Grafana panels for the Workload's metrics and logs.
 - **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
 
-The React dashboard and its API, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+The Start Triage view, dashboard sign-in and approvals, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
 
 ## History, retention and metrics
 
 `pagerless-server` appends a snapshot of a Triage's status to SQLite on every Phase change, and appends each step event as it arrives. The database is append-only: the application cannot update or delete a row, and the Triage resource remains the source of truth for an Active Triage. The server keeps the database on a PersistentVolumeClaim so it survives a restart.
 
 The retention controller deletes a Triage seven days after the time in `status.terminalAt`. Deleting the resource does not delete its history. The metrics API on port 9090 exports Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and the tokens and cost of each Triage; the provisioned Grafana dashboard charts them.
+
+## Dashboard
+
+`pagerless-server` serves the dashboard on port 8082. The Triage list merges the latest SQLite snapshot of every Triage with the live resources, so a row survives retention, and filters by Phase, Workload, Trigger source and time range. The detail view shows the live steps over Server-Sent Events, the Findings with their sources, the Diagnosis, the rendered change, the decision and execution, the Verification timeline, the Narrative, and embedded Grafana panels for the Workload's metrics and logs. The panels carry deep links, so the telemetry is one click away when an iframe cannot load. The API is read-only and uses the server's own Kubernetes client and history; it never writes.
+
+The dashboard is built with Node 22.17.1 and the pinned dependencies in [`dashboard/package-lock.json`](dashboard/package-lock.json), and its output is embedded in the server binary at compile time. Local access:
+
+```bash
+make dashboard-build   # npm ci && npm run build into dashboard/dist
+make build-images      # or build the server image, which runs the build in a Node stage
+kubectl --context kind-pagerless -n pagerless port-forward svc/pagerless-server 8082:8082
+# open http://localhost:8082
+kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Grafana embeds at `http://localhost:3000`, which is configurable with `--grafana-url`; the dashboard references are configurable with `--grafana-workload-dashboard-uid` and `--grafana-logs-dashboard-uid`. The dashboards themselves are provisioned from `deploy/observability/dashboards`. The HTTP API, its filters and the event-stream format are documented in [docs/dashboard.md](docs/dashboard.md). Dashboard sign-in and approvals are not part of this view; they are added with Keycloak.
 
 ## Safety boundaries
 
@@ -130,7 +147,7 @@ Triages are stored in `pagerless`; the Workload namespace is independent. The pl
 
 ## Development checks and services
 
-`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster.
+`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
 
 The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and the provisioned **Pagerless** dashboard, which charts Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and tokens and cost per Triage. It can be opened with:
 
@@ -143,7 +160,7 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 ## Roadmap
 
 1. **Phase 1: core loop locally.** Complete: the genuine live OOMKilled capture, free Replay validation through Recovered on kind, credential-free end-to-end CI, and the public `v0.1.0` runtime images. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
-2. **Phase 2: complete the local product.** Add the custom React/shadcn dashboard with embedded Grafana panels, RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway and Keycloak, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
+2. **Phase 2: complete the local product.** Finish the React/shadcn dashboard with Start Triage, Keycloak sign-in and approvals, add RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
 3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
 
 ## Documentation
@@ -151,6 +168,7 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 - [Glossary](GLOSSARY.md): the project's domain vocabulary.
 - [Scenarios and the answer key](docs/scenarios.md): the failure injections, both injection paths, and the expected Proposal for each Scenario.
 - [Architecture Decision Records](docs/adr/README.md): significant decisions and their rationale.
+- [Dashboard API and build](docs/dashboard.md): the read-only HTTP endpoints, the event stream and the Grafana configuration.
 - [Server manifests and admission boundaries](deploy/pagerless-server/README.md).
 - [Read-only MCP services](deploy/mcp/README.md).
 - [Chaos Mesh](deploy/chaos-mesh/README.md).

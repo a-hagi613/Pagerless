@@ -21,7 +21,7 @@ import (
 
 // recovered runs the whole loop and returns the Triage once Verification has ended Recovered and its Narrative
 // Job is recorded.
-func recovered(t *testing.T, env *testenv.Env) *v1alpha1.Triage {
+func recoveredTriage(t *testing.T, env *testenv.Env) *v1alpha1.Triage {
 	t.Helper()
 	tr, commit := merged(t, env, humanTrigger)
 	verifying(t, env, tr, commit)
@@ -49,7 +49,7 @@ func jobsForTriage(t *testing.T, env *testenv.Env, name string) []string {
 func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recovered(t, env)
+	tr := recoveredTriage(t, env)
 
 	narrative := env.StartNarrative(t, tr.Name)
 	if deadline := narrative.Job.Spec.ActiveDeadlineSeconds; deadline == nil ||
@@ -133,7 +133,7 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 func TestOnlyTheNarrativeJobMayWriteTheNarrative(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recovered(t, env)
+	tr := recoveredTriage(t, env)
 	env.StartNarrative(t, tr.Name)
 
 	investigation, err := env.GetJob(t.Context(), tr.Status.JobName)
@@ -164,7 +164,7 @@ func TestOnlyTheNarrativeJobMayWriteTheNarrative(t *testing.T) {
 func TestNarrativeIsWrittenOnceAndIsBounded(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recovered(t, env)
+	tr := recoveredTriage(t, env)
 	narrative := env.StartNarrative(t, tr.Name)
 
 	written := "The checkout Deployment recovered after the approved change."
@@ -197,7 +197,7 @@ func TestNarrativeRecordingIsMountedForALiveCapture(t *testing.T) {
 		RecordingPVC:           recordingClaimName,
 		NarrativeRecordingFile: "/recordings/narrative.json",
 	}))
-	tr := recovered(t, env)
+	tr := recoveredTriage(t, env)
 	narrative := env.StartNarrative(t, tr.Name)
 
 	pod := narrative.Job.Spec.Template.Spec
@@ -240,7 +240,7 @@ func TestFailedNarrativeJobLeavesTheVerificationOutcomeUnchanged(t *testing.T) {
 		t.Run(end.name, func(t *testing.T) {
 			t.Parallel()
 			env := testenv.Start(t, withPatchResources())
-			tr := recovered(t, env)
+			tr := recoveredTriage(t, env)
 			before := env.Get(t, tr.Name)
 			narrativeJob := before.Status.NarrativeJobName
 			if narrativeJob == "" {

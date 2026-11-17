@@ -72,10 +72,19 @@ func run() error {
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
 			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
-		agentImage  = flag.String("agent-image", "", "agent container image")
-		reportURL   = flag.String("report-url", "", "base URL that agent Jobs use to reach the report API")
-		reportBind  = flag.String("report-bind-address", ":8080", "address the agent report API listens on")
-		metricsBind = flag.String("metrics-bind-address", ":9090", "address the Prometheus metrics API listens on")
+		agentImage    = flag.String("agent-image", "", "agent container image")
+		reportURL     = flag.String("report-url", "", "base URL that agent Jobs use to reach the report API")
+		reportBind    = flag.String("report-bind-address", ":8080", "address the agent report API listens on")
+		metricsBind   = flag.String("metrics-bind-address", ":9090", "address the Prometheus metrics API listens on")
+		dashboardBind = flag.String("dashboard-bind-address", ":8082",
+			"address the dashboard and its read-only API listen on")
+		grafanaURL = flag.String("grafana-url", "http://localhost:3000",
+			"Grafana base URL that the browser can reach, for example while the Service is port-forwarded; "+
+				"empty disables the embedded panels")
+		grafanaMetricsDashboard = flag.String("grafana-workload-dashboard-uid", server.DefaultMetricsDashboardUID,
+			"Grafana dashboard that charts a Workload's metrics")
+		grafanaLogsDashboard = flag.String("grafana-logs-dashboard-uid", server.DefaultLogsDashboardUID,
+			"Grafana dashboard that shows a Workload's logs")
 		historyPath = flag.String("history-path", "/var/lib/pagerless/history.db",
 			"SQLite file that records Triage snapshots and steps")
 		healthBind     = flag.String("health-probe-bind-address", ":8081", "address the health probes listen on")
@@ -179,30 +188,38 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen for the metrics API: %w", err)
 	}
+	dashboardListener, err := net.Listen("tcp", *dashboardBind)
+	if err != nil {
+		return fmt.Errorf("listen for the dashboard: %w", err)
+	}
 	var sandboxReadToken func() (string, error)
 	if *sandboxReadTokenFile != "" {
 		sandboxReadToken = tokenFromFile(*sandboxReadTokenFile)
 	}
 	mgr, err := server.New(restConfig, server.Config{
-		Namespace:            *namespace,
-		AgentImage:           *agentImage,
-		AgentServerURL:       *reportURL,
-		AgentRuntime:         agentRuntimeFromEnvironment(),
-		ReportListener:       listener,
-		MetricsListener:      metricsListener,
-		HistoryPath:          *historyPath,
-		ExecutorURL:          *executorURL,
-		ExecutorToken:        tokenFromFile(*executorTokenFile),
-		ArgoCDURL:            *argoCDURL,
-		ArgoCDToken:          tokenFromFile(*argoCDTokenFile),
-		ArgoCDApplication:    *argoCDApplication,
-		AlertmanagerURL:      *alertmanagerURL,
-		AlertmanagerToken:    tokenFromFile(*alertmanagerTokenFile),
-		VerificationWindow:   *verificationWindow,
-		AgentServiceAccount:  *agentAccount,
-		ServerServiceAccount: *serverAccount,
-		AgentDeadline:        *agentDeadline,
-		NarrativeDeadline:    *narrativeDeadline,
+		Namespace:                  *namespace,
+		AgentImage:                 *agentImage,
+		AgentServerURL:             *reportURL,
+		AgentRuntime:               agentRuntimeFromEnvironment(),
+		ReportListener:             listener,
+		MetricsListener:            metricsListener,
+		DashboardListener:          dashboardListener,
+		GrafanaURL:                 *grafanaURL,
+		GrafanaMetricsDashboardUID: *grafanaMetricsDashboard,
+		GrafanaLogsDashboardUID:    *grafanaLogsDashboard,
+		HistoryPath:                *historyPath,
+		ExecutorURL:                *executorURL,
+		ExecutorToken:              tokenFromFile(*executorTokenFile),
+		ArgoCDURL:                  *argoCDURL,
+		ArgoCDToken:                tokenFromFile(*argoCDTokenFile),
+		ArgoCDApplication:          *argoCDApplication,
+		AlertmanagerURL:            *alertmanagerURL,
+		AlertmanagerToken:          tokenFromFile(*alertmanagerTokenFile),
+		VerificationWindow:         *verificationWindow,
+		AgentServiceAccount:        *agentAccount,
+		ServerServiceAccount:       *serverAccount,
+		AgentDeadline:              *agentDeadline,
+		NarrativeDeadline:          *narrativeDeadline,
 		Sandbox: sandbox.Repository{
 			URL: *sandboxURL, Branch: *sandboxBranch, ReadToken: sandboxReadToken,
 		},

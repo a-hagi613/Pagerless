@@ -11,6 +11,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/internal/metrics"
+	"github.com/a-hagi613/pagerless/internal/server"
 )
 
 const (
@@ -40,12 +41,16 @@ func TestGrafanaDashboardIsProvisionedForPagerlessMetrics(t *testing.T) {
 	if got := kustomization.GeneratorOptions.Labels["grafana_dashboard"]; got != "1" {
 		t.Errorf("grafana_dashboard label = %q, want \"1\" so the Grafana sidecar provisions the dashboard", got)
 	}
-	if len(kustomization.ConfigMapGenerator) != 1 {
-		t.Fatalf("configMapGenerator has %d entries, want exactly the dashboard", len(kustomization.ConfigMapGenerator))
+	generators := make(map[string][]string, len(kustomization.ConfigMapGenerator))
+	for _, generator := range kustomization.ConfigMapGenerator {
+		generators[generator.Name] = generator.Files
 	}
-	generator := kustomization.ConfigMapGenerator[0]
-	if generator.Name != "pagerless-dashboard" || !slices.Contains(generator.Files, "pagerless.json") {
-		t.Errorf("generator = %+v, want a pagerless-dashboard ConfigMap from pagerless.json", generator)
+	if files, ok := generators["pagerless-dashboard"]; !ok || !slices.Contains(files, "pagerless.json") {
+		t.Errorf("generators = %v, want a pagerless-dashboard ConfigMap from pagerless.json", generators)
+	}
+	if files := generators["pagerless-workload-dashboards"]; !slices.Equal(files,
+		[]string{"workload-metrics.json", "workload-logs.json"}) {
+		t.Errorf("workload dashboard files = %v, want the metrics and logs dashboards", files)
 	}
 
 	raw, err = os.ReadFile(filepath.Join(observabilityDir, "dashboards", "pagerless.json"))
@@ -79,6 +84,56 @@ func TestGrafanaDashboardIsProvisionedForPagerlessMetrics(t *testing.T) {
 		if !strings.Contains(string(raw), name) {
 			t.Errorf("the dashboard does not chart %s", name)
 		}
+	}
+}
+
+// TestWorkloadDashboardsMatchTheServerDefaults checks that the dashboards the deployment provisions are the ones
+// the dashboard API links to, so an embedded panel is never empty because of a UID mismatch.
+func TestWorkloadDashboardsMatchTheServerDefaults(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		file string
+		uid  string
+		want int
+	}{
+		{file: "workload-metrics.json", uid: server.DefaultMetricsDashboardUID, want: 4},
+		{file: "workload-logs.json", uid: server.DefaultLogsDashboardUID, want: 2},
+	} {
+		t.Run(test.file, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(observabilityDir, "dashboards", test.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var dashboard struct {
+				UID        string            `json:"uid"`
+				Title      string            `json:"title"`
+				Panels     []json.RawMessage `json:"panels"`
+				Templating struct {
+					List []struct {
+						Name string `json:"name"`
+					} `json:"list"`
+				} `json:"templating"`
+			}
+			if err := json.Unmarshal(raw, &dashboard); err != nil {
+				t.Fatalf("the dashboard is not valid JSON: %v", err)
+			}
+			if dashboard.UID != test.uid {
+				t.Errorf("uid = %q, want %q", dashboard.UID, test.uid)
+			}
+			if dashboard.Title == "" {
+				t.Error("the dashboard has no title")
+			}
+			if len(dashboard.Panels) != test.want {
+				t.Errorf("panels = %d, want %d", len(dashboard.Panels), test.want)
+			}
+			variables := make([]string, 0, len(dashboard.Templating.List))
+			for _, variable := range dashboard.Templating.List {
+				variables = append(variables, variable.Name)
+			}
+			if !slices.Equal(variables, []string{"namespace", "workload"}) {
+				t.Errorf("variables = %v, want namespace and workload", variables)
+			}
+		})
 	}
 }
 
