@@ -99,7 +99,7 @@ async def test_stress_chaos_is_the_only_custom_resource_the_agent_may_read() -> 
         return yaml.safe_dump([{"metadata": {"name": "cpu-stress-payment"}}])
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",

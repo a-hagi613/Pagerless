@@ -10,6 +10,7 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
@@ -35,7 +36,7 @@ func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A pod of the agent service account that no Job controls.
-	orphanPod := testenv.NewPod("orphan", "pagerless-agent")
+	orphanPod := testenv.NewPod("orphan", server.DefaultAgentServiceAccount)
 	if err := env.Client.Create(ctx, orphanPod); err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +48,10 @@ func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
 	}{
 		{"no token", "", http.StatusUnauthorized},
 		{"malformed token", "not-a-token", http.StatusUnauthorized},
-		{"token with another audience", env.TokenFor(t, targetAgent.Pod, "pagerless-agent", "https://kubernetes.default.svc"), http.StatusUnauthorized},
+		{"token with another audience", env.TokenFor(t, targetAgent.Pod, server.DefaultAgentServiceAccount, "https://kubernetes.default.svc"), http.StatusUnauthorized},
 		{"token of another service account", env.TokenFor(t, intruderPod, "intruder", agentapi.Audience), http.StatusForbidden},
-		{"agent token not bound to a pod", env.UnboundTokenFor(t, testenv.Namespace, "pagerless-agent", agentapi.Audience), http.StatusForbidden},
-		{"agent token bound to a pod no Job controls", env.TokenFor(t, orphanPod, "pagerless-agent", agentapi.Audience), http.StatusForbidden},
+		{"agent token not bound to a pod", env.UnboundTokenFor(t, testenv.Namespace, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
+		{"agent token bound to a pod no Job controls", env.TokenFor(t, orphanPod, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
 		{"token of another Triage's Job", otherAgent.Token, http.StatusForbidden},
 	}
 	for _, tc := range tests {

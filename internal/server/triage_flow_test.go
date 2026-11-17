@@ -14,6 +14,7 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
@@ -55,7 +56,7 @@ func TestNewTriageStartsAnAgentJob(t *testing.T) {
 	if got := job.Spec.ActiveDeadlineSeconds; got == nil || *got != 300 {
 		t.Errorf("activeDeadlineSeconds = %v, want 300", got)
 	}
-	if got := job.Spec.Template.Spec.ServiceAccountName; got != "pagerless-agent" {
+	if got := job.Spec.Template.Spec.ServiceAccountName; got != server.DefaultAgentServiceAccount {
 		t.Errorf("serviceAccountName = %q, want pagerless-agent", got)
 	}
 	if got := job.Spec.Template.Spec.AutomountServiceAccountToken; got == nil || *got {

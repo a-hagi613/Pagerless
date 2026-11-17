@@ -27,6 +27,7 @@ const (
 	recordingFile           = "/recordings/oom.json"
 	recordingClaimName      = "pagerless-replay-capture"
 	keycloakIssuer          = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+	keycloakClientID        = "pagerless-agent"
 )
 
 func TestGatewayConfigurationMustDescribeOneReachableRealm(t *testing.T) {
@@ -34,7 +35,7 @@ func TestGatewayConfigurationMustDescribeOneReachableRealm(t *testing.T) {
 		GatewayURL:       "http://mcp-gateway.agentgateway-system.svc.cluster.local",
 		KeycloakIssuer:   keycloakIssuer,
 		KeycloakTokenURL: keycloakIssuer + "/protocol/openid-connect/token",
-		KeycloakClientID: "pagerless-agent",
+		KeycloakClientID: keycloakClientID,
 	}
 	if err := valid.ValidateGateway(); err != nil {
 		t.Fatalf("valid gateway configuration was refused: %v", err)
@@ -78,7 +79,7 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 			runtime := controller.AgentRuntimeConfig{
 				Provider: provider, GatewayURL: "http://mcp-gateway.agentgateway-system.svc.cluster.local",
 				KeycloakIssuer:    "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
-				KeycloakClientID:  "pagerless-agent",
+				KeycloakClientID:  keycloakClientID,
 				SandboxOwner:      "example",
 				SandboxRepo:       sandboxNamespace,
 				ArgoCDApplication: sandboxNamespace, AllowedNamespaces: sandboxNamespace, AWSRegion: "us-east-1",

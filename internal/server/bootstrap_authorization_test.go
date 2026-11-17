@@ -115,7 +115,9 @@ func TestAuthorizationBootstrapReusesSecretsAndBindsOnlyTheCurrentUser(t *testin
 
 func requireBoundedApproverBootstrap(t *testing.T, env *testenv.Env, config string, binding rbacv1.RoleBinding) {
 	t.Helper()
-	for _, account := range []string{"pagerless-agent", server.DefaultServerServiceAccount, executorServiceAccount} {
+	for _, account := range []string{
+		server.DefaultAgentServiceAccount, server.DefaultServerServiceAccount, executorServiceAccount,
+	} {
 		user := "system:serviceaccount:pagerless:" + account
 		groups := []string{"system:authenticated", "system:serviceaccounts"}
 		if env.Can(t, user, groups, "create", "pagerless.dev", "triageapprovals", "") {
