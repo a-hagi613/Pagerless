@@ -17,7 +17,7 @@ import (
 
 const (
 	sandboxNamespace = "sandbox"
-	optInLabel       = "pagerless.dev/triage"
+	optInLabel       = "pagerless_triage"
 )
 
 // webhookBody is the Alertmanager webhook payload, version 4, that the receiver accepts.

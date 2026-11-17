@@ -11,6 +11,10 @@ spec:
     path: deploy/apps
     helm:
       parameters:
+        - name: platform.repoURL
+          value: {{ required "platform.repoURL is required" .Values.platform.repoURL | quote }}
+        - name: platform.targetRevision
+          value: {{ required "platform.targetRevision is required" .Values.platform.targetRevision | quote }}
         - name: sandbox.repoURL
           value: {{ required "sandbox.repoURL is required" .Values.sandbox.repoURL | quote }}
         - name: sandbox.targetRevision

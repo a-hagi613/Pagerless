@@ -25,7 +25,7 @@ const Path = "/v1/alerts/alertmanager"
 
 // OptInLabel is the alert label that opts an alert in to starting a Triage.
 // Only the value "true" opts in.
-const OptInLabel = "pagerless.dev/triage"
+const OptInLabel = "pagerless_triage"
 
 const (
 	optInValue       = "true"

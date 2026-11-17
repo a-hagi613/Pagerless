@@ -63,9 +63,11 @@ Steps:
 
 1. Create your copy of the Sandbox from its template, then enable auto-merge and require the `kubeconform` check on `main`, as described in the Sandbox README.
 2. Run `make up`. It prompts for your Sandbox URL, a read-only token and a write token (both fine-grained and scoped to your copy), and the model provider, which defaults to `replay`. The answers are written to `.env`, which Git ignores.
-3. Run `make break SCENARIO=oom`. It commits the OOM Scenario to the Sandbox through an auto-merging pull request. The `checkout` Workload is then OOMKilled.
+3. Run `make break SCENARIO=oom`. It commits the OOM Scenario to the Sandbox through an auto-merging pull request. The `checkout` Workload is then OOMKilled, and the `ContainerOOMKilled` alert fires in Alertmanager with the `pagerless_triage: "true"` label and the `namespace`, `deployment`, and `pod` labels that identify the Workload.
 4. Run `make reset`. It force-resets the Sandbox `main` branch to the `known-good` tag, and the Workload returns to healthy.
 5. Run `make down` to delete the cluster. It keeps `.env`.
+
+The observability stack runs in the `monitoring` namespace: kube-prometheus-stack, Loki, Tempo, and the OpenTelemetry Collector, which ships the container logs of every Workload to Loki. Its values are in [`deploy/observability`](deploy/observability/README.md). Grafana is reachable with `kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80`, and it has Loki and Tempo data sources.
 
 ## CLI
 

@@ -59,9 +59,14 @@ helm template pagerless-root "$REPO_ROOT/deploy/root" \
 
 wait_for_application root "" 300
 wait_for_application sandbox "" 300
+for app in kube-prometheus-stack loki tempo opentelemetry-collector observability-alerts; do
+	wait_for_application "$app" "" 900
+done
 kc -n sandbox rollout status deployment/checkout --timeout=180s
 
 echo
 echo "The local stack is up. The checkout Workload in the sandbox namespace is healthy."
+echo "The observability stack is in the monitoring namespace. Open Grafana with:"
+echo "  kubectl --context kind-${KIND_CLUSTER_NAME} -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80"
 echo "Inject a failure with: make break SCENARIO=oom"
 echo "Restore the Sandbox with: make reset"

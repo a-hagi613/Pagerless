@@ -72,4 +72,22 @@ while :; do
 done
 
 echo "The $scenario Scenario is injected. The checkout Workload reports OOMKilled."
+
+# The OOMKilled alert reaches Alertmanager after kube-state-metrics reports the
+# termination and Prometheus evaluates the rule. The Alertmanager API is read
+# through the API server, so no port-forward is needed.
+alerts_path="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-alertmanager:http-web/proxy/api/v2/alerts?active=true"
+deadline=$((SECONDS + 300))
+while :; do
+	alerts="$(kc get --raw "$alerts_path" 2>/dev/null || true)"
+	if grep -q '"alertname":"ContainerOOMKilled"' <<<"$alerts" &&
+		grep -q '"pagerless_triage":"true"' <<<"$alerts" &&
+		grep -q '"deployment":"checkout"' <<<"$alerts"; then
+		break
+	fi
+	[ "$SECONDS" -lt "$deadline" ] || die "the ContainerOOMKilled alert for checkout did not fire in Alertmanager within 5 minutes."
+	sleep 5
+done
+
+echo "The ContainerOOMKilled alert is firing in Alertmanager for the checkout Workload."
 echo "Restore the Sandbox with: make reset"
