@@ -3,8 +3,18 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*.*.*"]
+  workflow_dispatch:
+  schedule:
+    # A nightly integration gate on the default branch.
+    - cron: "17 3 * * *"
+
+# A newer push to the same branch or pull request supersedes the older run.
+# Runs on main are never cancelled, so the default branch always finishes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
@@ -89,9 +99,46 @@ jobs:
           sudo install kubectl /usr/local/bin/kubectl
       - run: make validate
 
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Scheduled and manually dispatched runs always execute the end-to-end job.
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A push compares with the commit it replaces; a pull request compares with
+      # its base branch through the GitHub API.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/'))
+        with:
+          base: ${{ github.event_name == 'push' && github.ref || '' }}
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!**/*.md'
+              - '!docs/**'
+
   e2e:
     name: Credential-free kind integration
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    # The kind cluster is the integration gate, so it runs only for pull requests
+    # and pushes that feed an integration branch, plus the nightly and manual runs.
+    # Documentation, ADR and Markdown changes need only the fast jobs.
+    needs: [changes]
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/integration/')) &&
+        needs.changes.outputs.code == 'true') ||
+      (github.event_name == 'pull_request' &&
+        (github.base_ref == 'main' || startsWith(github.base_ref, 'integration/')) &&
+        needs.changes.outputs.code == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
