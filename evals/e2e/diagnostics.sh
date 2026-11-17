@@ -18,7 +18,7 @@ dump_e2e_diagnostics() {
 	kubectl --context "$context" -n pagerless logs deployment/mcp-grafana --all-containers=true --tail=200 \
 		>"$directory/mcp-grafana.log" 2>&1
 	kubectl --context "$context" -n agentgateway-system get pods -o wide >"$directory/gateway-pods.txt" 2>&1
-	kubectl --context "$context" -n agentgateway-system logs deployment/agentgateway-proxy --all-containers=true \
+	kubectl --context "$context" -n agentgateway-system logs deployment/mcp-gateway --all-containers=true \
 		--tail=400 >"$directory/gateway-proxy.log" 2>&1
 	kubectl --context "$context" -n agentgateway-system get agentgatewaybackends,agentgatewaypolicies,httproutes \
 		-o yaml >"$directory/gateway-config.yaml" 2>&1
