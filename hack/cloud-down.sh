@@ -45,11 +45,56 @@ if kubectl --context "$CLOUD_CONTEXT" get nodes >/dev/null 2>&1; then
 	kubectl --context "$CLOUD_CONTEXT" delete nodepool --all --ignore-not-found >/dev/null 2>&1 || true
 	kubectl --context "$CLOUD_CONTEXT" delete nodeclaims --all --ignore-not-found --wait=true --timeout=20m || true
 
-	# Deleting a claim deletes its volume, because the StorageClass reclaim policy
-	# is Delete. The wait blocks on the protection finalizers, which the CSI
-	# driver removes only after the volume is gone.
-	kubectl --context "$CLOUD_CONTEXT" delete pvc --all --all-namespaces --ignore-not-found --wait=true --timeout=20m || true
+	# Delete every workload namespace before the claims. A claim whose pod still
+	# exists keeps its protection finalizer, so deleting claims first would block
+	# and then orphan its volume when the timeout expired.
+	for namespace in $(kc get namespaces -o name); do
+		case "$namespace" in
+		namespace/default | namespace/kube-* | namespace/argocd) continue ;;
+		esac
+		kc delete "$namespace" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+	done
+	for _ in $(seq 1 40); do
+		kc get namespaces -o name | grep -Eq 'namespace/(sandbox|pagerless|pagerless-system|monitoring|keycloak|agentgateway-system)$' || break
+		sleep 15
+	done
+
+	# A claim that survives the namespace must not survive the session: an EBS
+	# volume is billed per GiB-month and is invisible to Terraform's state.
+	pvc_deadline=$((SECONDS + 600))
+	while [ -n "$(kc get pvc --all-namespaces -o name 2>/dev/null)" ]; do
+		if [ "$SECONDS" -ge "$pvc_deadline" ]; then
+			# A stuck protection finalizer would otherwise leave the volume behind.
+			# The namespace is already gone, so no pod can still be using it.
+			kc get pvc --all-namespaces -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}' |
+				while IFS= read -r entry; do
+					[ -n "$entry" ] || continue
+					kc -n "${entry%%/*}" patch "pvc/${entry#*/}" --type=merge -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
+				done
+			kc get pv -o name | while IFS= read -r volume; do
+				kc patch "$volume" --type=merge -p '{"metadata":{"finalizers":null}}' >/dev/null 2>&1 || true
+			done
+			pvc_deadline=$((SECONDS + 300))
+		fi
+		sleep 15
+	done
+	if [ -n "$(kc get pv -o name 2>/dev/null)" ]; then
+		die "persistent volumes remain; destroying now could orphan an EBS volume. Inspect kubectl get pv and retry."
+	fi
 fi
+
+# Karpenter creates its own instance profile, which Terraform never records. A
+# profile that survives the session is an IAM leftover the teardown check would
+# report, so remove the ones this cluster owns.
+for profile in $(aws iam list-instance-profiles \
+	--query "InstanceProfiles[?starts_with(InstanceProfileName, '${CLOUD_CLUSTER}')].InstanceProfileName" \
+	--output text 2>/dev/null || true); do
+	for role in $(aws iam get-instance-profile --instance-profile-name "$profile" \
+		--query 'InstanceProfile.Roles[].RoleName' --output text 2>/dev/null || true); do
+		aws iam remove-role-from-instance-profile --instance-profile-name "$profile" --role-name "$role" >/dev/null 2>&1 || true
+	done
+	aws iam delete-instance-profile --instance-profile-name "$profile" >/dev/null 2>&1 || true
+done
 
 # 2. Destroy the stack. An empty state is success: this is also what the nightly
 # teardown runs.
