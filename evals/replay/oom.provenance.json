@@ -1,0 +1,38 @@
+{
+  "format": "pagerless.dev/replay-provenance",
+  "version": 1,
+  "artifact": "oom.json",
+  "sha256": "f5dcd1e0b5b227d0ba855b703049cc4e297b272c7c24456351cc1d3bd190f5ed",
+  "provider": "anthropic",
+  "model": "claude-haiku-5-5",
+  "scenario": "oom",
+  "source_revision_at_capture": "b7378498b11f72132def20593bf1c365ba8eb733",
+  "captured_at": "2026-11-17T08:28:28.635521Z",
+  "environment": "kind with the isolated local Git/GitHub Sandbox adapter and original read-only MCP servers",
+  "triage": {
+    "name": "checkout-rldwm",
+    "uid": "d62357f3-e8ad-4977-a527-31ea679aa047",
+    "phase": "Proposed",
+    "proposal_action": "PatchResources",
+    "proposal_hash": "2d6d09199856aca6f78fdb810e0dc2544ee690064c433416401e58bb43ce4a26"
+  },
+  "job": {
+    "name": "checkout-rldwm-agent",
+    "uid": "8b7f0bb2-6ecb-4312-9bd6-7869e13ab9f1",
+    "started_at": "2026-11-17T08:26:46Z",
+    "completed_at": "2026-11-17T08:27:11Z",
+    "image": "ghcr.io/a-hagi613/pagerless-agent:0.1.0",
+    "succeeded": true
+  },
+  "usage": {
+    "model_calls": 5,
+    "input_tokens_including_cache": 61315,
+    "output_tokens": 2133
+  },
+  "limits": {
+    "tool_calls": 15,
+    "seconds": 300,
+    "input_tokens": 100000
+  },
+  "normalization": "Recording.load validates every placeholder and refuses unresolved volatile identifiers"
+}

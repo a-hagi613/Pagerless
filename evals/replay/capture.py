@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from pagerless_agent.budget import MAX_INPUT_TOKENS, MAX_SECONDS, MAX_TOOL_CALLS
-from pagerless_agent.contract import PROPOSED_ACTION, DiagnosisOutput
+from pagerless_agent.contract import PROPOSED_ACTION, DiagnosisOutput, normalize_proposal
 from pagerless_agent.identifiers import ReplayError
 from pagerless_agent.model import Stage
 from pagerless_agent.providers import ANTHROPIC_MODEL
@@ -211,7 +211,7 @@ def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
     if len(diagnoses) != 1 or not proposals:
         raise RuntimeError("the recording has no complete Diagnosis and Proposal")
     DiagnosisOutput.model_validate(diagnoses[0].response.structured)
-    proposal = PROPOSED_ACTION.validate_python(proposals[-1].response.structured)
+    proposal = PROPOSED_ACTION.validate_python(normalize_proposal(proposals[-1].response.structured))
     if proposal.action != "PatchResources":
         raise RuntimeError(
             "the live OOMKilled investigation did not propose PatchResources"

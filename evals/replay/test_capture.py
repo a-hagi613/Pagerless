@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,53 @@ def test_credentials_are_sent_on_stdin_never_as_command_arguments_or_error_detai
     assert "test-secret-key" not in str(error.value)
     assert "test-secret-key" not in " ".join(seen[0][0])
     assert b"test-secret-key" in seen[0][1]
+
+
+def test_a_flat_proposal_is_validated_the_way_the_agent_validates_it(tmp_path: Path) -> None:
+    artifact = tmp_path / "live.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "format": "pagerless.dev/replay",
+                "version": 1,
+                "scenario": "oom",
+                "model": capture.ANTHROPIC_MODEL,
+                "workload": "checkout",
+                "turns": [
+                    {"stage": "investigate", "response": {"usage": {"input_tokens": 10, "output_tokens": 5}}},
+                    {
+                        "stage": "diagnose",
+                        "response": {
+                            "structured": {
+                                "diagnosis": "The memory limit is below the allocation.",
+                                "findings": [
+                                    {
+                                        "kind": "Log",
+                                        "source": "k8s__resources_get apps/v1 Deployment sandbox/checkout",
+                                        "summary": "The limit is 32Mi.",
+                                    }
+                                ],
+                            },
+                            "usage": {"input_tokens": 10, "output_tokens": 5},
+                        },
+                    },
+                    {
+                        "stage": "propose",
+                        "response": {
+                            "structured": {
+                                "action": "PatchResources",
+                                "parameters": {"container": "checkout", "limits": {"memory": "128Mi"}},
+                            },
+                            "usage": {"input_tokens": 10, "output_tokens": 5},
+                        },
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    recording = capture.validate_recording(artifact)
+    assert len(recording.turns) == 3
 
 
 def test_synthetic_or_credential_containing_artifacts_cannot_be_promoted(
