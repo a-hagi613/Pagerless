@@ -17,6 +17,9 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"slices"
+	"strings"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -103,6 +106,8 @@ const (
 	ReasonSourcePathChanged = "SourcePathChanged"
 	// ReasonSandboxFileChanged means the Sandbox file that the patch changes was modified.
 	ReasonSandboxFileChanged = "SandboxFileChanged"
+	// ReasonRollbackCommitChanged means the commit a Rollback Proposal reverts is no longer among the allowed commits.
+	ReasonRollbackCommitChanged = "RollbackCommitChanged"
 	// ReasonWorkloadDeleted means the Workload no longer exists.
 	ReasonWorkloadDeleted = "WorkloadDeleted"
 )
@@ -114,6 +119,32 @@ const MaxValidationAttempts = 2
 // AnnotationSourcePath is the annotation on a Workload that names the Sandbox
 // file holding its manifest, relative to the root of the Sandbox.
 const AnnotationSourcePath = "pagerless.dev/source-path"
+
+// AnnotationDependsOnPaths is the annotation on a Workload that names the
+// Sandbox files it depends on but does not own, such as a shared configuration
+// file. The value is a comma-separated list of paths relative to the root of
+// the Sandbox. Rollback may revert a commit that touches one of them.
+const AnnotationDependsOnPaths = "pagerless.dev/depends-on-paths"
+
+// DependsOnPaths returns the Sandbox paths declared in a Workload's
+// annotations, without duplicates and in sorted order.
+func DependsOnPaths(annotations map[string]string) []string {
+	var paths []string
+	seen := make(map[string]struct{})
+	for entry := range strings.SplitSeq(annotations[AnnotationDependsOnPaths], ",") {
+		p := strings.TrimSpace(entry)
+		if p == "" {
+			continue
+		}
+		if _, duplicate := seen[p]; duplicate {
+			continue
+		}
+		seen[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	return paths
+}
 
 // WorkloadKind is the kind of a Workload that a Triage can target.
 // +kubebuilder:validation:Enum=Deployment;StatefulSet

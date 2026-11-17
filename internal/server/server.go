@@ -31,6 +31,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
+	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/triage"
 	"github.com/a-hagi613/pagerless/internal/verification"
@@ -89,11 +90,11 @@ type Config struct {
 	Clock clock.Clock
 	// Validators are the Actions that Validation accepts, which replaces the
 	// defaults below. When it is nil, Validation accepts NoAction, and also
-	// PatchResources if Sandbox is set.
+	// PatchResources and Rollback if Sandbox is set.
 	Validators map[v1alpha1.Action]proposal.ActionValidator
-	// Sandbox is the repository that PatchResources Proposals are rendered against.
+	// Sandbox is the repository that the pull request Actions are rendered against.
 	Sandbox sandbox.Repository
-	// AllowedNamespaces are the namespaces whose Workloads PatchResources may change.
+	// AllowedNamespaces are the namespaces whose Workloads the pull request Actions may change.
 	AllowedNamespaces []string
 	// PatchBounds are the permitted ranges of PatchResources requests and limits.
 	// It defaults to patchresources.DefaultBounds.
@@ -230,6 +231,11 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 				Sandbox:           cfg.Sandbox,
 				AllowedNamespaces: cfg.AllowedNamespaces,
 				Bounds:            cfg.PatchBounds,
+			})
+			validators[v1alpha1.ActionRollback] = rollback.New(rollback.Config{
+				Reader:            mgr.GetAPIReader(),
+				Sandbox:           cfg.Sandbox,
+				AllowedNamespaces: cfg.AllowedNamespaces,
 			})
 		}
 	}

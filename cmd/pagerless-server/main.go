@@ -91,12 +91,12 @@ func run() error {
 			"service account that pagerless-server runs as")
 		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
 		sandboxURL    = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
-			"git URL of the Sandbox; PatchResources is accepted only when it is set")
+			"git URL of the Sandbox; PatchResources and Rollback are accepted only when it is set")
 		sandboxBranch        = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
 		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
 			"optional file that holds the read-only token for the HTTPS Sandbox repository")
 		patchable = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
-			"comma-separated namespaces whose Workloads PatchResources may change")
+			"comma-separated namespaces whose Workloads PatchResources and Rollback may change")
 		patchMinCPU = flag.String("patch-min-cpu", defaultCPU.Min.String(),
 			"minimum CPU request or limit in PatchResources")
 		patchMaxCPU = flag.String("patch-max-cpu", defaultCPU.Max.String(),
