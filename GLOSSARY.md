@@ -74,6 +74,10 @@ _Avoid_: applier, remediator, actuator
 The deterministic check after execution that decides whether the Workload is Recovered or NotRecovered.
 _Avoid_: validation (the pre-approval check), fixed / not fixed
 
+**Narrative**:
+A short, purely descriptive account of a Triage written after Verification. It never affects the outcome.
+_Avoid_: summary, report, postmortem
+
 ## Lifecycle
 
 **Phase**:
