@@ -1,0 +1,187 @@
+"""The wire contract between the agent and pagerless-server.
+
+These models mirror `internal/agentapi/contract.go` and the Proposal types in
+`api/v1alpha1`. The server decodes strictly and rejects unknown fields, so every
+model forbids extras and is serialized without its unset optional fields.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+# Limits that the server enforces, matching `internal/agentapi/check.go`.
+MAX_DIAGNOSIS_LENGTH = 4000
+MAX_FINDING_SOURCE_LENGTH = 500
+MAX_FINDING_SUMMARY_LENGTH = 1000
+MAX_STEP_SUMMARY_LENGTH = 300
+MAX_TOOL_NAME_LENGTH = 128
+# The number of Findings a Triage keeps (`v1alpha1.MaxFindings`).
+MAX_FINDINGS = 20
+
+FindingKind = Literal["Log", "Metric", "Trace", "Event", "Commit"]
+StepKind = Literal["ToolCall", "Finding", "Progress"]
+ACTIONS = ("RestartWorkload", "Scale", "PatchResources", "Rollback", "NoAction")
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+def _not_blank(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+class Finding(_Strict):
+    """One cited piece of evidence that supports a Diagnosis."""
+
+    kind: FindingKind
+    source: Annotated[str, StringConstraints(max_length=MAX_FINDING_SOURCE_LENGTH)]
+    summary: Annotated[str, StringConstraints(max_length=MAX_FINDING_SUMMARY_LENGTH)]
+
+    _source_cited = field_validator("source")(_not_blank)
+    _summary_given = field_validator("summary")(_not_blank)
+
+
+class StepEvent(_Strict):
+    """One step of the investigation, posted to the events endpoint."""
+
+    kind: StepKind
+    tool: Annotated[str, StringConstraints(max_length=MAX_TOOL_NAME_LENGTH)] | None = None
+    summary: Annotated[str, StringConstraints(max_length=MAX_STEP_SUMMARY_LENGTH)]
+    finding: Finding | None = None
+
+    _summary_given = field_validator("summary")(_not_blank)
+
+    @model_validator(mode="after")
+    def _finding_matches_kind(self) -> StepEvent:
+        if self.kind == "Finding" and self.finding is None:
+            raise ValueError("a Finding step must carry the finding")
+        if self.kind != "Finding" and self.finding is not None:
+            raise ValueError("only a Finding step may carry a finding")
+        return self
+
+
+# Kubernetes quantities such as 256Mi, 0.5, 500m, or 1e3.
+_QUANTITY = r"^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+|[kKMGTPE]i?|m)?$"
+_RESOURCE_NAME = r"^[a-z][a-z0-9./-]*$"
+
+Quantity = Annotated[str, StringConstraints(pattern=_QUANTITY)]
+ResourceList = dict[Annotated[str, StringConstraints(pattern=_RESOURCE_NAME)], Quantity]
+
+
+class ScaleSpec(_Strict):
+    replicas: Annotated[int, Field(ge=0, le=2**31 - 1)]
+
+
+class ScaleParameters(_Strict):
+    scale: ScaleSpec
+
+
+class PatchResourcesSpec(_Strict):
+    container: Annotated[str, StringConstraints(min_length=1, max_length=63)]
+    requests: ResourceList | None = None
+    limits: ResourceList | None = None
+
+    @model_validator(mode="after")
+    def _changes_something(self) -> PatchResourcesSpec:
+        if not self.requests and not self.limits:
+            raise ValueError("set at least one of requests and limits")
+        return self
+
+
+class PatchResourcesParameters(_Strict):
+    patchResources: PatchResourcesSpec  # noqa: N815 (the wire name)
+
+
+class RollbackSpec(_Strict):
+    commit: Annotated[str, StringConstraints(min_length=7, max_length=64, pattern=r"^[0-9a-f]+$")]
+
+
+class RollbackParameters(_Strict):
+    rollback: RollbackSpec
+
+
+class RestartWorkloadProposal(_Strict):
+    action: Literal["RestartWorkload"]
+
+
+class ScaleProposal(_Strict):
+    action: Literal["Scale"]
+    parameters: ScaleParameters
+
+
+class PatchResourcesProposal(_Strict):
+    action: Literal["PatchResources"]
+    parameters: PatchResourcesParameters
+
+
+class RollbackProposal(_Strict):
+    action: Literal["Rollback"]
+    parameters: RollbackParameters
+
+
+class NoActionProposal(_Strict):
+    action: Literal["NoAction"]
+
+
+ProposedAction = Annotated[
+    RestartWorkloadProposal | ScaleProposal | PatchResourcesProposal | RollbackProposal | NoActionProposal,
+    Field(discriminator="action"),
+]
+"""One Action with the parameters that belong to it and no others (ADR-0002)."""
+
+PROPOSED_ACTION: TypeAdapter[ProposedAction] = TypeAdapter(ProposedAction)
+
+
+class DiagnosisOutput(_Strict):
+    """The structured output of the Diagnosis stage."""
+
+    diagnosis: Annotated[str, StringConstraints(max_length=MAX_DIAGNOSIS_LENGTH)]
+    findings: Annotated[list[Finding], Field(max_length=MAX_FINDINGS)]
+
+    _diagnosis_given = field_validator("diagnosis")(_not_blank)
+
+
+class Report(_Strict):
+    """The agent's final output: a Diagnosis, its Findings, and one Proposal."""
+
+    diagnosis: str
+    findings: list[Finding]
+    proposal: ProposedAction
+
+
+class ReportError(_Strict):
+    """One reason the server refused a report (`agentapi.ValidationError`)."""
+
+    field: str
+    message: str
+
+
+def encode(model: BaseModel) -> dict[str, object]:
+    """Return the JSON body for a wire model, omitting unset optional fields."""
+    return model.model_dump(mode="json", exclude_none=True)
+
+
+def validation_errors(error: ValidationError, prefix: str) -> list[ReportError]:
+    """Convert a local schema failure into the shape the server uses for its own errors."""
+    errors: list[ReportError] = []
+    for item in error.errors():
+        loc = [str(part) for part in item["loc"]]
+        # A discriminated union puts the variant's tag first. The server's field paths omit it.
+        if loc and loc[0] in ACTIONS:
+            loc = loc[1:]
+        errors.append(ReportError(field=".".join([prefix, *loc]), message=item["msg"]))
+    return errors

@@ -75,10 +75,13 @@ type Env struct {
 	Sandbox *BareRepo
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
 	WebhookInstall *envtest.WebhookInstallOptions
+
+	t testing.TB
 }
 
 type options struct {
 	validators      func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll    time.Duration
 	agentDeadline   time.Duration
 	alertNamespaces []string
 }
@@ -154,6 +157,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 	}
 
 	serverConfig := rest.CopyConfig(cfg)
+	// The default client-side rate limit would throttle tests that poll quickly.
+	serverConfig.QPS, serverConfig.Burst = -1, 0
 	serverConfig.Impersonate = rest.ImpersonationConfig{
 		UserName: fmt.Sprintf("system:serviceaccount:%s:%s", Namespace, server.DefaultServerServiceAccount),
 	}
@@ -170,6 +175,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ReportURL:      "http://" + listener.Addr().String(),
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
+		t:              t,
 	}
 	env.Sandbox = NewBareRepo(t)
 
@@ -178,17 +184,18 @@ func Start(t testing.TB, opts ...Option) *Env {
 		validators = o.validators(env)
 	}
 	mgr, err := server.New(serverConfig, server.Config{
-		Namespace:       Namespace,
-		AgentImage:      AgentImage,
-		AgentServerURL:  env.ReportURL,
-		ReportListener:  listener,
-		AgentDeadline:   o.agentDeadline,
-		AlertNamespaces: o.alertNamespaces,
-		Clock:           env.Clock,
-		Validators:      validators,
-		WebhookHost:     testEnv.WebhookInstallOptions.LocalServingHost,
-		WebhookPort:     testEnv.WebhookInstallOptions.LocalServingPort,
-		WebhookCertDir:  testEnv.WebhookInstallOptions.LocalServingCertDir,
+		Namespace:            Namespace,
+		AgentImage:           AgentImage,
+		AgentServerURL:       env.ReportURL,
+		ReportListener:       listener,
+		AgentDeadline:        o.agentDeadline,
+		ProposalPollInterval: o.proposalPoll,
+		AlertNamespaces:      o.alertNamespaces,
+		Clock:                env.Clock,
+		Validators:           validators,
+		WebhookHost:          testEnv.WebhookInstallOptions.LocalServingHost,
+		WebhookPort:          testEnv.WebhookInstallOptions.LocalServingPort,
+		WebhookCertDir:       testEnv.WebhookInstallOptions.LocalServingCertDir,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)

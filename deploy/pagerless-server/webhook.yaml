@@ -1,6 +1,34 @@
 # The caBundle fields are filled in by pagerless-server at every start, from the
 # certificate authority it generates (see internal/webhooktls). A GitOps tool
 # must ignore differences in /webhooks/*/clientConfig/caBundle.
+#
+# A TriageApproval passes through the mutating webhook first, which stamps the
+# requester's identity into spec.approver, and then through the validating
+# webhook, which binds it to the current Proposal (ADR-0004).
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: pagerless-server
+webhooks:
+  - name: stamp.triageapprovals.pagerless.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    reinvocationPolicy: Never
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: pagerless-server
+        namespace: pagerless
+        path: /mutate-triageapproval
+        port: 443
+    rules:
+      - apiGroups: [pagerless.dev]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [triageapprovals]
+        scope: Namespaced
+---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
@@ -39,4 +67,21 @@ webhooks:
         apiVersions: [v1alpha1]
         operations: [UPDATE]
         resources: [triages/status]
+        scope: Namespaced
+  - name: create.triageapprovals.pagerless.dev
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 10
+    clientConfig:
+      service:
+        name: pagerless-server
+        namespace: pagerless
+        path: /validate-triageapproval
+        port: 443
+    rules:
+      - apiGroups: [pagerless.dev]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [triageapprovals]
         scope: Namespaced

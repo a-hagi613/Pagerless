@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -158,9 +159,12 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 			r.Proposal.Parameters = &v1alpha1.ActionParameters{Rollback: &v1alpha1.RollbackParameters{Commit: "abcdef1"}}
 		}), "proposal.parameters.rollback"},
 	}
-	for _, tc := range tests {
+	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := agent.API.PostReport(t.Context(), tc.report)
+			// Every refusal counts toward the two that end a Triage, so each case has its own.
+			own := env.CreateTriage(t, testenv.NewTriage(fmt.Sprintf("%s-%d", checkout, i)))
+			ownAgent := env.StartAgent(t, own.Name)
+			result, err := ownAgent.API.PostReport(t.Context(), tc.report)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -174,7 +178,7 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 			if !found {
 				t.Errorf("errors = %+v, want one for field %s", result.Report.Errors, tc.wantField)
 			}
-			tr := env.Get(t, created.Name)
+			tr := env.Get(t, own.Name)
 			if tr.Status.Phase != v1alpha1.PhaseInvestigating || tr.Status.Proposal != nil {
 				t.Errorf("a refused report changed the Triage: phase %s, proposal %+v", tr.Status.Phase, tr.Status.Proposal)
 			}

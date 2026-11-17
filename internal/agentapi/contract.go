@@ -82,7 +82,10 @@ type ValidationError struct {
 type ReportResponse struct {
 	// Accepted reports whether the server accepted the report.
 	Accepted bool `json:"accepted"`
-	// Phase is the Triage's phase after the report, when it was accepted.
+	// Phase is the Triage's phase after the report, when it was accepted or
+	// when it failed Validation. After a refusal, Investigating means the
+	// agent may submit one revised Proposal, and Invalid means the second
+	// failure ended the Triage.
 	Phase v1alpha1.Phase `json:"phase,omitempty"`
 	// Errors lists the Validation errors, when the report was refused for its content.
 	Errors []ValidationError `json:"errors,omitempty"`

@@ -491,6 +491,13 @@ spec:
                   joined the Triage.
                 format: int32
                 type: integer
+              validationAttempts:
+                description: ValidationAttempts is the number of Proposals from the
+                  agent that failed Validation.
+                format: int32
+                maximum: 2
+                minimum: 0
+                type: integer
               verificationChecks:
                 description: VerificationChecks are the results of the deterministic
                   Verification checks.

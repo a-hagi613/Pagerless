@@ -5,18 +5,21 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/triage"
 )
 
@@ -31,6 +34,12 @@ type TriageReconciler struct {
 	Status *triage.StatusStore
 	// Job configures the agent Job.
 	Job AgentJobConfig
+	// Proposals validates Proposals again when they become Stale Proposals.
+	Proposals *proposal.Pipeline
+	// Clock decides when a Proposal has expired.
+	Clock clock.PassiveClock
+	// PollInterval is how often a Proposed Triage is checked for staleness. It defaults to DefaultProposalPollInterval.
+	PollInterval time.Duration
 }
 
 // SetupWithManager registers the reconciler for Triages and the Jobs it owns.
@@ -65,6 +74,13 @@ func (r *TriageReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, r.startInvestigation(ctx, &t)
 	case v1alpha1.PhaseInvestigating:
 		return ctrl.Result{}, r.watchAgentJob(ctx, &t)
+	case v1alpha1.PhaseProposed:
+		result, err := r.watchProposal(ctx, &t)
+		if err != nil && ctx.Err() != nil {
+			// The server is stopping, so the failure is not worth reporting.
+			return ctrl.Result{}, nil
+		}
+		return result, err
 	default:
 		return ctrl.Result{}, nil
 	}

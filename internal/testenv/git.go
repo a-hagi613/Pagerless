@@ -48,6 +48,22 @@ func (r *BareRepo) Commit(path, content, message string) string {
 	return r.Head()
 }
 
+// Symlink commits a symbolic link on main, pushes, and returns the new commit.
+func (r *BareRepo) Symlink(path, target, message string) string {
+	r.t.Helper()
+	full := filepath.Join(r.work, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		r.t.Fatalf("create directory for %s: %v", path, err)
+	}
+	if err := os.Symlink(target, full); err != nil {
+		r.t.Fatalf("link %s: %v", path, err)
+	}
+	git(r.t, r.work, "add", path)
+	git(r.t, r.work, "commit", "--message", message)
+	git(r.t, r.work, "push", "origin", "HEAD:main")
+	return r.Head()
+}
+
 // Head returns the commit at the tip of main in the bare repository.
 func (r *BareRepo) Head() string {
 	r.t.Helper()

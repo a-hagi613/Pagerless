@@ -1,7 +1,7 @@
-// Package cli implements kubectl-triage, the kubectl plugin that starts, lists,
-// and shows Triages. Commands read and write Triage resources through the
-// Kubernetes API in the pagerless namespace, whatever namespace the user works
-// in. They never call pagerless-server directly.
+// Package cli implements kubectl-triage, the kubectl plugin for Triages.
+// Commands read and write Triage resources through the Kubernetes API in the
+// pagerless namespace, whatever namespace the user works in. They never call
+// pagerless-server directly.
 package cli
 
 import (
@@ -21,7 +21,7 @@ const TriageNamespace = "pagerless"
 
 // NewRootCommand returns the kubectl-triage command. Its own action starts a
 // Triage for the target that its argument names. The subcommands list and show
-// Triages. Further subcommands attach to the same root.
+// Triages, and approve and reject their Proposals.
 func NewRootCommand() *cobra.Command {
 	conn := &connection{}
 	start := &startOptions{conn: conn}
@@ -29,7 +29,8 @@ func NewRootCommand() *cobra.Command {
 		Use:   "kubectl triage <pod/name | deploy/name | sts/name>",
 		Short: "Start, list, and show Triages for failing Workloads",
 		Long: `Start a Triage for the Workload that owns a failing pod or that is named
-directly, list Triages, and show a Triage's Diagnosis, Proposal, and outcome.
+directly, list Triages, show a Triage's Diagnosis, Proposal, and outcome, and
+approve or reject its Proposal.
 
 A pod is resolved to its owning Deployment or StatefulSet. A Triage targets the
 Workload in the namespace given by --namespace, or in the namespace of the
@@ -45,7 +46,7 @@ current context. Triages are stored in the pagerless namespace.`,
 	root.PersistentFlags().StringVar(&conn.context, "context", "", "kubeconfig context to use")
 	root.PersistentFlags().StringVarP(&conn.namespace, "namespace", "n", "",
 		"namespace of the Workload (default: the namespace of the current context)")
-	root.AddCommand(newListCommand(conn), newShowCommand(conn))
+	root.AddCommand(newListCommand(conn), newShowCommand(conn), newApproveCommand(conn), newRejectCommand(conn))
 	return root
 }
 
