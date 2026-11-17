@@ -57,8 +57,8 @@ e2e: ## Run the credential-free synthetic Replay end-to-end scenario in kind.
 down: ## Delete the kind cluster and the local Helm repository entry.
 	bash hack/down.sh
 
-break: ## Inject a Scenario into the Sandbox, for example make break SCENARIO=oom.
+break: ## Inject a Scenario, for example make break SCENARIO=oom.
 	bash hack/break.sh "$(SCENARIO)"
 
-reset: ## Force-reset the Sandbox to the known-good tag.
+reset: ## Force-reset the Sandbox to the known-good tag and remove chaos experiments.
 	bash hack/reset.sh

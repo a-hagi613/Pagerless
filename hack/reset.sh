@@ -13,6 +13,10 @@ require_commands git
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+# Scenario 9 is applied outside Git, so reset removes its experiment before it
+# restores the Sandbox branch.
+bash "$REPO_ROOT/hack/cpu-stress.sh" clear
+
 git_authenticated clone --quiet "$SANDBOX_URL" "$work/sandbox"
 cd "$work/sandbox"
 git_authenticated fetch --quiet origin "refs/tags/known-good:refs/tags/known-good" ||

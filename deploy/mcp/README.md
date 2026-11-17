@@ -13,7 +13,7 @@ Versions were checked against each project's release API and the registry manife
 
 ## Permissions and credentials
 
-Only `mcp-kubernetes` mounts a Kubernetes API token. Roles in `allowedNamespaces` permit get, list, and watch on pods, events, Deployments, StatefulSets and ReplicaSets, plus get on `pods/log`. They grant no access to Secrets, exec, port-forward, proxy or cluster-scoped objects. The server also hides write tools and exposes an explicit tool allowlist. The agent service account retains no Kubernetes API permissions and mounts only its report-audience token.
+Only `mcp-kubernetes` mounts a Kubernetes API token. Roles in `allowedNamespaces` permit get, list, and watch on pods, events, Deployments, StatefulSets and ReplicaSets, plus get on `pods/log`. They also permit get, list and watch on `chaos-mesh.org/v1alpha1` `StressChaos`, so that the Context Bundle can name an active experiment that targets the Workload. They grant no access to Secrets, exec, port-forward, proxy or cluster-scoped objects, and no other Chaos Mesh kind or group. The server also hides write tools and exposes an explicit tool allowlist. The agent service account retains no Kubernetes API permissions and mounts only its report-audience token.
 
 `hack/provision-mcp.py`, run by `make up` after the observability stack is ready, provisions a Grafana Viewer service account and an Argo CD account allowed only to get `default/sandbox`. Grafana's backend token is stored in `mcp-backend-tokens`; Argo CD's is stored in `argocd-read` and is also used by the server's deterministic Verification. Separate random caller tokens in `mcp-client-tokens` authenticate the agent to Grafana MCP and Argo CD MCP.
 
