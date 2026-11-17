@@ -71,9 +71,9 @@ export PATH="$PWD/bin:$PATH"
 PLATFORM_REVISION="$(git rev-parse HEAD)" make dev
 ```
 
-The production Replay artifact at `evals/replay/oom.json` is still pending live capture and validation. Building local images does not supply that missing artifact. The complete default Replay investigation is a release gate; the separate synthetic harness below exercises the integration while capture is pending.
+The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation and validated, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. The default Replay investigation uses it.
 
-Once the required recording is available in the agent image, the terminal workflow is:
+The terminal workflow is:
 
 ```bash
 make break SCENARIO=oom
@@ -88,7 +88,7 @@ To start a Triage manually, use `kubectl triage --context kind-pagerless --names
 
 ### Run the isolated end-to-end harness
 
-The `make e2e` target uses the ordinary local stack and a local Git/GitHub adapter with disposable read/write credentials. It exercises real Kubernetes, Argo CD, Git commits and the upstream MCP images with the explicitly synthetic recording at `evals/e2e/fixtures/synthetic-oom.json`. It neither needs a paid model key nor mutates your remote Sandbox. The full kind run is still being validated; this fixture is not the pending genuine recording.
+The `make e2e` target uses the ordinary local stack and a local Git/GitHub adapter with disposable read/write credentials. It exercises real Kubernetes, Argo CD, Git commits and the upstream MCP images with the explicitly synthetic recording at `evals/e2e/fixtures/synthetic-oom.json`. It neither needs a paid model key nor mutates your remote Sandbox. CI runs this harness on every pull request, and it is the same flow that was validated locally against the pinned platform commit.
 
 A local run requires the exact platform commit already pushed to the public repository:
 
@@ -104,7 +104,7 @@ The harness checks the complete Triage phase sequence, CLI Approval, a merged Sa
 
 Select `MODEL_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` in the ignored setup file, or `MODEL_PROVIDER=bedrock` with `AWS_REGION` and inference-scoped AWS credentials. Host AWS profile files are not mounted into agent Jobs. Live providers use the fixed Haiku 5.5 identifiers and prompt caching described in [agent](agent/README.md).
 
-The pending genuine OOMKilled capture must come from a successful live investigation. Its durable claim, retrieval, credential checks, normalization and provenance workflow are documented in [evals/replay](evals/replay/README.md). Synthetic test responses are kept separate and are never promoted as live evidence. Development and CI remain on Replay by default.
+The genuine OOMKilled recording at `evals/replay/oom.json` was captured from one live investigation, and its provenance records the agent Job, proposal hash, model and token usage. Its durable claim, retrieval, credential checks, normalization and provenance workflow are documented in [evals/replay](evals/replay/README.md). Synthetic test responses are kept separate and are never promoted as live evidence. Development and CI remain on Replay by default.
 
 ## CLI reference
 

@@ -1,6 +1,6 @@
 # OOMKilled Replay capture
 
-The production `oom.json` artifact must contain model responses from a real Anthropic API investigation of the OOMKilled Scenario. A successful live capture also produces `oom.provenance.json`, which binds the artifact's digest to the agent Job and the server-validated PatchResources Proposal. The separate `evals/e2e/fixtures/synthetic-oom.json` file is a development fixture and is never evidence of a live run.
+The production `oom.json` artifact must contain model responses from a real Anthropic API investigation of the OOMKilled Scenario. A successful live capture also produces `oom.provenance.json`, which binds the artifact's digest to the agent Job and the server-validated PatchResources Proposal. The repository contains that validated pair; this document describes how it was produced and how to reproduce it. The separate `evals/e2e/fixtures/synthetic-oom.json` file is a development fixture and is never evidence of a live run.
 
 Run the helper with the agent's pinned Python 3.14 environment and `kubectl` and Docker on `PATH`. It operates on an existing single-node kind stack and never creates a cluster or changes the remote Sandbox. In the isolated end-to-end environment, the Workload, Argo CD, Git repository and upstream MCP services remain real; the local GitHub adapter replaces the external GitHub API and pull request service.
 
