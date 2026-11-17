@@ -4,8 +4,10 @@ The resources that exist on EKS and have no local counterpart. Everything else i
 
 | Path | Applied by | Purpose |
 | --- | --- | --- |
-| `karpenter/ec2nodeclass.yaml` | `make cloud-up` | Which network, role and AMI Karpenter launches nodes from. |
-| `karpenter/nodepool.yaml` | `make cloud-up` | The only capacity Karpenter may buy: x86_64 Spot, within a 12 vCPU and 24 GiB limit. |
+| `karpenter/ec2nodeclass.yaml` | `make cloud-up` renders it | Which network, role and AMI Karpenter launches nodes from, and the `project=pagerless` tag every instance carries. |
+| `karpenter/nodepool.yaml` | `make cloud-up` renders it | The only capacity Karpenter may buy: x86_64 Spot, within a 12 vCPU and 24 GiB limit. |
 | `storage/storage-class.yaml` | `make cloud-up` | The default gp3 class named `standard`, whose volumes carry `project=pagerless`. |
 
-All are plain, static manifests. The values they repeat from Terraform are the node role name (`infra/karpenter.tf`), the discovery tag (`infra/discovery.tf`) and the cluster name. `make cloud-up` applies them only after the Karpenter chart is running, and `make cloud-down` deletes the claims and nodes before it destroys the cluster, so they need no teardown step of their own.
+The two Karpenter documents are templates. `make cloud-up` replaces `__CLUSTER_NAME__` and `__NODE_ROLE_NAME__` from the Terraform outputs, so the cluster's name and the node role's name exist in Terraform and nowhere else. `make cloud-check` proves the placeholders are still the ones the substitution expects. The StorageClass is applied unchanged.
+
+`make cloud-down` deletes the NodePools and NodeClaims, then the claims, and waits for both before it destroys the cluster: those instances and volumes are not in Terraform's state, so a destroy alone would leave them billing.
