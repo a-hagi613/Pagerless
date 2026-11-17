@@ -1,13 +1,13 @@
-diff --git a/workloads/checkout/deployment.yaml b/workloads/checkout/deployment.yaml
-index 3e51275..3c5eba2 100644
---- a/workloads/checkout/deployment.yaml
-+++ b/workloads/checkout/deployment.yaml
-@@ -24,7 +24,7 @@ spec:
-           command:
-             - python
-             - -c
--            - "import time; held = bytearray(48 * 1024 * 1024); time.sleep(10 ** 9)"
-+            - "import sys; sys.stderr.write('checkout: invalid configuration: unknown payment provider\\n'); sys.exit(1)"
-           resources:
-             requests:
-               memory: 64Mi
+diff --git a/workloads/deployments/checkout.yaml b/workloads/deployments/checkout.yaml
+index ab4b463..f958854 100644
+--- a/workloads/deployments/checkout.yaml
++++ b/workloads/deployments/checkout.yaml
+@@ -78,7 +78,7 @@ spec:
+         - name: OTEL_EXPORTER_OTLP_PROTOCOL
+           value: http/protobuf
+         - name: GOMEMLIMIT
+-          value: 16MiB
++          value: not-a-size
+         - name: OTEL_GO_X_OBSERVABILITY
+           value: 'true'
+         - name: OTEL_RESOURCE_ATTRIBUTES

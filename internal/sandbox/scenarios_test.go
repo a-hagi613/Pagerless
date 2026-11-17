@@ -9,11 +9,12 @@ import (
 )
 
 // TestScenarioPatchesChangeOneSandboxManifest checks that every Scenario in
-// scenarios/ injects its failure as one change to the checkout Workload's
-// manifest, which is the layout that `make break` applies the patch to.
+// scenarios/ injects its failure as one change to one Sandbox manifest, which
+// is the shape that `make break` applies the patch in. It names no Workload
+// path, because a Scenario may break a Workload's own manifest or a shared file
+// that its Workload depends on.
 func TestScenarioPatchesChangeOneSandboxManifest(t *testing.T) {
 	t.Parallel()
-	const checkoutManifest = "workloads/checkout/deployment.yaml"
 	root := filepath.Join("..", "..", "scenarios")
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -36,7 +37,11 @@ func TestScenarioPatchesChangeOneSandboxManifest(t *testing.T) {
 		if got := strings.Count(text, "diff --git "); got != 1 {
 			t.Errorf("Scenario %s: the patch changes %d files, want exactly one", entry.Name(), got)
 		}
-		for _, want := range []string{"a/" + checkoutManifest, "b/" + checkoutManifest, "\n+++ b/"} {
+		target := patchTarget(t, entry.Name(), text)
+		if !strings.HasPrefix(target, "workloads/") || !strings.HasSuffix(target, ".yaml") {
+			t.Errorf("Scenario %s: the patch targets %q, want a YAML manifest under workloads/", entry.Name(), target)
+		}
+		for _, want := range []string{"--- a/" + target, "+++ b/" + target, "\n+++ b/"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("Scenario %s: the patch lacks %q", entry.Name(), want)
 			}
@@ -52,4 +57,25 @@ func TestScenarioPatchesChangeOneSandboxManifest(t *testing.T) {
 			t.Errorf("scenarios/ defines %v, want it to include %q", scenarios, want)
 		}
 	}
+}
+
+// patchTarget returns the one Sandbox path that the patch changes, and fails
+// the test when its two diff headers name different paths.
+func patchTarget(t *testing.T, scenario, patch string) string {
+	t.Helper()
+	var before, after string
+	for line := range strings.SplitSeq(patch, "\n") {
+		if !strings.HasPrefix(line, "diff --git ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) != 4 {
+			t.Fatalf("Scenario %s: the diff header %q does not name two paths", scenario, line)
+		}
+		before, after = strings.TrimPrefix(fields[2], "a/"), strings.TrimPrefix(fields[3], "b/")
+	}
+	if before == "" || before != after {
+		t.Fatalf("Scenario %s: the patch changes %q and %q, want one path", scenario, before, after)
+	}
+	return before
 }
