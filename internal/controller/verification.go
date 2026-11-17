@@ -141,7 +141,7 @@ func (r *VerificationReconciler) awaitSync(ctx context.Context, tr *v1alpha1.Tri
 	return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
 }
 
-// observe watches the Workload for restarts, and decides once the window has passed or a restart is seen.
+// observe watches the Workload for restarts throughout the observation window and decides only after it ends.
 func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triage) (ctrl.Result, error) {
 	key := client.ObjectKeyFromObject(tr)
 	if tr.Status.VerificationStartedAt == nil {
@@ -161,11 +161,26 @@ func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triag
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("check the Workload for restarts: %w", err)
 	}
+	if !restarts.Passed {
+		// Preserve any observed failure before a pod can be deleted and its last termination state lost.
+		if _, err := r.Status.Update(ctx, key, func(latest *v1alpha1.Triage) error {
+			if latest.Status.Phase == v1alpha1.PhaseVerifying {
+				setCheck(&latest.Status, restarts)
+			}
+			return nil
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	windowOver := !r.Clock.Now().Before(started.Add(r.window()))
-	if restarts.Passed && !windowOver {
+	if !windowOver {
 		return ctrl.Result{RequeueAfter: r.pollInterval()}, nil
 	}
 
+	synced, err := r.Verifier.Synced(ctx, tr.Status.Execution.MergeCommit)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("check that Argo CD still has the merge commit synced and healthy: %w", err)
+	}
 	rollout, err := r.Verifier.Rollout(ctx, tr.Spec.Workload)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("check the rollout: %w", err)
@@ -179,8 +194,18 @@ func (r *VerificationReconciler) observe(ctx context.Context, tr *v1alpha1.Triag
 			return nil
 		}
 		recovered := true
-		for _, c := range []v1alpha1.VerificationCheck{rollout, restarts, alert} {
-			setCheck(&latest.Status, c)
+		setCheck(&latest.Status, synced)
+		setCheck(&latest.Status, rollout)
+		setCheck(&latest.Status, alert)
+		restartFailureRecorded := false
+		for _, c := range latest.Status.VerificationChecks {
+			if c.Name == v1alpha1.CheckNoNewRestarts && !c.Passed {
+				restartFailureRecorded = true
+				break
+			}
+		}
+		if !restartFailureRecorded {
+			setCheck(&latest.Status, restarts)
 		}
 		for _, c := range latest.Status.VerificationChecks {
 			recovered = recovered && c.Passed

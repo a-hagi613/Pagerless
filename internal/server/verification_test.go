@@ -261,6 +261,99 @@ func TestWorkloadRecoversWhenEveryCheckPassesForTheWholeWindow(t *testing.T) {
 	})
 }
 
+func TestVerificationRechecksArgoCDAtTheEndOfTheWindow(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		status testenv.ArgoCDStatus
+	}{
+		{name: "revision changed", status: testenv.ArgoCDStatus{Sync: synced, Revision: "different-commit", Health: healthy}},
+		{name: "health degraded", status: testenv.ArgoCDStatus{Sync: synced, Revision: "merge-commit", Health: "Degraded"}},
+		{name: "out of sync", status: testenv.ArgoCDStatus{Sync: outOfSync, Revision: "merge-commit", Health: healthy}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			env := testenv.Start(t, withPatchResources())
+			tr, commit := merged(t, env, humanTrigger)
+			verifying(t, env, tr, commit)
+			c.status.Revision = strings.ReplaceAll(c.status.Revision, "merge-commit", commit)
+			env.ArgoCD.Set(testenv.ArgoCDApplication, c.status)
+
+			env.Clock.Step(5 * time.Minute)
+			got := env.WaitFor(t, tr.Name, "Verification concludes", func(latest *v1alpha1.Triage) bool {
+				return latest.Status.Phase == v1alpha1.PhaseRecovered || latest.Status.Phase == v1alpha1.PhaseNotRecovered
+			})
+			if got.Status.Phase != v1alpha1.PhaseNotRecovered {
+				t.Fatalf("phase = %s with final Argo CD status %+v, want NotRecovered", got.Status.Phase, c.status)
+			}
+			if check := checkResult(t, got, v1alpha1.CheckArgoCDSynced); check.Passed {
+				t.Errorf("Argo CD check = %+v, want failed for final status %+v", check, c.status)
+			}
+		})
+	}
+}
+
+func TestVerificationRetriesWhenFinalArgoCDCheckFails(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources())
+	tr, commit := merged(t, env, humanTrigger)
+	verifying(t, env, tr, commit)
+	env.ArgoCD.FailNext(1_000_000)
+	before := len(env.ArgoCD.Requests())
+	env.Clock.Step(5 * time.Minute)
+	eventually(t, "Argo CD is retried after the final check fails", func() bool {
+		return len(env.ArgoCD.Requests()) >= before+3
+	})
+	if got := env.Get(t, tr.Name); got.Status.Phase != v1alpha1.PhaseVerifying {
+		t.Fatalf("phase = %s after Argo CD failed during the final check, want Verifying", got.Status.Phase)
+	}
+
+	env.ArgoCD.FailNext(0)
+	got := env.WaitForPhase(t, tr.Name, v1alpha1.PhaseRecovered)
+	check := checkResult(t, got, v1alpha1.CheckArgoCDSynced)
+	if !check.Passed || !strings.Contains(check.Message, commit) {
+		t.Errorf("final Argo CD check = %+v, want pass at %s", check, commit)
+	}
+}
+
+func TestRestartKeepsVerificationOpenAndCannotBeForgotten(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources())
+	tr, commit := merged(t, env, humanTrigger)
+	started := verifying(t, env, tr, commit)
+	env.Clock.Step(time.Minute)
+	pod := env.CreateWorkloadPod(t, sandboxNamespace, "checkout-restarted", podLabels(checkout), &testenv.Termination{
+		Reason: oomKilled, FinishedAt: env.Clock.Now(), Last: true,
+	})
+	observed := env.WaitFor(t, tr.Name, "the restart failure is recorded", func(latest *v1alpha1.Triage) bool {
+		for _, check := range latest.Status.VerificationChecks {
+			if check.Name == v1alpha1.CheckNoNewRestarts && !check.Passed {
+				return true
+			}
+		}
+		return false
+	})
+	if observed.Status.Phase != v1alpha1.PhaseVerifying || observed.Status.FollowUpTriage != "" ||
+		len(triagesFollowing(t, env, tr.Name)) != 0 {
+		t.Fatalf("phase = %s, follow-up = %q, got %d Follow-up Triages before the window ended",
+			observed.Status.Phase, observed.Status.FollowUpTriage, len(triagesFollowing(t, env, tr.Name)))
+	}
+	if err := env.Client.Delete(t.Context(), pod); err != nil {
+		t.Fatalf("delete restarted pod: %v", err)
+	}
+	if !env.Clock.Now().Before(started.Status.VerificationStartedAt.Add(5 * time.Minute)) {
+		t.Fatal("test must remove the pod before the observation window ends")
+	}
+	env.Clock.Step(4 * time.Minute)
+	got := env.WaitForPhase(t, tr.Name, v1alpha1.PhaseNotRecovered)
+	check := checkResult(t, got, v1alpha1.CheckNoNewRestarts)
+	if check.Passed || !strings.Contains(check.Message, oomKilled) {
+		t.Errorf("restart check = %+v after its pod disappeared, want the recorded OOMKilled failure", check)
+	}
+	requireFollowUp(t, env, got)
+}
+
 func TestHumanTriggerSkipsTheAlertCheck(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
@@ -290,18 +383,16 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 	cases := []struct {
 		name    string
 		trigger v1alpha1.Trigger
-		// arrange runs once Verification has begun and before the window ends. It returns whether the Triage is
-		// decided without waiting for the window to end.
-		arrange func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) (immediate bool)
+		// arrange runs once Verification has begun and before the window ends.
+		arrange func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage)
 		failed  map[string]bool
 		message string
 	}{
 		{
 			name:    "the triggering alert is still firing",
 			trigger: alertTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, _ *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, _ *v1alpha1.Triage) {
 				env.Alertmanager.Fire(alertFingerprint)
-				return false
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: true,
@@ -312,9 +403,8 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "the triggering alert is silenced, which does not resolve it",
 			trigger: alertTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, _ *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, _ *v1alpha1.Triage) {
 				env.Alertmanager.Silence(alertFingerprint)
-				return false
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: true,
@@ -325,7 +415,7 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "an alert Trigger carries no fingerprint to confirm",
 			trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceAlertmanager},
-			arrange: func(*testing.T, *testenv.Env, *v1alpha1.Triage) bool { return false },
+			arrange: func(*testing.T, *testenv.Env, *v1alpha1.Triage) {},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: true,
 				v1alpha1.CheckNoNewRestarts: true, v1alpha1.CheckAlertResolved: false,
@@ -335,9 +425,8 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "the rollout is not available",
 			trigger: humanTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) {
 				env.SetDeploymentReplicas(t, sandboxNamespace, tr.Spec.Workload.Name, 1, 0)
-				return false
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: false,
@@ -348,12 +437,11 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "the Workload is gone",
 			trigger: humanTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) {
 				d := liveDeployment(t, env, tr.Spec.Workload.Name)
 				if err := env.Client.Delete(t.Context(), d); err != nil {
 					t.Fatal(err)
 				}
-				return true
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: false,
@@ -364,12 +452,11 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "a container is OOMKilled during the window",
 			trigger: alertTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) {
 				env.Alertmanager.Fire(alertFingerprint)
 				env.Clock.Step(time.Minute)
 				env.CreateWorkloadPod(t, sandboxNamespace, "checkout-new", podLabels(tr.Spec.Workload.Name),
 					&testenv.Termination{Reason: oomKilled, FinishedAt: env.Clock.Now(), Last: true})
-				return true
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: true,
@@ -380,11 +467,10 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 		{
 			name:    "a container exits during the window",
 			trigger: humanTrigger,
-			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) bool {
+			arrange: func(t *testing.T, env *testenv.Env, tr *v1alpha1.Triage) {
 				env.Clock.Step(time.Minute)
 				env.CreateWorkloadPod(t, sandboxNamespace, "checkout-new", podLabels(tr.Spec.Workload.Name),
 					&testenv.Termination{Reason: "Error", FinishedAt: env.Clock.Now()})
-				return true
 			},
 			failed: map[string]bool{
 				v1alpha1.CheckArgoCDSynced: true, v1alpha1.CheckRolloutAvailable: true,
@@ -398,15 +484,18 @@ func TestWorkloadIsNotRecovered(t *testing.T) {
 			t.Parallel()
 			env := testenv.Start(t, withPatchResources())
 			tr, commit := merged(t, env, c.trigger)
-			verifying(t, env, tr, commit)
-			immediate := c.arrange(t, env, tr)
-
-			if !immediate {
-				settle()
-				if got := env.Get(t, tr.Name); got.Status.Phase != v1alpha1.PhaseVerifying {
-					t.Fatalf("phase = %s before the window ended, want Verifying", got.Status.Phase)
-				}
-				env.Clock.Step(5 * time.Minute)
+			started := verifying(t, env, tr, commit)
+			c.arrange(t, env, tr)
+			settle()
+			if got := env.Get(t, tr.Name); got.Status.Phase != v1alpha1.PhaseVerifying {
+				t.Fatalf("phase = %s before the window ended, want Verifying", got.Status.Phase)
+			}
+			if following := triagesFollowing(t, env, tr.Name); len(following) != 0 {
+				t.Fatalf("got %d Follow-up Triages before the window ended", len(following))
+			}
+			remaining := started.Status.VerificationStartedAt.Add(5 * time.Minute).Sub(env.Clock.Now())
+			if remaining > 0 {
+				env.Clock.Step(remaining)
 			}
 			got := env.WaitForPhase(t, tr.Name, v1alpha1.PhaseNotRecovered)
 			requireChecks(t, got, c.failed)
