@@ -149,7 +149,7 @@ jobs:
               - '!docs/**'
 
   e2e:
-    name: Credential-free kind integration
+    name: Credential-free kind integration (${{ matrix.scenario }})
     # The kind cluster is the integration gate, so it runs only for pull requests
     # and pushes that feed an integration branch, plus the nightly and manual runs.
     # Documentation, ADR and Markdown changes need only the fast jobs.
@@ -164,11 +164,17 @@ jobs:
         (github.base_ref == 'main' || startsWith(github.base_ref, 'integration/')) &&
         needs.changes.outputs.code == 'true')
     runs-on: ubuntu-24.04
-    # The three-Scenario Replay subset runs one five-minute Verification window
-    # per Scenario after a ten-to-fifteen-minute stack setup, so a measured run of
-    # the whole subset needs about forty minutes. The bound stays well below the
-    # six-hour default, so a stalled step still fails the job instead of hanging.
-    timeout-minutes: 50
+    # A push gates on the single OOMKilled Scenario, so that a branch iterates in
+    # setup plus one Scenario. A pull request into main, a manual dispatch and the
+    # nightly run also cover the request bound and the Rollback rule, one Scenario
+    # per job, so that the wall clock stays at setup plus one Scenario.
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(github.event_name == 'push' && '["oom"]' || '["oom","unschedulable","bad-config"]') }}
+    # Setup takes ten to fifteen minutes and every Scenario owns one Verification
+    # window, so a single-Scenario job fits well inside this bound.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -191,15 +197,16 @@ jobs:
           curl --fail --silent --show-error --location "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
           tar -xzf helm.tar.gz linux-amd64/helm
           sudo install linux-amd64/helm /usr/local/bin/helm
-      - name: Run the three-Scenario Replay evaluation
+      - name: Run the ${{ matrix.scenario }} Replay evaluation
         env:
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
+          REPLAY_SCENARIOS: ${{ matrix.scenario }}
         run: make eval-replay
       - name: Upload end-to-end diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: e2e-diagnostics
+          name: e2e-diagnostics-${{ matrix.scenario }}
           path: e2e-diagnostics
           if-no-files-found: ignore
 

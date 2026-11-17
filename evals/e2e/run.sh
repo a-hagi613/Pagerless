@@ -142,6 +142,16 @@ for app in pagerless-server pagerless-executor mcp; do
 		--type=json --patch='[{"op":"remove","path":"/spec/syncPolicy"}]'
 done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment pagerless-server --type strategic --patch-file "$script_dir/patches/pagerless-server.yaml"
+# ADR-0006 keeps the five-minute observation window for production, for every
+# live run, and for the single-Scenario check. The credential-free Replay
+# evaluation checks the pipeline rather than recovery confidence, so it shortens
+# the window and tells the harness which window the recorded evidence must show.
+verification_window=300
+if [ "$provider" = replay ] && [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
+	verification_window=60
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment pagerless-server --type strategic \
+		--patch '{"spec":{"template":{"spec":{"containers":[{"name":"server","env":[{"name":"PAGERLESS_VERIFICATION_WINDOW","value":"60s"}]}]}}}}'
+fi
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment pagerless-executor --type strategic --patch-file "$script_dir/patches/pagerless-executor.yaml"
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment mcp-github --type strategic --patch-file "$script_dir/patches/github-mcp-relay.yaml"
 for deployment in pagerless-server pagerless-executor mcp-github; do
@@ -192,6 +202,7 @@ if [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
 	make -C "$repo_root" build-cli
 	eval_arguments=(--adapter --scenarios "${PAGERLESS_E2E_SCENARIOS:-oom}"
 		--repeats "${PAGERLESS_E2E_REPEATS:-1}"
+		--verification-window "$verification_window"
 		--results-dir "$repo_root/evals/results")
 	if [ -n "${PAGERLESS_E2E_MAX_TOKENS:-}" ]; then
 		eval_arguments+=(--max-tokens "$PAGERLESS_E2E_MAX_TOKENS")

@@ -18,7 +18,13 @@ The same cluster and adapter also serve the evaluation's credential-free subset.
 `make eval-replay` sets `PAGERLESS_E2E_EVAL=1` and runs `oom`, `unschedulable`,
 and `bad-config` through `evals/harness`, which resets, injects, approves as the
 `eval-approver` user, and scores each run. CI runs that target as the
-kind-backed gate; `make e2e` remains available as the single-scenario check.
+kind-backed gate, one Scenario per job on its own cluster: a push to an
+integration branch gates on `oom`, while a pull request into `main`, a manual
+dispatch, and the nightly run cover all three. The Replay jobs shorten the
+observation window to 60 seconds through `PAGERLESS_VERIFICATION_WINDOW`; the
+single-Scenario `make e2e` check, every live run, and production keep ADR-0006's
+five minutes.
+`make e2e` remains available as the single-scenario check.
 The evaluation's evaluator contract and scoring rules are in
 [docs/evaluation.md](../../docs/evaluation.md).
 

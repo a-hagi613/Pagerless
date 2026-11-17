@@ -82,6 +82,10 @@ class Config:
     max_cost_usd: float
     context: str
     timeouts: Timeouts = field(default_factory=Timeouts)
+    # verification_window is how many seconds of Observation a Recovered run must
+    # record. ADR-0006 keeps five minutes for every live run; the credential-free
+    # Replay gate passes a shorter window and checks that one instead.
+    verification_window: int = 300
 
 
 @dataclass
@@ -728,9 +732,9 @@ class Harness:
         """Keep the CI gate strict about the evidence the old e2e job asserted.
 
         The scored result is the harness's answer, but a Recovered run must also
-        show the deterministic Verification checks and the full five-minute
-        observation window that the server decided. A run that reached a
-        Proposal must show the eval-approver as the approver.
+        show the deterministic Verification checks and the observation window that
+        the server decided and the harness was told to require. A run that reached
+        a Proposal must show the eval-approver as the approver.
         """
         if not self.config.require_pass:
             return
@@ -740,8 +744,12 @@ class Harness:
             if not checks or any(not check["passed"] for check in checks):
                 raise HarnessError("a Recovered run did not record passing deterministic Verification checks")
             window = verification["windowSeconds"]
-            if window is None or window < 300:
-                raise HarnessError("a Recovered run did not record the full five-minute Verification window")
+            required = self.config.verification_window
+            if window is None or window < required:
+                raise HarnessError(
+                    f"a Recovered run recorded {window}s of Observation, "
+                    f"below the required {required}s Verification window"
+                )
         if record["action"] is not None and record["approvedBy"] != APPROVER_USER:
             raise HarnessError(f"the {record['scenario']} run was not approved by {APPROVER_USER}")
 

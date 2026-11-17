@@ -76,6 +76,12 @@ func run() error {
 	defaults := patchresources.DefaultBounds()
 	defaultCPU, defaultMemory := defaults[corev1.ResourceCPU], defaults[corev1.ResourceMemory]
 	defaultScale := scale.DefaultBounds()
+	// The observation window is five minutes unless the environment shortens it,
+	// which only the credential-free CI Replay jobs do (ADR-0006).
+	defaultVerificationWindow, err := verification.WindowFromEnvironment(os.Getenv)
+	if err != nil {
+		return err
+	}
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
 			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
@@ -145,7 +151,7 @@ func run() error {
 			"base URL of Alertmanager, which Verification asks whether the triggering alert has resolved")
 		alertmanagerTokenFile = flag.String("alertmanager-token-file", defaultAlertmanagerTokenFile,
 			"file that holds the required bearer token for Alertmanager webhook deliveries")
-		verificationWindow = flag.Duration("verification-window", verification.DefaultWindow,
+		verificationWindow = flag.Duration("verification-window", defaultVerificationWindow,
 			"how long Verification observes the Workload for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
 			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")

@@ -164,11 +164,22 @@ CI runs `make eval-replay`, which reuses the isolated adapter cluster from
 
 The three recordings are synthetic test fixtures, not live evidence
 ([ADR-0016](adr/0016-replay-recordings-normalize-volatile-identifiers.md)).
-The subset is chosen to exercise the three scoring rules and a manual Trigger
-within the CI time budget; the flag Scenarios and the injection Scenario need
-longer alert and log windows. The job makes no paid call, needs no GitHub
-Sandbox credential, and keeps the existing kind checks for the merge, Argo CD
-health at the merge commit, and the five-minute Verification window.
+The subset is chosen to exercise the three scoring rules and a manual Trigger;
+the flag Scenarios and the injection Scenario need longer alert and log windows.
+The job makes no paid call, needs no GitHub Sandbox credential, and keeps the
+existing kind checks for the merge, Argo CD health at the merge commit, and the
+Verification observation.
+
+CI runs one Scenario per job, each on its own kind cluster, so the wall clock is
+a stack setup plus one Scenario instead of three. A push to an integration
+branch gates on `oom` alone; a pull request into `main`, a manual dispatch, and
+the nightly run cover all three. The Replay jobs also shorten the observation
+window to 60 seconds through `PAGERLESS_VERIFICATION_WINDOW`, and pass the same
+value to the harness, which refuses a Recovered run whose recorded window is
+shorter. That keeps the gate cheap while the server code stays at ADR-0006's
+five-minute default: production, the manual `make e2e` check, and every live
+evaluation leave the variable unset. A published run therefore always shows five
+minutes of Observation, and a Replay result never stands in for one.
 
 ## Budgets
 

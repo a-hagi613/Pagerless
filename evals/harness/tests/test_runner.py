@@ -93,7 +93,7 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(record["phase"], "TimedOut")
         self.assertEqual(record["result"], "fail")
 
-    def test_the_ci_gate_requires_passing_checks_and_the_five_minute_window(self) -> None:
+    def test_the_ci_gate_requires_passing_checks_and_the_configured_window(self) -> None:
         record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
         self.harness._assert_ci_evidence(record)
         short = {**record, "verification": {**record["verification"], "windowSeconds": 120.0}}
@@ -102,6 +102,16 @@ class HarnessTest(unittest.TestCase):
         unchecked = {**record, "verification": {**record["verification"], "checks": []}}
         with self.assertRaises(HarnessError):
             self.harness._assert_ci_evidence(unchecked)
+
+    def test_the_ci_gate_uses_a_shorter_configured_window(self) -> None:
+        record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
+        self.assertEqual(self.harness.config.verification_window, 300)
+        self.harness.config.verification_window = 60
+        observed = {**record, "verification": {**record["verification"], "windowSeconds": 61.0}}
+        self.harness._assert_ci_evidence(observed)
+        too_short = {**record, "verification": {**record["verification"], "windowSeconds": 45.0}}
+        with self.assertRaises(HarnessError):
+            self.harness._assert_ci_evidence(too_short)
 
     def test_the_ci_gate_requires_the_eval_approver(self) -> None:
         record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")

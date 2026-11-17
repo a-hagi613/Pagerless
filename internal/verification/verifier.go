@@ -19,6 +19,29 @@ import (
 // DefaultWindow is how long the Workload is observed for new restarts and OOMKills (ADR-0006).
 const DefaultWindow = 5 * time.Minute
 
+// WindowEnvironment names the variable that may shorten the observation window.
+// ADR-0006 keeps five minutes for every deployment and every published run; the
+// override exists only so the credential-free CI Replay jobs can check the
+// pipeline quickly, and a live evaluation never sets it.
+const WindowEnvironment = "PAGERLESS_VERIFICATION_WINDOW"
+
+// WindowFromEnvironment returns the observation window that the environment
+// selects, or DefaultWindow when the variable is unset or empty.
+func WindowFromEnvironment(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(WindowEnvironment))
+	if raw == "" {
+		return DefaultWindow, nil
+	}
+	window, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s is not a duration: %w", WindowEnvironment, err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %q", WindowEnvironment, raw)
+	}
+	return window, nil
+}
+
 // DefaultApplication is the Argo CD application that deploys the Sandbox.
 const DefaultApplication = "sandbox"
 

@@ -41,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         help="hard estimated cost budget in USD for the batch; 0 means unbounded",
     )
     parser.add_argument(
+        "--verification-window",
+        type=int,
+        default=300,
+        help="seconds of Observation that a Recovered run must record; "
+        "ADR-0006 keeps 300 for every live run",
+    )
+    parser.add_argument(
         "--require-pass",
         action="store_true",
         help="exit non-zero when any scored run fails (CI uses this)",
@@ -63,12 +70,15 @@ def main(argv: list[str] | None = None) -> int:
             require_pass=arguments.require_pass,
             max_tokens=arguments.max_tokens,
             max_cost_usd=arguments.max_cost_usd,
+            verification_window=arguments.verification_window,
             context=arguments.context,
         )
         if config.repeats < 1:
             raise HarnessError("--repeats must be at least 1")
         if config.max_tokens < 0 or config.max_cost_usd < 0:
             raise HarnessError("--max-tokens and --max-cost-usd cannot be negative")
+        if config.verification_window < 1:
+            raise HarnessError("--verification-window must be at least one second")
         harness = Harness(config)
         code = harness.run()
         if harness.path is not None:

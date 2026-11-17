@@ -53,7 +53,9 @@ jobs:
   evaluate:
     name: Live evaluation
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    # The measured phase finishes well inside this bound. The full phase runs ten
+    # Scenarios twice on one cluster and needs roughly two to three hours.
+    timeout-minutes: 240
     steps:
       - name: Check the paid-run confirmation and budget
         env:
