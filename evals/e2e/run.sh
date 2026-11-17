@@ -14,10 +14,23 @@ case "$keep" in 0|1) ;; *) echo "PAGERLESS_E2E_KEEP_CLUSTER must be 0 or 1." >&2
 # The harness plays one Scenario. Each Scenario's Replay recording lives beside
 # this script, named for it, so a Scenario is selected without another flag.
 scenario="${PAGERLESS_E2E_SCENARIO:-oom}"
+provider="${PAGERLESS_E2E_MODEL_PROVIDER:-replay}"
 recording="${PAGERLESS_E2E_RECORDING:-synthetic-$scenario.json}"
+# capture asks the stack to write the genuine recordings, which the agent refuses
+# in Replay, so it is a separate switch from PAGERLESS_E2E_RECORDING, the file
+# that Replay plays.
+capture="${PAGERLESS_E2E_CAPTURE:-0}"
+case "$capture" in 0|1) ;; *) echo "PAGERLESS_E2E_CAPTURE must be 0 or 1." >&2; exit 1 ;; esac
+if [ "$capture" = 1 ] && [ "$provider" != anthropic ]; then
+	echo "PAGERLESS_E2E_CAPTURE requires PAGERLESS_E2E_MODEL_PROVIDER=anthropic." >&2
+	exit 1
+fi
 case "$scenario" in *[!a-z0-9-]*|"") echo "PAGERLESS_E2E_SCENARIO must be a lowercase Scenario name." >&2; exit 1 ;; esac
-[ -f "$script_dir/fixtures/$recording" ] ||
-	{ echo "The Replay recording $recording is not in evals/e2e/fixtures." >&2; exit 1; }
+# Only Replay reads a recording, so only Replay needs the fixture to exist.
+if [ "$provider" = replay ]; then
+	[ -f "$script_dir/fixtures/$recording" ] ||
+		{ echo "The Replay recording $recording is not in evals/e2e/fixtures." >&2; exit 1; }
+fi
 if kind get clusters | grep -qx "$KIND_CLUSTER_NAME" && [ "${PAGERLESS_E2E_REUSE_CLUSTER:-0}" != 1 ]; then
 	echo "The kind cluster already exists; set PAGERLESS_E2E_REUSE_CLUSTER=1 only for the isolated E2E cluster." >&2
 	exit 1
@@ -60,7 +73,7 @@ cat >"$state/config.env" <<EOF
 SANDBOX_URL=https://sandbox-adapter.pagerless-e2e.svc:8443/git/pagerless-test/sandbox.git
 GITHUB_READ_TOKEN=$read_token
 GITHUB_WRITE_TOKEN=$write_token
-MODEL_PROVIDER=${PAGERLESS_E2E_MODEL_PROVIDER:-replay}
+MODEL_PROVIDER=$provider
 PAGERLESS_REPLAY_FILE=/app/recordings/$recording
 PAGERLESS_SANDBOX_OWNER=pagerless-test
 PAGERLESS_SANDBOX_REPO=sandbox
@@ -78,7 +91,7 @@ printf 'PAGERLESS_E2E_CA_FILE=%q\n' "$state/certs/ca.crt" >>"$state/config.env"
 printf 'PAGERLESS_E2E_TLS_CERT_FILE=%q\n' "$state/certs/tls.crt" >>"$state/config.env"
 printf 'PAGERLESS_E2E_TLS_KEY_FILE=%q\n' "$state/certs/tls.key" >>"$state/config.env"
 printf 'PAGERLESS_E2E_KUBECONFORM_BIN=%q\n' "$state/bin/kubeconform" >>"$state/config.env"
-if [ "${PAGERLESS_E2E_MODEL_PROVIDER:-replay}" = anthropic ]; then
+if [ "$provider" = anthropic ]; then
 	[ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "ANTHROPIC_API_KEY is required for a live run." >&2; exit 2; }
 	printf 'ANTHROPIC_API_KEY=%q\n' "$ANTHROPIC_API_KEY" >>"$state/config.env"
 fi
@@ -101,6 +114,20 @@ export PLATFORM_REVISION
 export PAGERLESS_BUILD_REVISION="$PLATFORM_REVISION"
 make -C "$repo_root" dev
 
+# A run that sets PAGERLESS_E2E_MEMORY_PEAK samples the memory that the whole
+# stack uses, so a published requirement can rest on a measurement instead of an
+# estimate. The samples are kept verbatim in that file for the peak to be read
+# from, and the node container is the one that holds every pod in the cluster.
+if [ -n "${PAGERLESS_E2E_MEMORY_PEAK:-}" ]; then
+	(
+		while :; do
+			docker stats --no-stream --format '{{.MemUsage}}' "${KIND_CLUSTER_NAME}-control-plane" 2>/dev/null || true
+			sleep 5
+		done
+	) >"$PAGERLESS_E2E_MEMORY_PEAK" &
+	sampler=$!
+fi
+
 # The root Application owns the child Application specs. Pause reconciliation
 # before applying isolated TLS and relay patches; keep the Sandbox Application active.
 for app in root pagerless-server pagerless-executor mcp; do
@@ -121,14 +148,17 @@ for deployment in pagerless-server pagerless-executor mcp-github; do
 	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment "$deployment" --type=merge \
 		--patch "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"pagerless.dev/config-checksum\":\"$config_checksum\"}}}}}"
 done
-kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch "{\"data\":{\"PAGERLESS_REPLAY_FILE\":\"/app/recordings/$recording\"}}"
+# Only Replay reads the configured recording; a live run leaves it untouched.
+if [ "$provider" = replay ]; then
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch "{\"data\":{\"PAGERLESS_REPLAY_FILE\":\"/app/recordings/$recording\"}}"
+fi
 for deployment in pagerless-server pagerless-executor mcp-github; do kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout status "deployment/$deployment" --timeout=180s; done
 
 # A live evaluation can also produce the genuine Replay recordings. The
 # destination claim and the inference Secret are provisioned with the same
 # stdin-only path as a manual capture, then the server is restarted so the
 # investigation and Narrative Jobs record to the claim.
-if [ "${PAGERLESS_E2E_RECORDING:-0}" = "1" ]; then
+if [ "$capture" = 1 ]; then
 	(
 		cd "$repo_root/agent" &&
 			uv run --locked python "$repo_root/evals/replay/capture.py" prepare \
@@ -173,7 +203,7 @@ if [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
 		eval_arguments+=(--require-pass)
 	fi
 	"${python[@]}" "$repo_root/evals/harness/eval.py" "${eval_arguments[@]}"
-	if [ "${PAGERLESS_E2E_RECORDING:-0}" = "1" ]; then
+	if [ "$capture" = 1 ]; then
 		triage="$(kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless \
 			get triages --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')"
 		[ -n "$triage" ] || { echo "the recorded evaluation produced no Triage" >&2; exit 1; }

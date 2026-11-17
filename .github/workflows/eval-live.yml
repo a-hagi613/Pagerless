@@ -104,13 +104,14 @@ jobs:
           PAGERLESS_E2E_REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
           PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
           PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
-          PAGERLESS_E2E_RECORDING: ${{ inputs.phase == 'measured' && '1' || '0' }}
+          PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && '1' || '0' }}
           PAGERLESS_E2E_REQUIRE_PASS: "1"
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
+          PAGERLESS_E2E_MEMORY_PEAK: ${{ github.workspace }}/memory-samples.txt
           PLATFORM_REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if [ "$PAGERLESS_E2E_RECORDING" = "1" ] && [ "$PAGERLESS_E2E_SCENARIOS" != "oom" ]; then
+          if [ "$PAGERLESS_E2E_CAPTURE" = "1" ] && [ "$PAGERLESS_E2E_SCENARIOS" != "oom" ]; then
             echo "Recording is supported only for the measured oom Scenario." >&2
             exit 1
           fi
@@ -133,6 +134,14 @@ jobs:
             evals/replay/oom.json
             evals/replay/oom.provenance.json
             evals/replay/narrative.json
+          if-no-files-found: ignore
+
+      - name: Upload the memory samples
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: memory-samples-${{ github.sha }}-${{ inputs.phase }}
+          path: memory-samples.txt
           if-no-files-found: ignore
 
       - name: Upload failure diagnostics

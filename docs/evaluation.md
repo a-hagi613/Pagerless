@@ -182,39 +182,50 @@ spend.
 
 ## The guarded live workflow
 
-Creating the workflow is deliberately left to the lead. When it is created, it
-is a `workflow_dispatch` workflow with these inputs and no push trigger:
+[`eval-live.yml`](../.github/workflows/eval-live.yml) is a `workflow_dispatch`
+workflow with no push or pull-request trigger, so no fork can reach the model
+credential:
 
 | Input | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `phase` | choice `measured`, `full` | `measured` | `measured` runs `oom` once to confirm cost; `full` runs all ten Scenarios twice. |
+| `phase` | choice `measured`, `full` | `measured` | `measured` runs `oom` once to confirm cost and writes the genuine recordings; `full` runs all ten Scenarios twice and samples the stack's memory. |
 | `scenarios` | string | empty | Overrides the phase's Scenario list; empty uses the phase default. |
-| `repeats` | number | 1 for measured, 2 for full | Repeats per Scenario. |
-| `max_tokens` | number | 40000 measured, 2000000 full | The hard token budget passed to the harness. |
-| `max_cost_usd` | number | 3 measured, 25 full | The hard cost budget passed to the harness. |
+| `repeats` | number | 1 | Repeats per Scenario. |
+| `max_tokens` | number | 40000 | The hard token budget passed to the harness. |
+| `max_cost_usd` | number | 1 | The hard cost budget passed to the harness. The job rejects a budget above 4.5 USD, which keeps one batch inside the 5 USD mission cap. |
 | `confirm_paid_run` | string | empty | Must be exactly `yes`; anything else fails the job before a model call. |
 | `model_provider` | choice `anthropic`, `bedrock` | `anthropic` | The measured provider. |
 
-The workflow's only secrets are `ANTHROPIC_API_KEY`, `GITHUB_READ_TOKEN`, and
-`GITHUB_WRITE_TOKEN` (or the Bedrock equivalents). It writes the ignored `.env`
+The only secret is `ANTHROPIC_API_KEY` (or the Bedrock equivalent). The
+isolated adapter mints its own disposable GitHub read and write tokens, so the
+job needs no Sandbox credential. The stack writes the ignored configuration
 with `umask 077` and never echoes or prints a secret; `hack/provision-mcp.py`
 moves the provider credential into the namespace-scoped Secret through stdin.
-It exits if `confirm_paid_run` is not `yes`, runs with
+The job exits if `confirm_paid_run` is not `yes`, runs with
 `continue-on-error: false`, and cannot be triggered by a pull request.
+
+A `measured` run sets `PAGERLESS_E2E_CAPTURE=1`. The runner then provisions the
+capture claim and the inference Secret, restarts the server with the live
+provider, and after a Recovered Verification retrieves the genuine OOMKilled
+recording, its provenance document, and the Narrative recording. A `full` run
+leaves the agent in Replay and samples the kind node container's memory every
+five seconds, so the published requirement in [README.md](../README.md) can
+equal a measured peak plus a margin instead of an estimate.
 
 Exact commands, from a checkout at the commit under test:
 
 ```bash
-# 1. The stack. MODEL_PROVIDER=anthropic comes from the guarded .env.
-PLATFORM_REVISION="$(git rev-parse HEAD)" make dev
+# The measured run: one oom Scenario, the genuine recordings, at most 1 USD.
+gh workflow run eval-live.yml --ref integration/phase-2 \
+  -f phase=measured -f confirm_paid_run=yes \
+  -f max_tokens=40000 -f max_cost_usd=1
 
-# 2. The measured run (default phase).
-make eval SCENARIOS=oom REPEATS=1 MAX_TOKENS=40000 MAX_COST_USD=3
+# The full run, only after the measured run's cost is accepted.
+gh workflow run eval-live.yml --ref integration/phase-2 \
+  -f phase=full -f confirm_paid_run=yes \
+  -f max_tokens=2000000 -f max_cost_usd=4.5
 
-# 3. The full run, only after the measured run's cost is accepted.
-make eval SCENARIOS=all REPEATS=2 MAX_TOKENS=2000000 MAX_COST_USD=25
-
-# 4. Publish the table from the recorded documents.
+# Publish the table from the recorded documents.
 make eval-table
 make eval-table-check
 ```
@@ -225,11 +236,9 @@ The workflow uploads these artifacts, with `if: always()`:
 | --- | --- | --- |
 | `eval-results-<commit>-<phase>` | `evals/results/` | The versioned result documents, including failed and timed-out runs. |
 | `replay-recordings-<commit>` | `evals/replay/` | Any recording captured with `evals/replay/capture.py` for the run, when the workflow sets `PAGERLESS_RECORDING_PVC` and retrieves it. |
+| `memory-samples-<commit>-<phase>` | `memory-samples.txt` | The raw `docker stats` memory samples that the measured requirement is read from. |
 
 The job never uploads `.env`, a kubeconfig, the eval-approver certificate or
 key, the agent credentials Secret, or the Loki query response. The agent's
 Triage resources remain in the cluster until teardown; the result documents are
 the durable record.
-
-The live workflow is not created by this change. It is a decision for the lead
-because it spends money and requires a Sandbox credential in Actions.

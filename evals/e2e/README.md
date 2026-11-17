@@ -6,6 +6,14 @@ that `make break` accepts; the harness plays `fixtures/synthetic-<scenario>.json
 unless `PAGERLESS_E2E_RECORDING` names another recording in that directory, so
 `PAGERLESS_E2E_SCENARIO=injection` runs the prompt-injection Scenario end to end.
 
+`PAGERLESS_E2E_MODEL_PROVIDER=anthropic` runs the same flow against the live
+model instead of Replay. `PAGERLESS_E2E_CAPTURE=1` additionally provisions the
+capture claim and writes the genuine OOMKilled recording, its provenance
+document, and the Narrative recording; the agent refuses a recording file in
+Replay, so that switch requires the live provider.
+`PAGERLESS_E2E_MEMORY_PEAK` names a file that the runner samples the kind node
+container's memory into every five seconds while the stack is up.
+
 The same cluster and adapter also serve the evaluation's credential-free subset.
 `make eval-replay` sets `PAGERLESS_E2E_EVAL=1` and runs `oom`, `unschedulable`,
 and `bad-config` through `evals/harness`, which resets, injects, approves as the
