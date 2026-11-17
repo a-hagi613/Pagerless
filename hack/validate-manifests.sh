@@ -46,6 +46,7 @@ helm template mcp-gateway "$REPO_ROOT/deploy/gateway" \
 
 kubectl kustomize "$REPO_ROOT/deploy/pagerless-server" >"$state/pagerless-server.yaml"
 kubectl kustomize "$REPO_ROOT/deploy/pagerless-executor" >"$state/pagerless-executor.yaml"
+kubectl kustomize "$REPO_ROOT/deploy/observability/dashboards" >"$state/dashboards.yaml"
 
 kubeconform -strict -ignore-missing-schemas -summary \
 	"$state/root.yaml" \
@@ -55,5 +56,7 @@ kubeconform -strict -ignore-missing-schemas -summary \
 	"$state/gateway.yaml" \
 	"$state/pagerless-server.yaml" \
 	"$state/pagerless-executor.yaml" \
-	"$REPO_ROOT/deploy/observability/alerts/oomkilled.yaml" \
+	"$state/dashboards.yaml" \
+	"$REPO_ROOT"/deploy/observability/alerts/*.yaml \
+	"$REPO_ROOT/deploy/observability/otlp-receiver/prometheus-service.yaml" \
 	"$REPO_ROOT/evals/e2e/manifests/adapter.yaml"
