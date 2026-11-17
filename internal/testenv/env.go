@@ -268,6 +268,19 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if o.validators != nil {
 		validators = o.validators(env)
 	}
+	runtime := o.agentRuntime
+	if runtime.GatewayURL == "" {
+		runtime.GatewayURL = "http://mcp-gateway.agentgateway-system.svc.cluster.local"
+	}
+	if runtime.KeycloakIssuer == "" {
+		runtime.KeycloakIssuer = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+	}
+	if runtime.KeycloakTokenURL == "" {
+		runtime.KeycloakTokenURL = runtime.KeycloakIssuer + "/protocol/openid-connect/token"
+	}
+	if runtime.KeycloakClientID == "" {
+		runtime.KeycloakClientID = controller.DefaultKeycloakClientID
+	}
 	executorToken := func() (string, error) {
 		return env.issueToken(context.Background(), Namespace, server.DefaultServerServiceAccount, executorapi.Audience)
 	}
@@ -275,7 +288,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		Namespace:                Namespace,
 		AgentImage:               AgentImage,
 		AgentServerURL:           env.ReportURL,
-		AgentRuntime:             o.agentRuntime,
+		AgentRuntime:             runtime,
 		ReportListener:           listener,
 		MetricsListener:          metricsListener,
 		DashboardListener:        dashboardListener,

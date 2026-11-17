@@ -15,6 +15,9 @@ from mcp.types import CallToolResult, TextContent, Tool
 
 from pagerless_agent.mcp import MCPServerConfig, MCPTools, ToolPolicyError
 from pagerless_agent.tools import UnknownToolError
+from tests.fakes import StaticToken
+
+TOKEN = StaticToken()
 
 
 async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
@@ -31,7 +34,7 @@ async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
         raise AssertionError("a write-capable tool must never run")
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -59,7 +62,10 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         return []
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"), MCPServerConfig("github", "http://github/readonly")),
+        (
+            MCPServerConfig("k8s", "http://k8s/mcp", TOKEN),
+            MCPServerConfig("github", "http://github/readonly", TOKEN),
+        ),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -135,7 +141,7 @@ async def test_complete_objects_are_read_past_a_reduced_summary_table() -> None:
         yield SummaryClient()
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://kubernetes/mcp"),),
+        (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -161,7 +167,7 @@ async def test_structured_evidence_errors_and_large_outputs_preserve_the_tool_bo
         return "untrusted log " * 4000
 
     async with MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"),),
+        (MCPServerConfig("k8s", "http://k8s/mcp", TOKEN),),
         namespace="sandbox",
         owner="example",
         repository="sandbox",
@@ -196,7 +202,7 @@ async def test_partial_initialization_closes_connections_and_never_leaves_tools_
                 closed.append(config.name)
 
     tools = MCPTools(
-        (MCPServerConfig("k8s", "http://k8s/mcp"), MCPServerConfig("k8s", "http://other/mcp")),
+        (MCPServerConfig("k8s", "http://k8s/mcp", TOKEN), MCPServerConfig("k8s", "http://other/mcp", TOKEN)),
         namespace="sandbox",
         owner="example",
         repository="sandbox",

@@ -12,16 +12,19 @@ from pagerless_agent.model import Stage
 from pagerless_agent.replay import RecordedTurn, Recording
 from pagerless_agent.runtime import main, run
 from pagerless_agent.settings import ConfigError, RuntimeSettings
-from tests.fakes import ScriptedProvider, StandInServer, call, respond
+from tests.fakes import ScriptedProvider, StandInServer, StaticToken, call, respond
 from tests.test_live_context import evidence_server
 from tests.test_settings import ENV
 
 RUNTIME_ENV = {
     **ENV,
-    "PAGERLESS_MCP_KUBERNETES_URL": "http://k8s/mcp",
-    "PAGERLESS_MCP_GRAFANA_URL": "http://grafana/mcp",
-    "PAGERLESS_MCP_ARGOCD_URL": "http://argocd/mcp",
-    "PAGERLESS_MCP_GITHUB_URL": "http://github/readonly",
+    "PAGERLESS_MCP_GATEWAY_URL": "http://mcp-gateway.agentgateway-system.svc.cluster.local",
+    "PAGERLESS_KEYCLOAK_ISSUER": "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
+    "PAGERLESS_KEYCLOAK_TOKEN_URL": (
+        "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless/protocol/openid-connect/token"
+    ),
+    "PAGERLESS_KEYCLOAK_CLIENT_ID": "pagerless-agent",
+    "PAGERLESS_KEYCLOAK_TOKEN_FILE": "/var/run/keycloak/token",
     "PAGERLESS_SANDBOX_OWNER": "example",
     "PAGERLESS_SANDBOX_REPO": "sandbox",
 }
@@ -33,12 +36,34 @@ def test_runtime_defaults_to_replay_and_refuses_unsafe_configuration() -> None:
         ({"PAGERLESS_MODEL_PROVIDER": "other"}, "must be replay"),
         ({"PAGERLESS_ALLOWED_NAMESPACES": "production"}, "not allowlisted"),
         ({"PAGERLESS_RECORDING_FILE": "/tmp/live.json"}, "cannot produce a live recording"),
-        ({"PAGERLESS_MCP_GITHUB_URL": "http://user:secret@github/readonly"}, "without embedded credentials"),
-        ({"PAGERLESS_MCP_GITHUB_TOKEN": "secret\nheader"}, "invalid bearer token"),
+        ({"PAGERLESS_MCP_GATEWAY_URL": "http://user:secret@gateway"}, "without embedded credentials"),
+        ({"PAGERLESS_MCP_GATEWAY_URL": "http://gateway/mcp"}, "without a path"),
+        ({"PAGERLESS_KEYCLOAK_ISSUER": "http://keycloak:8080"}, "must name a realm"),
+        ({"PAGERLESS_KEYCLOAK_ISSUER": "http://keycloak/realms/pagerless/"}, "trailing slash"),
+        (
+            {"PAGERLESS_KEYCLOAK_TOKEN_URL": "http://keycloak/realms/other/protocol/openid-connect/token"},
+            "token endpoint",
+        ),
+        ({"PAGERLESS_KEYCLOAK_CLIENT_ID": "pagerless/agent"}, "single client identifier"),
     ):
         with pytest.raises(ConfigError, match=message):
             RuntimeSettings.from_env({**RUNTIME_ENV, **addition})
     assert main({}) == 1
+
+
+def test_every_mcp_endpoint_is_a_route_of_the_gateway() -> None:
+    token = StaticToken()
+    settings = RuntimeSettings.from_env(RUNTIME_ENV)
+    servers = settings.servers(token)
+    assert [(config.name, config.url) for config in servers] == [
+        ("k8s", "http://mcp-gateway.agentgateway-system.svc.cluster.local/mcp/kubernetes"),
+        ("grafana", "http://mcp-gateway.agentgateway-system.svc.cluster.local/mcp/grafana"),
+        ("argocd", "http://mcp-gateway.agentgateway-system.svc.cluster.local/mcp/argocd"),
+        ("github", "http://mcp-gateway.agentgateway-system.svc.cluster.local/mcp/github"),
+    ]
+    assert {config.token_source for config in servers} == {token}
+    assert settings.keycloak.issuer == "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+    assert settings.keycloak.client_id == "pagerless-agent"
 
 
 async def test_replay_runs_real_tools_and_reports_the_result_without_creating_a_live_recording(

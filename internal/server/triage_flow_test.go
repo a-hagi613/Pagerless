@@ -72,8 +72,9 @@ func TestNewTriageStartsAnAgentJob(t *testing.T) {
 			}
 		}
 	}
-	if len(audiences) != 1 || audiences[0] != agentapi.Audience {
-		t.Errorf("projected token audiences = %v, want [pagerless-server]", audiences)
+	if len(audiences) != 2 || audiences[0] != agentapi.Audience ||
+		audiences[1] != "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless" {
+		t.Errorf("projected token audiences = %v, want the report and Keycloak realm audiences", audiences)
 	}
 	if owner := job.OwnerReferences; len(owner) != 1 || owner[0].Kind != "Triage" || owner[0].Name != created.Name {
 		t.Errorf("Job owner references = %+v, want the Triage", owner)

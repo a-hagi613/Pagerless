@@ -38,20 +38,19 @@ const (
 	EnvHint = "PAGERLESS_HINT"
 	// EnvModelProvider selects replay, anthropic, or bedrock.
 	EnvModelProvider = "PAGERLESS_MODEL_PROVIDER"
-	// EnvMCPKubernetesURL locates the read-only Kubernetes MCP endpoint.
-	EnvMCPKubernetesURL = "PAGERLESS_MCP_KUBERNETES_URL"
-	// EnvMCPGrafanaURL locates the read-only Grafana MCP endpoint.
-	EnvMCPGrafanaURL = "PAGERLESS_MCP_GRAFANA_URL"
-	// EnvMCPArgoCDURL locates the read-only Argo CD MCP endpoint.
-	EnvMCPArgoCDURL = "PAGERLESS_MCP_ARGOCD_URL"
-	// EnvMCPGitHubURL locates the read-only GitHub MCP endpoint.
-	EnvMCPGitHubURL = "PAGERLESS_MCP_GITHUB_URL"
-	// EnvMCPGrafanaToken authenticates callers to the Grafana MCP server.
-	EnvMCPGrafanaToken = "PAGERLESS_MCP_GRAFANA_TOKEN"
-	// EnvMCPArgoCDToken authenticates callers to the Argo CD MCP server.
-	EnvMCPArgoCDToken = "PAGERLESS_MCP_ARGOCD_TOKEN"
-	// EnvMCPGitHubToken is the read-only Sandbox token used by GitHub MCP.
-	EnvMCPGitHubToken = "PAGERLESS_MCP_GITHUB_TOKEN"
+	// EnvMCPGatewayURL is the base URL of the agentgateway that fronts every MCP server.
+	EnvMCPGatewayURL = "PAGERLESS_MCP_GATEWAY_URL"
+	// EnvKeycloakIssuer is the realm issuer that agentgateway validates, and the
+	// audience of the projected service account token the agent presents to Keycloak.
+	EnvKeycloakIssuer = "PAGERLESS_KEYCLOAK_ISSUER"
+	// EnvKeycloakTokenURL is the realm's token endpoint, which exchanges the
+	// projected service account token for an access token.
+	EnvKeycloakTokenURL = "PAGERLESS_KEYCLOAK_TOKEN_URL"
+	// EnvKeycloakClientID is the federated Keycloak client the agent authenticates as.
+	EnvKeycloakClientID = "PAGERLESS_KEYCLOAK_CLIENT_ID"
+	// EnvKeycloakTokenFile is the path of the projected service account token
+	// whose audience is the realm issuer.
+	EnvKeycloakTokenFile = "PAGERLESS_KEYCLOAK_TOKEN_FILE"
 	// EnvReplayFile names a captured Replay recording in the agent image.
 	EnvReplayFile = "PAGERLESS_REPLAY_FILE"
 	// EnvNarrativeReplayFile names the Replay recording that the Narrative Job plays.

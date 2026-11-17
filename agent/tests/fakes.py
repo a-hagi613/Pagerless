@@ -19,6 +19,18 @@ def usage(input_tokens: int = 1000, output_tokens: int = 100) -> Usage:
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens)
 
 
+class StaticToken:
+    """A token source that always returns the same access token."""
+
+    def __init__(self, token: str = "gateway-token") -> None:
+        self.token = token
+        self.calls = 0
+
+    async def access_token(self) -> str:
+        self.calls += 1
+        return self.token
+
+
 def call(call_id: str, tool: str, /, **arguments: Any) -> ToolCall:
     return ToolCall(id=call_id, name=tool, arguments=arguments)
 

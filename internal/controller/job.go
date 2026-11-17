@@ -23,6 +23,10 @@ const (
 	tokenVolumeName = "pagerless-token"
 	tokenMountPath  = "/var/run/pagerless"
 	tokenFileName   = "token"
+	// keycloakTokenVolumeName and keycloakTokenMountPath locate the projected
+	// token whose audience is the Keycloak realm issuer.
+	keycloakTokenVolumeName = "pagerless-keycloak-token"
+	keycloakTokenMountPath  = "/var/run/keycloak"
 	// tokenExpirationSeconds is the lifetime of the projected token, which the kubelet refreshes.
 	tokenExpirationSeconds = 600
 	// agentUID is the non-root user and group the agent runs as.
@@ -75,16 +79,22 @@ type jobSpec struct {
 	env []corev1.EnvVar
 	// recordingPVC is the existing claim to mount at /recordings, when this Job writes a recording.
 	recordingPVC string
+	// keycloakToken mounts the projected token whose audience is the realm issuer. Only the
+	// investigation Job calls the MCP gateway; the Narrative Job makes one model call.
+	keycloakToken bool
 }
 
 // buildAgentJob returns the Job that runs the investigation for a Triage. The
 // agent has no write permissions, so the Job mounts no default service account
-// token and projects a single token whose audience is the server's.
+// token and projects two tokens: one whose audience is the server's, and one
+// whose audience is the Keycloak realm issuer that the agent exchanges for an
+// access token on the MCP gateway.
 func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 	spec := triage.Spec
 	env := []corev1.EnvVar{
 		{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
 		{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
+		{Name: agentapi.EnvKeycloakTokenFile, Value: keycloakTokenMountPath + "/" + tokenFileName},
 		{Name: agentapi.EnvTriage, Value: triage.Name},
 		{Name: agentapi.EnvTask, Value: agentapi.TaskInvestigate},
 		{Name: agentapi.EnvWorkloadKind, Value: string(spec.Workload.Kind)},
@@ -99,10 +109,11 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 	}
 	env = append(env, cfg.Runtime.environment()...)
 	return buildJob(triage, cfg, jobSpec{
-		name:         AgentJobName(triage.Name),
-		deadline:     cfg.Deadline,
-		env:          env,
-		recordingPVC: cfg.Runtime.RecordingPVC,
+		name:          AgentJobName(triage.Name),
+		deadline:      cfg.Deadline,
+		env:           env,
+		recordingPVC:  cfg.Runtime.RecordingPVC,
+		keycloakToken: true,
 	})
 }
 
@@ -198,6 +209,26 @@ func buildJob(triage *v1alpha1.Triage, cfg AgentJobConfig, spec jobSpec) *batchv
 				},
 			},
 		},
+	}
+	if spec.keycloakToken {
+		pod := &job.Spec.Template.Spec
+		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      keycloakTokenVolumeName,
+			MountPath: keycloakTokenMountPath,
+			ReadOnly:  true,
+		})
+		pod.Volumes = append(pod.Volumes, corev1.Volume{
+			Name: keycloakTokenVolumeName,
+			Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{{
+					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+						Audience:          cfg.Runtime.KeycloakIssuer,
+						ExpirationSeconds: new(int64(tokenExpirationSeconds)),
+						Path:              tokenFileName,
+					},
+				}},
+			},
+		})
 	}
 	if spec.recordingPVC != "" {
 		pod := &job.Spec.Template.Spec
