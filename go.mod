@@ -9,6 +9,7 @@ tool (
 )
 
 require (
+	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.27.1
 	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/api v0.37.2
@@ -214,7 +215,6 @@ require (
 	github.com/sourcegraph/go-diff v0.9.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.5.0 // indirect
-	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/jwalterweatherman v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.12.0 // indirect
