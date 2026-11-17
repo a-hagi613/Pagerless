@@ -16,6 +16,11 @@ kubeProxy:
 prometheus:
   prometheusSpec:
     retention: 24h
+    # The demo's OpenTelemetry Collector runs the span_metrics connector and exports the
+    # resulting counters to Prometheus's OTLP receiver, which accepts them without a
+    # second collector. The connector names each series with the span's service, kind and
+    # status, which is what the ServiceErrorRateHigh rule reads.
+    enableOTLPReceiver: true
     resources:
       requests:
         cpu: 100m

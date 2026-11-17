@@ -28,6 +28,15 @@ echo "Reset the Sandbox main branch to known-good ($known_good). Waiting for Arg
 
 cd "$REPO_ROOT"
 wait_for_application sandbox "$known_good" 300 healthy
-kc -n sandbox rollout status deployment/checkout --timeout=180s
 
-echo "The Sandbox is at known-good and the checkout Workload is healthy."
+# The demo's flagd pod copies its ConfigMap into an emptyDir when it starts, and the
+# flag-driven services resolve a flag when they start, so the known-good flags reach the
+# demo only when their pods are replaced. Without this step a Scenario's flag would
+# outlive the reset even though the Sandbox is at known-good. flagd is replaced first, so
+# the services that start after it read the restored flags.
+for workload in flagd cart payment product-catalog email; do
+	kc -n sandbox delete pod -l "opentelemetry.io/name=$workload" --ignore-not-found --wait=true
+	kc -n sandbox rollout status "deployment/$workload" --timeout=180s
+done
+
+echo "The Sandbox is at known-good and the demo is healthy."

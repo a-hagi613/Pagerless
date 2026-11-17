@@ -13,14 +13,27 @@ Argo CD deploys these components into the `monitoring` namespace. Each Applicati
 
 The OpenTelemetry Collector reads `/var/log/pods` on every node, attaches Kubernetes metadata, and exports the records over OTLP to Loki. Loki stores them with resource attributes such as `k8s_namespace_name` and `k8s_pod_name` as labels. Grafana queries them through the Loki data source.
 
-## The OOMKilled alert
+## Alert rules
 
-[`alerts/oomkilled.yaml`](alerts/oomkilled.yaml) defines the `ContainerOOMKilled` rule. kube-state-metrics reports the pod that was terminated, so the rule joins the pod to its owner. A Deployment is reached through its ReplicaSet, and a StatefulSet directly. Every firing alert has these labels:
+[`alerts/`](alerts) holds one PrometheusRule per alert. Every firing alert carries `pagerless_triage: "true"`, which opts it in to a Triage (spec #1, Alert Trigger), `namespace`, and either `deployment` or `statefulset`, which name the Workload.
 
-- `pagerless_triage: "true"`, which opts the alert in to a Triage (spec #1, Alert Trigger).
-- `namespace` and `pod`, and either `deployment` or `statefulset`, which name the Workload.
+| Rule | File | Fires when |
+| --- | --- | --- |
+| `ContainerOOMKilled` | [`alerts/oomkilled.yaml`](alerts/oomkilled.yaml) | kube-state-metrics reports a container that was terminated with reason `OOMKilled`. |
+| `ServiceErrorRateHigh` | [`alerts/service-error-rate.yaml`](alerts/service-error-rate.yaml) | More than one percent of a Workload's server spans are failing, at more than one error every three minutes, for three minutes. |
+| `ContainerMemoryGrowth` | [`alerts/memory-growth.yaml`](alerts/memory-growth.yaml) | A container's working set grew by more than a quarter of its own memory limit in ten minutes, and the pod is older than fifteen minutes. |
 
-The Alertmanager route in [`kube-prometheus-stack/values.yaml`](kube-prometheus-stack/values.yaml) sends opted-in alerts to the `pagerless-server` webhook receiver at `http://pagerless-server.pagerless.svc:8080/v1/alerts/alertmanager`. The receiver has an empty `http_config`, where a bearer token is configured when receiver authentication is added.
+kube-state-metrics reports the pod that was terminated, so the OOMKilled rule joins the pod to its owner: a Deployment is reached through its ReplicaSet, and a StatefulSet directly. The memory rule joins the pod the same way and reads cAdvisor's `container_memory_working_set_bytes`. The error-rate rule reads the span metrics that the demo's collector produces.
+
+Four Workloads are left out of the error-rate rule because they report errors in the demo's known-good state, and a threshold over them would fire continuously: the frontend and frontend-proxy answer their recommendation and ad routes with an error because ADR-0019 does not deploy those components, and checkout and shipping report failures whenever the demo's own calls time out. The Workloads the Scenarios target are error-free in the known-good state, so any error rate from them is a fault.
+
+The Alertmanager route in [`kube-prometheus-stack/values.yaml`](kube-prometheus-stack/values.yaml) sends opted-in alerts to the `pagerless-server` webhook receiver at `http://pagerless-server.pagerless.svc:8080/v1/alerts/alertmanager`, with the bearer token that the receiver requires.
+
+## Span metrics
+
+The demo's OpenTelemetry Collector runs the `span_metrics` connector over every span, so it already counts calls and failures per service and status. Its metrics pipeline exports them to `http://prometheus:9090/api/v1/otlp`, which it resolves in its own namespace; the demo's own Prometheus is disabled ([ADR-0019](../adr/0019-opentelemetry-demo-as-rendered-manifests.md)). [`otlp-receiver/prometheus-service.yaml`](otlp-receiver/prometheus-service.yaml) is an `ExternalName` Service that gives the `sandbox` namespace the name `prometheus` for the platform's Prometheus, and the kube-prometheus-stack values enable that Prometheus's OTLP receiver.
+
+The result is the `traces_span_metrics_calls_total` counter. Prometheus normalizes `status.code` to `status_code`, and its value for a failed span is `STATUS_CODE_ERROR`, which was read from the live metric. The collector does not attach the pod's namespace and Deployment to every service's metrics, so the rule keys each series by `service_name`, which every span carries and which the demo names after the Deployment, and sets the namespace that the Sandbox fixes. `ServiceErrorRateHigh` then compares the failing server spans with all server spans of the same Workload. The same counter carries every other span metric, so the Workload dashboards and the Triage detail view can chart throughput and latency beside the alert.
 
 ## Pagerless metrics
 
