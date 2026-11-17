@@ -44,6 +44,28 @@ func (c *Client) PostReport(ctx context.Context, r Report) (Result, error) {
 	return c.post(ctx, ReportPath(c.Triage), r)
 }
 
+// GetNarrative reads the Triage record that the Narrative describes.
+func (c *Client) GetNarrative(ctx context.Context) (NarrativeRecord, Result, error) {
+	result, raw, err := c.doRaw(ctx, http.MethodGet, NarrativePath(c.Triage), nil)
+	if err != nil {
+		return NarrativeRecord{}, result, err
+	}
+	if result.StatusCode != http.StatusOK {
+		return NarrativeRecord{}, result, fmt.Errorf("server answered %d to the Narrative record: %s",
+			result.StatusCode, result.Message)
+	}
+	var record NarrativeRecord
+	if err := json.Unmarshal(raw, &record); err != nil {
+		return NarrativeRecord{}, result, fmt.Errorf("decode the Narrative record: %w", err)
+	}
+	return record, result, nil
+}
+
+// PostNarrative sends the Narrative that the server stores in the Triage's status.
+func (c *Client) PostNarrative(ctx context.Context, r NarrativeReport) (Result, error) {
+	return c.post(ctx, NarrativePath(c.Triage), r)
+}
+
 func (c *Client) post(ctx context.Context, path string, body any) (Result, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -59,15 +81,26 @@ func (c *Client) PostRaw(ctx context.Context, path string, payload []byte) (Resu
 }
 
 func (c *Client) do(ctx context.Context, path string, payload []byte) (Result, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(payload))
-	if err != nil {
-		return Result{}, fmt.Errorf("build request: %w", err)
+	result, _, err := c.doRaw(ctx, http.MethodPost, path, payload)
+	return result, err
+}
+
+func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte) (Result, []byte, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, body)
+	if err != nil {
+		return Result{}, nil, fmt.Errorf("build request: %w", err)
+	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if c.Token != nil {
 		token, err := c.Token()
 		if err != nil {
-			return Result{}, fmt.Errorf("read token: %w", err)
+			return Result{}, nil, fmt.Errorf("read token: %w", err)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -77,12 +110,12 @@ func (c *Client) do(ctx context.Context, path string, payload []byte) (Result, e
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("send request: %w", err)
+		return Result{}, nil, fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return Result{}, fmt.Errorf("read response: %w", err)
+		return Result{}, nil, fmt.Errorf("read response: %w", err)
 	}
 	result := Result{StatusCode: resp.StatusCode}
 	var report ReportResponse
@@ -93,5 +126,5 @@ func (c *Client) do(ctx context.Context, path string, payload []byte) (Result, e
 	if json.Unmarshal(raw, &failure) == nil {
 		result.Message = failure.Message
 	}
-	return result, nil
+	return result, raw, nil
 }

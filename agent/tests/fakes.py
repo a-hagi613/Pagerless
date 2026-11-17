@@ -90,8 +90,8 @@ class StandInServer:
     """A stand-in for pagerless-server's agent API, with the contract's status codes.
 
     It authenticates the bearer token, accepts events while the Triage is
-    Investigating, and answers a report with acceptance or Validation errors
-    that the test scripts.
+    Investigating, answers a report with acceptance or Validation errors
+    that the test scripts, and serves and accepts the Narrative.
     """
 
     def __init__(self, token: str = "token-1", triage: str = "triage-1") -> None:
@@ -101,6 +101,12 @@ class StandInServer:
         self.events: list[dict[str, Any]] = []
         self.reports: list[dict[str, Any]] = []
         self.report_answers: list[httpx.Response] = []
+        self.narratives: list[dict[str, Any]] = []
+        self.narrative_answers: list[httpx.Response] = []
+        self.narrative: dict[str, Any] = {
+            "workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"},
+            "text": "Workload: Deployment sandbox/checkout\nPhase: Recovered",
+        }
         self.requests: list[httpx.Request] = []
         self.unavailable_for = 0
 
@@ -116,6 +122,10 @@ class StandInServer:
         if request.headers.get("Authorization") != f"Bearer {self.token}":
             return httpx.Response(401, json={"message": "unauthenticated"})
         base = f"/v1/triages/{self.triage}"
+        if request.method == "GET" and request.url.path == f"{base}/narrative":
+            return httpx.Response(200, json=self.narrative)
+        if request.method != "POST":
+            return httpx.Response(405, json={"message": "method not allowed"})
         body = json.loads(request.content)
         if request.url.path == f"{base}/events":
             if not self.investigating:
@@ -131,6 +141,11 @@ class StandInServer:
                 return answer
             self.investigating = False
             return httpx.Response(200, json={"accepted": True, "phase": "Proposed"})
+        if request.url.path == f"{base}/narrative":
+            self.narratives.append(body)
+            if self.narrative_answers:
+                return self.narrative_answers.pop(0)
+            return httpx.Response(202)
         return httpx.Response(403, json={"message": "forbidden"})
 
     def transport(self) -> httpx.MockTransport:

@@ -24,6 +24,8 @@ const (
 	EnvTokenFile = "PAGERLESS_TOKEN_FILE"
 	// EnvTriage is the name of the Triage the agent investigates.
 	EnvTriage = "PAGERLESS_TRIAGE"
+	// EnvTask selects the Job's work: TaskInvestigate or TaskNarrative.
+	EnvTask = "PAGERLESS_TASK"
 	// EnvWorkloadKind is the kind of the target Workload.
 	EnvWorkloadKind = "PAGERLESS_WORKLOAD_KIND"
 	// EnvWorkloadNamespace is the namespace of the target Workload.
@@ -52,6 +54,8 @@ const (
 	EnvMCPGitHubToken = "PAGERLESS_MCP_GITHUB_TOKEN"
 	// EnvReplayFile names a captured Replay recording in the agent image.
 	EnvReplayFile = "PAGERLESS_REPLAY_FILE"
+	// EnvNarrativeReplayFile names the Replay recording that the Narrative Job plays.
+	EnvNarrativeReplayFile = "PAGERLESS_NARRATIVE_REPLAY_FILE"
 	// EnvRecordingFile names the output of an explicitly requested live recording.
 	EnvRecordingFile = "PAGERLESS_RECORDING_FILE"
 	// EnvSandboxOwner scopes GitHub reads to the Sandbox owner.
@@ -64,6 +68,14 @@ const (
 	EnvAllowedNamespaces = "PAGERLESS_ALLOWED_NAMESPACES"
 )
 
+// The values of EnvTask: the two kinds of Job the server starts from the agent image.
+const (
+	// TaskInvestigate runs the investigation graph.
+	TaskInvestigate = "investigate"
+	// TaskNarrative writes the Narrative of a finished Triage.
+	TaskNarrative = "narrative"
+)
+
 // EventsPath is the path an agent posts step events to.
 func EventsPath(triage string) string {
 	return "/v1/triages/" + url.PathEscape(triage) + "/events"
@@ -72,6 +84,11 @@ func EventsPath(triage string) string {
 // ReportPath is the path an agent posts its report to.
 func ReportPath(triage string) string {
 	return "/v1/triages/" + url.PathEscape(triage) + "/report"
+}
+
+// NarrativePath is the path a Narrative Job reads its record from and posts the Narrative to.
+func NarrativePath(triage string) string {
+	return "/v1/triages/" + url.PathEscape(triage) + "/narrative"
 }
 
 // StepEvent reports one step of the investigation. A Finding event also
@@ -123,4 +140,20 @@ type ReportResponse struct {
 type ErrorResponse struct {
 	// Message explains the failure.
 	Message string `json:"message"`
+}
+
+// NarrativeRecord is what a Narrative Job reads: the Triage rendered as text,
+// and the Workload it belongs to.
+type NarrativeRecord struct {
+	// Workload is the Workload that the Triage investigated.
+	Workload v1alpha1.WorkloadReference `json:"workload"`
+	// Text describes the Triage for the model: its Diagnosis, Findings,
+	// Proposal, decision, execution, and Verification checks.
+	Text string `json:"text"`
+}
+
+// NarrativeReport is the Narrative Job's answer: the short account of a finished Triage.
+type NarrativeReport struct {
+	// Narrative is the account, which the server stores in the Triage's status.
+	Narrative string `json:"narrative"`
 }

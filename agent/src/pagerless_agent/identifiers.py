@@ -128,14 +128,20 @@ def _format_timestamp(ns: int, sep: str, digits: int, zone: str) -> str:
 
 
 class IdentifierMap:
-    """Maps the volatile identifiers of one Context Bundle to placeholders and back."""
+    """Maps the volatile identifiers of one Context Bundle to placeholders and back.
 
-    def __init__(self, bundle: ContextBundle) -> None:
-        self._reference_ns = _datetime_ns(bundle.gathered_at)
-        self._workload = bundle.workload.name
-        self._pods = [p.name for p in bundle.pods]
-        self._trigger = bundle.triggering_pod
-        self._commits = [c.sha for c in bundle.commits]
+    A call that has no Context Bundle, such as the Narrative's, is mapped to
+    nothing: its recorded text may not name any volatile identifier, because
+    nothing in a later run could resolve one.
+    """
+
+    def __init__(self, bundle: ContextBundle | None) -> None:
+        self._has_bundle = bundle is not None
+        self._reference_ns = _datetime_ns(bundle.gathered_at) if bundle is not None else 0
+        self._workload = bundle.workload.name if bundle is not None else ""
+        self._pods = [p.name for p in bundle.pods] if bundle is not None else []
+        self._trigger = bundle.triggering_pod if bundle is not None else None
+        self._commits = [c.sha for c in bundle.commits] if bundle is not None else []
         self._replicasets: list[str] = []
         for name in self._pods:
             m = _REPLICASET_POD.match(name)
@@ -155,16 +161,24 @@ class IdentifierMap:
         self._names = names
         ordered = sorted(names, key=len, reverse=True)
         name_alternatives = "|".join(re.escape(n) for n in ordered) or r"(?!)"
-        self._normalizer = re.compile(
-            rf"(?P<brace>\{{\{{)|(?P<ts>{_TIMESTAMP.pattern})"
-            rf"|(?<![0-9A-Za-z])(?P<name>{name_alternatives})(?![0-9A-Za-z])"
-            r"|(?P<hex>(?<![0-9A-Za-z])[0-9a-f]{7,64}(?![0-9A-Za-z]))"
-        )
+        if self._has_bundle:
+            self._normalizer = re.compile(
+                rf"(?P<brace>\{{\{{)|(?P<ts>{_TIMESTAMP.pattern})"
+                rf"|(?<![0-9A-Za-z])(?P<name>{name_alternatives})(?![0-9A-Za-z])"
+                r"|(?P<hex>(?<![0-9A-Za-z])[0-9a-f]{7,64}(?![0-9A-Za-z]))"
+            )
+        else:
+            # Nothing can resolve a placeholder without a bundle, so only the literal brace is escaped. Any
+            # volatile identifier that remains is refused by `find_residuals` when the recording is written.
+            self._normalizer = re.compile(r"(?P<brace>\{\{)")
 
     # Recording.
 
     def normalize(self, text: str) -> str:
         """Replace the volatile identifiers in text with placeholders."""
+        if not self._has_bundle:
+            # Only the literal brace is escaped; `find_residuals` refuses any identifier that remains.
+            return text.replace("{{", "{{lbrace}}")
 
         def replace(m: re.Match[str]) -> str:
             if m["brace"]:
@@ -211,6 +225,8 @@ class IdentifierMap:
     def _resolve_one(self, kind: str, arg: str | None, source: str) -> str:
         if kind == "lbrace" and arg is None:
             return "{{"
+        if not self._has_bundle:
+            raise ReplayError(f"{source}: the recording has no Context Bundle to resolve it")
         if kind == "pod" and arg == "trigger":
             if not self._trigger:
                 raise ReplayError(f"{source}: the Context Bundle has no triggering pod")

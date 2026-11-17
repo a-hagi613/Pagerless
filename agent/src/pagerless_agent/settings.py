@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 ENV_SERVER_URL = "PAGERLESS_SERVER_URL"
 ENV_TOKEN_FILE = "PAGERLESS_TOKEN_FILE"
 ENV_TRIAGE = "PAGERLESS_TRIAGE"
+ENV_TASK = "PAGERLESS_TASK"
 ENV_WORKLOAD_KIND = "PAGERLESS_WORKLOAD_KIND"
 ENV_WORKLOAD_NAMESPACE = "PAGERLESS_WORKLOAD_NAMESPACE"
 ENV_WORKLOAD_NAME = "PAGERLESS_WORKLOAD_NAME"
@@ -32,6 +33,7 @@ ENV_MCP_GRAFANA_TOKEN = "PAGERLESS_MCP_GRAFANA_TOKEN"
 ENV_MCP_ARGOCD_TOKEN = "PAGERLESS_MCP_ARGOCD_TOKEN"
 ENV_MCP_GITHUB_TOKEN = "PAGERLESS_MCP_GITHUB_TOKEN"
 ENV_REPLAY_FILE = "PAGERLESS_REPLAY_FILE"
+ENV_NARRATIVE_REPLAY_FILE = "PAGERLESS_NARRATIVE_REPLAY_FILE"
 ENV_RECORDING_FILE = "PAGERLESS_RECORDING_FILE"
 ENV_SANDBOX_OWNER = "PAGERLESS_SANDBOX_OWNER"
 ENV_SANDBOX_REPO = "PAGERLESS_SANDBOX_REPO"
@@ -41,6 +43,14 @@ ENV_ALLOWED_NAMESPACES = "PAGERLESS_ALLOWED_NAMESPACES"
 
 class ConfigError(Exception):
     """The environment does not describe a valid investigation."""
+
+
+ModelProviderName = Literal["replay", "anthropic", "bedrock"]
+
+# The values of ENV_TASK: the two kinds of Job the server starts from the agent image.
+TASK_INVESTIGATE = "investigate"
+TASK_NARRATIVE = "narrative"
+TASKS = (TASK_INVESTIGATE, TASK_NARRATIVE)
 
 
 @dataclass(frozen=True)
@@ -103,7 +113,7 @@ class RuntimeSettings:
     sandbox_owner: str
     sandbox_repository: str
     application: str = "sandbox"
-    provider: Literal["replay", "anthropic", "bedrock"] = "replay"
+    provider: ModelProviderName = "replay"
     replay_file: Path = Path("/app/recordings/oom.json")
     recording_file: Path | None = None
 
@@ -155,7 +165,41 @@ class RuntimeSettings:
             sandbox_owner=env[ENV_SANDBOX_OWNER],
             sandbox_repository=env[ENV_SANDBOX_REPO],
             application=env.get(ENV_ARGOCD_APPLICATION, "sandbox"),
-            provider=cast(Literal["replay", "anthropic", "bedrock"], provider),
+            provider=cast(ModelProviderName, provider),
             replay_file=Path(env.get(ENV_REPLAY_FILE, "/app/recordings/oom.json")),
+            recording_file=Path(recording) if recording else None,
+        )
+
+
+@dataclass(frozen=True)
+class NarrativeSettings:
+    """What a Narrative Job needs: where to read and post, and how to call the model."""
+
+    server_url: str
+    token_file: Path
+    triage: str
+    provider: ModelProviderName = "replay"
+    replay_file: Path = Path("/app/recordings/narrative.json")
+    recording_file: Path | None = None
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> NarrativeSettings:
+        """Read the Narrative Job's settings, refusing a recording that Replay cannot produce."""
+        required = [ENV_SERVER_URL, ENV_TOKEN_FILE, ENV_TRIAGE]
+        missing = [name for name in required if not env.get(name)]
+        if missing:
+            raise ConfigError(f"missing environment variables: {', '.join(missing)}")
+        provider = env.get(ENV_MODEL_PROVIDER, "replay")
+        if provider not in ("replay", "anthropic", "bedrock"):
+            raise ConfigError(f"{ENV_MODEL_PROVIDER} must be replay, anthropic, or bedrock")
+        recording = env.get(ENV_RECORDING_FILE)
+        if recording and provider == "replay":
+            raise ConfigError("Replay cannot produce a live recording")
+        return cls(
+            server_url=env[ENV_SERVER_URL],
+            token_file=Path(env[ENV_TOKEN_FILE]),
+            triage=env[ENV_TRIAGE],
+            provider=cast(ModelProviderName, provider),
+            replay_file=Path(env.get(ENV_NARRATIVE_REPLAY_FILE, "/app/recordings/narrative.json")),
             recording_file=Path(recording) if recording else None,
         )

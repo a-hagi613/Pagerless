@@ -20,18 +20,24 @@ from pagerless_agent.mcp import MCPServerConfig, MCPTools, connect
 from pagerless_agent.model import ModelProvider
 from pagerless_agent.replay import Recording, RecordingProvider, ReplayProvider
 from pagerless_agent.server import ServerClient
-from pagerless_agent.settings import ConfigError, RuntimeSettings
+from pagerless_agent.settings import (
+    ENV_TASK,
+    TASK_INVESTIGATE,
+    TASK_NARRATIVE,
+    ConfigError,
+    RuntimeSettings,
+)
 
 log = logging.getLogger(__name__)
 
 
-def create_provider(settings: RuntimeSettings) -> ModelProvider:
+def create_provider(provider: str, replay_file: Path) -> ModelProvider:
     """Select Replay by default; live providers use the SDK's environment credential discovery."""
-    if settings.provider == "replay":
-        return ReplayProvider(Recording.load(settings.replay_file))
+    if provider == "replay":
+        return ReplayProvider(Recording.load(replay_file))
     from pagerless_agent.providers import AnthropicProvider, BedrockProvider
 
-    if settings.provider == "anthropic":
+    if provider == "anthropic":
         if not os.environ.get("ANTHROPIC_API_KEY"):
             raise ConfigError("ANTHROPIC_API_KEY is required for the anthropic provider")
         return AnthropicProvider()
@@ -46,7 +52,7 @@ async def run(
     provider: ModelProvider | None = None,
 ) -> Outcome:
     """Investigate, report, and close every connection; Replay still executes MCP reads."""
-    selected = provider or create_provider(settings)
+    selected = provider or create_provider(settings.provider, settings.replay_file)
     recorder = None
     if settings.recording_file is not None:
         if settings.provider == "replay":
@@ -83,7 +89,7 @@ async def run(
                 server=server,
             ).run()
             if recorder is not None and outcome.kind == "reported":
-                _save_recording(recorder.recording(), settings.recording_file)
+                save_recording(recorder.recording(), settings.recording_file)
             return outcome
     finally:
         close = getattr(selected, "aclose", None)
@@ -91,7 +97,7 @@ async def run(
             await close()
 
 
-def _save_recording(recording: Recording, destination: Path | None) -> None:
+def save_recording(recording: Recording, destination: Path | None) -> None:
     if destination is None:
         return
     # A partial or non-normalizable recording must never replace a valid artifact.
@@ -110,9 +116,18 @@ def _save_recording(recording: Recording, destination: Path | None) -> None:
 
 
 def main(env: Mapping[str, str] | None = None) -> int:
-    """Return the Job's exit code without printing credentials or raw tool outputs."""
+    """Run the Job that the environment selects, and return its exit code."""
+    environment = os.environ if env is None else env
+    task = environment.get(ENV_TASK, TASK_INVESTIGATE)
+    if task == TASK_NARRATIVE:
+        from pagerless_agent.narrative import main as narrative_main
+
+        return narrative_main(environment)
+    if task != TASK_INVESTIGATE:
+        log.error("invalid agent configuration: %s must be investigate or narrative", ENV_TASK)
+        return 1
     try:
-        settings = RuntimeSettings.from_env(os.environ if env is None else env)
+        settings = RuntimeSettings.from_env(environment)
         outcome = asyncio.run(run(settings))
     except ConfigError as error:
         log.error("invalid agent configuration: %s", error)

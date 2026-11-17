@@ -14,6 +14,7 @@ const (
 	MaxDiagnosisLength   = 4000
 	MaxFindingSourceLen  = 500
 	MaxFindingSummaryLen = 1000
+	MaxNarrativeLength   = 4000
 	MaxStepSummaryLength = 300
 	MaxToolNameLength    = 128
 )
@@ -88,6 +89,21 @@ func (r Report) Check() []ValidationError {
 	}
 	errs = append(errs, checkProposedAction("proposal", r.Proposal)...)
 	return errs
+}
+
+// Check returns the structural errors in a Narrative: it must be non-blank and
+// within the length the Triage stores.
+func (n NarrativeReport) Check() []ValidationError {
+	if strings.TrimSpace(n.Narrative) == "" {
+		return []ValidationError{{Field: "narrative", Message: "narrative is required"}}
+	}
+	if utf8.RuneCountInString(n.Narrative) > MaxNarrativeLength {
+		return []ValidationError{{
+			Field:   "narrative",
+			Message: fmt.Sprintf("narrative must not exceed %d characters", MaxNarrativeLength),
+		}}
+	}
+	return nil
 }
 
 func checkFinding(path string, f v1alpha1.Finding) []ValidationError {

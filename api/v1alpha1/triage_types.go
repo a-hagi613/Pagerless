@@ -218,6 +218,9 @@ const MaxSteps = 50
 // MaxFindings is the number of Findings kept in a Triage's status.
 const MaxFindings = 20
 
+// MaxNarrativeLength is the longest Narrative that a Triage stores.
+const MaxNarrativeLength = 4000
+
 // Step is one entry of the bounded step summary.
 type Step struct {
 	// Time is when the server recorded the step.
@@ -421,6 +424,17 @@ type TriageStatus struct {
 	// +kubebuilder:validation:MaxItems=20
 	// +listType=atomic
 	VerificationChecks []VerificationCheck `json:"verificationChecks,omitempty"`
+
+	// NarrativeJobName is the name of the Job that writes the Narrative after Verification.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	NarrativeJobName string `json:"narrativeJobName,omitempty"`
+
+	// Narrative is the short, purely descriptive account of the Triage written after Verification. It never
+	// affects the outcome.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4000
+	Narrative string `json:"narrative,omitempty"`
 
 	// FollowUpTriage names the Follow-up Triage started after a NotRecovered outcome.
 	// +optional

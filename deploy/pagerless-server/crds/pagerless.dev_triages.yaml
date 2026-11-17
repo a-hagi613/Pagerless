@@ -292,6 +292,17 @@ spec:
                 description: JobName is the name of the agent Job.
                 maxLength: 253
                 type: string
+              narrative:
+                description: |-
+                  Narrative is the short, purely descriptive account of the Triage written after Verification. It never
+                  affects the outcome.
+                maxLength: 4000
+                type: string
+              narrativeJobName:
+                description: NarrativeJobName is the name of the Job that writes the
+                  Narrative after Verification.
+                maxLength: 253
+                type: string
               phase:
                 description: Phase is the stage the Triage is in.
                 enum:
