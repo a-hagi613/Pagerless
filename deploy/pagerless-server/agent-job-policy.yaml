@@ -83,14 +83,20 @@ spec:
            v.projected.sources.all(s, has(s.serviceAccountToken) &&
              has(s.serviceAccountToken.audience) && s.serviceAccountToken.audience == 'pagerless-server' &&
              s.serviceAccountToken.path == 'token' &&
-             has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 600))))
-      message: pagerless-agent Jobs may mount only temporary storage, the dedicated Replay capture claim, and the report-audience token
+             has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 600)) ||
+          (v.name == 'eks-pod-identity-token' && has(v.projected) && size(v.projected.sources) == 1 &&
+           v.projected.sources.all(s, has(s.serviceAccountToken) &&
+             has(s.serviceAccountToken.audience) && s.serviceAccountToken.audience == 'pods.eks.amazonaws.com' &&
+             has(s.serviceAccountToken.path) && s.serviceAccountToken.path == 'eks-pod-identity-token' &&
+             has(s.serviceAccountToken.expirationSeconds)))))
+      message: pagerless-agent Jobs may mount only temporary storage, the dedicated Replay capture claim, the report-audience token, and the Pod Identity token
       reason: Forbidden
     - expression: >-
         variables.pod.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
           (m.name == 'temporary' && m.mountPath == '/tmp') ||
           (m.name == 'recordings' && m.mountPath == '/recordings') ||
-          (m.name == 'pagerless-token' && m.mountPath == '/var/run/pagerless' && has(m.readOnly) && m.readOnly)))
+          (m.name == 'pagerless-token' && m.mountPath == '/var/run/pagerless' && has(m.readOnly) && m.readOnly) ||
+          (m.name == 'eks-pod-identity-token' && m.mountPath == '/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/')))
       message: pagerless-agent volume mounts must use their dedicated paths and keep the report token read-only
       reason: Forbidden
 ---
