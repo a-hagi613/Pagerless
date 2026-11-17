@@ -8,7 +8,7 @@
     {
       "stage": "investigate",
       "response": {
-        "text": "The checkout container exits immediately because its GOMEMLIMIT environment variable is not a memory size. The newest Sandbox commit changed only that value.",
+        "text": "The checkout container exits immediately because its CHECKOUT_PORT environment variable is not a port number. The newest Sandbox commit changed only that value.",
         "tool_calls": [],
         "structured": null,
         "usage": {"input_tokens": 1000, "output_tokens": 100}
@@ -20,7 +20,7 @@
         "text": "",
         "tool_calls": [],
         "structured": {
-          "diagnosis": "The checkout Deployment crash-loops because its GOMEMLIMIT environment variable is set to not-a-size, which the Go runtime refuses at start. The newest Sandbox commit changed that value, so reverting the commit restores the known-good configuration.",
+          "diagnosis": "The checkout Deployment crash-loops because its CHECKOUT_PORT environment variable is set to not-a-port, which the service refuses when it starts listening. The newest Sandbox commit changed that value, so reverting the commit restores the known-good configuration.",
           "findings": [
             {
               "kind": "Event",
@@ -30,7 +30,7 @@
             {
               "kind": "Commit",
               "source": "Context Bundle: Recent Sandbox commits",
-              "summary": "The newest Sandbox commit changed the checkout GOMEMLIMIT value to not-a-size."
+              "summary": "The newest Sandbox commit changed the checkout CHECKOUT_PORT value to not-a-port."
             }
           ]
         },
