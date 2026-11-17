@@ -5,7 +5,7 @@ import "context"
 // Git runs the git command line with the fixed configuration that this
 // package uses for every invocation: no system configuration, no prompts, and
 // only the protocols a Sandbox can use. It runs in dir, or outside any
-// repository when dir is empty. The environment adds to the process's own,
+// repository when dir is empty. The environment adds to the sanitized process environment,
 // stdin is the standard input when it is not nil, and the result is the
 // standard output.
 //

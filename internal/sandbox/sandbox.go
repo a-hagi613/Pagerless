@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -41,6 +42,9 @@ type Repository struct {
 	URL string
 	// Branch is the branch that Argo CD deploys and the Executor's pull requests target.
 	Branch string
+	// ReadToken returns the read-only Sandbox token. It is read once per Head or Checkout so rotation is observed.
+	// When set, URL must be HTTPS without embedded credentials, a query, or a fragment.
+	ReadToken func() (string, error)
 }
 
 // CheckPath reports whether p is a path that Validation may read: a relative,
@@ -74,7 +78,11 @@ func (r Repository) Head(ctx context.Context) (string, error) {
 	if err := r.check(); err != nil {
 		return "", err
 	}
-	out, err := run(ctx, "", nil, nil, "ls-remote", "--exit-code", "--", r.URL, "refs/heads/"+r.Branch)
+	env, err := r.readEnvironment()
+	if err != nil {
+		return "", err
+	}
+	out, err := run(ctx, "", env, nil, "ls-remote", "--exit-code", "--", r.URL, "refs/heads/"+r.Branch)
 	if err != nil {
 		return "", fmt.Errorf("read the Sandbox head: %w", err)
 	}
@@ -98,12 +106,16 @@ func (r Repository) Checkout(ctx context.Context) (*Checkout, error) {
 	if err := r.check(); err != nil {
 		return nil, err
 	}
+	env, err := r.readEnvironment()
+	if err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp("", "pagerless-sandbox-")
 	if err != nil {
 		return nil, fmt.Errorf("create a directory for the Sandbox: %w", err)
 	}
 	c := &Checkout{dir: dir}
-	if _, err := run(ctx, "", nil, nil, "clone", "--bare", "--depth", "1", "--single-branch",
+	if _, err := run(ctx, "", env, nil, "clone", "--bare", "--depth", "1", "--single-branch",
 		"--branch", r.Branch, "--", r.URL, dir); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("clone the Sandbox: %w", err)
@@ -217,6 +229,10 @@ func (r Repository) check() error {
 	case r.Branch == "" || strings.HasPrefix(r.Branch, "-") || strings.ContainsAny(r.Branch, " \t\n:~^?*[\\"):
 		return errors.New("the Sandbox branch is not usable")
 	}
+	if r.ReadToken != nil {
+		_, err := readURL(r.URL)
+		return err
+	}
 	return nil
 }
 
@@ -234,11 +250,20 @@ func run(ctx context.Context, dir string, env []string, stdin []byte, args ...st
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	if dir == "" {
-		// Not the working directory, which may itself be a repository with its own configuration.
-		cmd.Dir = os.TempDir()
+		// Neither the working directory nor the temporary root is guaranteed to be outside a repository.
+		// A private directory and a discovery ceiling prevent their local Git configuration from being read.
+		outside, err := os.MkdirTemp("", "pagerless-git-")
+		if err != nil {
+			return "", fmt.Errorf("create an isolated Git directory: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(outside) }()
+		cmd.Dir = outside
 	}
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(gitEnvironment(),
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM="+os.DevNull,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CEILING_DIRECTORIES="+filepath.Dir(cmd.Dir),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_ALLOW_PROTOCOL=file:https:ssh",
 		"LC_ALL=C",
@@ -250,7 +275,7 @@ func run(ctx context.Context, dir string, env []string, stdin []byte, args ...st
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(redactGitOutput(stderr.String(), env)))
 	}
-	return stdout.String(), nil
+	return redactGitOutput(stdout.String(), env), nil
 }

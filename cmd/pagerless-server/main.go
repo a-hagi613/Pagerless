@@ -84,8 +84,10 @@ func run() error {
 		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
 		sandboxURL    = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
 			"git URL of the Sandbox; PatchResources is accepted only when it is set")
-		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
-		patchable     = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
+		sandboxBranch        = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
+		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
+			"optional file that holds the read-only token for the HTTPS Sandbox repository")
+		patchable = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
 			"comma-separated namespaces whose Workloads PatchResources may change")
 		executorURL = flag.String("executor-url", "",
 			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
@@ -146,6 +148,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen for the report API: %w", err)
 	}
+	var sandboxReadToken func() (string, error)
+	if *sandboxReadTokenFile != "" {
+		sandboxReadToken = tokenFromFile(*sandboxReadTokenFile)
+	}
 	mgr, err := server.New(restConfig, server.Config{
 		Namespace:            *namespace,
 		AgentImage:           *agentImage,
@@ -162,12 +168,14 @@ func run() error {
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,
-		Sandbox:              sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch},
-		AllowedNamespaces:    splitList(*patchable),
-		AlertNamespaces:      allowed,
-		WebhookPort:          *webhookPort,
-		WebhookCertDir:       *webhookCertDir,
-		HealthProbeAddress:   *healthBind,
+		Sandbox: sandbox.Repository{
+			URL: *sandboxURL, Branch: *sandboxBranch, ReadToken: sandboxReadToken,
+		},
+		AllowedNamespaces:  splitList(*patchable),
+		AlertNamespaces:    allowed,
+		WebhookPort:        *webhookPort,
+		WebhookCertDir:     *webhookCertDir,
+		HealthProbeAddress: *healthBind,
 	})
 	if err != nil {
 		return err
