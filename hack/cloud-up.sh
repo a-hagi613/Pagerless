@@ -87,7 +87,15 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
 	--set controller.resources.limits.cpu=1 \
 	--set controller.resources.limits.memory=1Gi \
 	--wait --timeout 10m
-kc apply -f "$REPO_ROOT/deploy/cloud/karpenter"
+
+# The NodePool and EC2NodeClass name the cluster and the node role, which the
+# Terraform outputs own.
+karpenter_node_role="$(terraform -chdir="$REPO_ROOT/infra" output -raw karpenter_node_role_name)"
+bash "$REPO_ROOT/hack/render-cloud-manifest.sh" \
+	"$REPO_ROOT/deploy/cloud/karpenter/ec2nodeclass.yaml" "$CLOUD_CLUSTER" "$karpenter_node_role" | kc apply -f -
+bash "$REPO_ROOT/hack/render-cloud-manifest.sh" \
+	"$REPO_ROOT/deploy/cloud/karpenter/nodepool.yaml" "$CLOUD_CLUSTER" "$karpenter_node_role" | kc apply -f -
+kc apply -f "$REPO_ROOT/deploy/cloud/storage"
 
 # 5. The Alertmanager credential must exist before the observability Application
 # creates Alertmanager, which is the same order `make up` uses.
