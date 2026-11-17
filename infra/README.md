@@ -7,8 +7,8 @@ Terraform for the EKS environment that `make cloud-up` creates and `make cloud-d
 ```
 infra/
   bootstrap/       One-time S3 state bucket, applied with local state
-  modules/network/ VPC, public subnets, internet gateway, node security group
-  *.tf             The stack: providers, backend, variables, network wiring
+  modules/network/ VPC, public subnets, internet gateway
+  *.tf             The stack: providers, backend, network, cluster, Karpenter, identities
 ```
 
 The stack is split so that a pull request adds one layer at a time: the network here, then the cluster and its compute, then the identity that lets it run the stack.
@@ -54,6 +54,18 @@ tflint --init && tflint --recursive
 ```
 
 `terraform init` writes `.terraform.lock.hcl`. The lock file is committed, so every run uses the same provider build.
+
+## The cluster
+
+The cluster is EKS 1.37, the newest version in standard support when it was written (verified with `aws eks describe-cluster-versions` on 2026-11-17, standard support to 2027-11-30). `terraform-aws-modules/eks` 21.30.2 is pinned, and it is the only module dependency besides `terraform-aws-modules/eks//modules/karpenter` at the same version, which also pins `terraform-aws-modules/kms` 4.0.0 behind it.
+
+- **Compute.** One Spot managed node group, `t3.large`, one node, for Karpenter, CoreDNS and Argo CD. Karpenter provisions the rest from `deploy/cloud/karpenter`: x86_64 Spot only, instance sizes from medium to xlarge, and a NodePool limit of 12 vCPU and 24 GiB.
+- **Add-ons.** VPC CNI `v1.23.3-eksbuild.1`, CoreDNS `v1.14.7-eksbuild.35`, kube-proxy `v1.37.0-eksbuild.39` and the Pod Identity agent `v1.4.1-eksbuild.3`, read from `aws eks describe-addon-versions --kubernetes-version 1.37` on 2026-11-17. Nothing is left on `most_recent`.
+- **Access.** `authentication_mode = "API"`, so access entries replace the `aws-auth` ConfigMap, and the identity that applies the configuration keeps cluster-admin.
+- **Identity.** The `pagerless` namespace's `pagerless-agent` service account is associated with `pagerless-agent-bedrock`, which may call `bedrock:InvokeModel` and `bedrock:Converse` only on the `us.amazon.nova-2-lite-v1:0` profile and the Nova 2 Lite foundation model in the three Regions that profile routes to. No key is stored anywhere. The agent Job's admission policy admits the projected token that Pod Identity injects ([ADR-0025](../docs/adr/0025-the-agent-job-admits-the-pod-identity-token.md)).
+- **No Auto Mode.** Karpenter, not EKS Auto Mode, owns the extra capacity (ADR-0010).
+
+Karpenter's controller, node role, Pod Identity association and Spot interruption queue all come from the `karpenter` submodule. The chart is installed by `make cloud-up`, which is also what applies the NodePool and EC2NodeClass.
 
 ## Network posture
 

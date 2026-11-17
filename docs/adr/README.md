@@ -23,3 +23,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0017](0017-credential-free-sandbox-integration-adapter.md) | A local adapter tests Sandbox integration without GitHub credentials |
 | [0018](0018-deterministic-decisions-and-canonical-triages.md) | Deterministic decisions and canonical Active Triages |
 | [0024](0024-budget-guardrail-stays-outside-terraform.md) | The budget guardrail stays outside Terraform |
+| [0025](0025-the-agent-job-admits-the-pod-identity-token.md) | The agent Job admits the EKS Pod Identity token |

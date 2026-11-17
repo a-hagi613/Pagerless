@@ -42,3 +42,32 @@ variable "availability_zone_count" {
     error_message = "Use between two and six Availability Zones."
   }
 }
+
+variable "kubernetes_version" {
+  description = "EKS version. 1.37 was the newest version in standard support when this configuration was written (verified with aws eks describe-cluster-versions on 2026-11-17)."
+  type        = string
+  default     = "1.37"
+
+  validation {
+    condition     = can(regex("^1\\.[0-9]{2}$", var.kubernetes_version))
+    error_message = "Use an EKS minor version such as 1.37."
+  }
+}
+
+variable "system_instance_types" {
+  description = "Instance types for the one Spot node that runs Karpenter, CoreDNS and Argo CD."
+  type        = list(string)
+  default     = ["t3.large"]
+}
+
+variable "bedrock_model_id" {
+  description = "Inference profile the agent calls. The US geo profile is the only way this account can reach Nova 2 Lite."
+  type        = string
+  default     = "us.amazon.nova-2-lite-v1:0"
+}
+
+variable "bedrock_foundation_model_id" {
+  description = "Foundation model behind that profile, as it appears in a cross-Region foundation-model ARN."
+  type        = string
+  default     = "amazon.nova-2-lite-v1:0"
+}
