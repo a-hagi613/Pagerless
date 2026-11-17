@@ -58,7 +58,7 @@ from pagerless_agent.model import (
     ToolCall,
     ToolSpec,
 )
-from pagerless_agent.pricing import cost_usd
+from pagerless_agent.pricing import HAIKU_5_5_PRICES, Prices, cost_usd
 from pagerless_agent.server import ServerClient, ServerError, ServerRefusedError
 from pagerless_agent.settings import Target
 from pagerless_agent.tools import ContextSource, ToolRegistry, UnknownToolError, new_nonce, present
@@ -121,6 +121,7 @@ class Agent:
         limits: Limits | None = None,
         clock: Callable[[], float] = time.monotonic,
         nonce: str | None = None,
+        prices: Prices = HAIKU_5_5_PRICES,
     ) -> None:
         self._target = target
         self._provider = provider
@@ -133,6 +134,7 @@ class Agent:
         self._output_tokens = 0
         self._cost_usd = 0.0
         self._nonce = nonce or new_nonce()
+        self._prices = prices
         self._record_finding = ToolSpec(
             name=prompts.RECORD_FINDING,
             description=(
@@ -318,7 +320,9 @@ class Agent:
         self._budget.spend_input_tokens(response.usage.input_tokens)
         self._input_tokens += response.usage.input_tokens
         self._output_tokens += response.usage.output_tokens
-        self._cost_usd += cost_usd(response.usage.input_tokens, response.usage.output_tokens)
+        self._cost_usd += cost_usd(
+            response.usage.input_tokens, response.usage.output_tokens, prices=self._prices
+        )
         return response
 
     async def _call_tool(self, call: ToolCall) -> tuple[str, bool]:

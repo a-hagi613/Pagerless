@@ -13,7 +13,7 @@ Each record captures one significant decision, along with its context and conseq
 | [0007](0007-keycloak-scope.md) | Keycloak issues dashboard and agent tokens only |
 | [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it |
 | [0009](0009-eks-network-without-nat-or-load-balancers.md) | EKS without NAT gateways or load balancers |
-| [0010](0010-cost-model.md) | Near-zero operating cost |
+| [0010](0010-cost-model.md) | Near-zero operating cost; its Bedrock model choice is amended by [0023](0023-bedrock-uses-amazon-nova-2-lite.md) |
 | [0011](0011-approval-is-the-only-human-gate.md) | Approval is the only human gate |
 | [0012](0012-out-of-scope.md) | Explicitly out of scope |
 | [0013](0013-custom-dashboard-embedding-grafana.md) | Custom dashboard that embeds Grafana panels |
@@ -26,3 +26,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0020](0020-dashboard-approvals-assert-the-approver.md) | Dashboard Approvals assert the approver rather than impersonate |
 | [0021](0021-rollback-may-revert-declared-dependency-paths.md) | Rollback may revert commits on a Workload's declared dependency paths |
 | [0022](0022-agentgateway-is-the-only-mcp-caller.md) | agentgateway is the only caller of the MCP servers |
+| [0023](0023-bedrock-uses-amazon-nova-2-lite.md) | Bedrock uses Amazon Nova 2 Lite through Converse |
