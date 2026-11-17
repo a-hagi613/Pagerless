@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,6 +28,10 @@ func TestScenarioPatchesChangeOneSandboxManifest(t *testing.T) {
 		}
 		scenarios = append(scenarios, entry.Name())
 		patch, err := os.ReadFile(filepath.Join(root, entry.Name(), "inject.patch"))
+		if errors.Is(err, os.ErrNotExist) {
+			// Scenario 9 is applied outside Git, so it has no inject.patch.
+			continue
+		}
 		if err != nil {
 			t.Fatalf("Scenario %s: %v", entry.Name(), err)
 		}
