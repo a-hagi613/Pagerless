@@ -51,6 +51,11 @@ jobs:
           tflint_version: v0.66.0
       - name: Lint
         working-directory: infra
+        env:
+          # tflint downloads its AWS ruleset from GitHub releases. Without a
+          # token the download shares the runner's anonymous rate limit and the
+          # job fails before it lints anything.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tflint --init
