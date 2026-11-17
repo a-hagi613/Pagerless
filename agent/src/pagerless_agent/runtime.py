@@ -19,6 +19,7 @@ from pagerless_agent.keycloak import FederatedTokenSource, TokenError
 from pagerless_agent.live_context import MCPContextSource
 from pagerless_agent.mcp import MCPServerConfig, MCPTools, connect
 from pagerless_agent.model import ModelProvider
+from pagerless_agent.pricing import HAIKU_5_5_PRICES, NOVA_2_LITE_PRICES
 from pagerless_agent.replay import Recording, RecordingProvider, ReplayProvider
 from pagerless_agent.server import ServerClient
 from pagerless_agent.settings import (
@@ -94,6 +95,7 @@ async def run(
                 tools=tools,
                 source=MCPContextSource(tools),
                 server=server,
+                prices=(NOVA_2_LITE_PRICES if settings.provider == "bedrock" else HAIKU_5_5_PRICES),
             ).run()
             if recorder is not None and outcome.kind == "reported":
                 save_recording(recorder.recording(), settings.recording_file)

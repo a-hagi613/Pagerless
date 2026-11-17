@@ -17,7 +17,9 @@ The Job receives its Triage, Workload and projected report-token settings throug
 - `PAGERLESS_NARRATIVE_REPLAY_FILE`: the Narrative recording to play, default `/app/recordings/narrative.json`.
 - `PAGERLESS_RECORDING_FILE`: an optional destination for a recording of a live investigation or Narrative. It is refused in Replay.
 
-The Anthropic provider reads `ANTHROPIC_API_KEY`. Bedrock uses the AWS SDK credential chain, with optional `AWS_REGION` and `AWS_PROFILE`. These credentials are never included in the model prompt or the Context Bundle.
+The Anthropic provider reads `ANTHROPIC_API_KEY` and uses Claude Haiku 5.5. The Bedrock provider uses Amazon Nova 2 Lite through the Converse API and the `us.amazon.nova-2-lite-v1:0` inference profile, which requires a US region, with the AWS SDK credential chain and optional `AWS_REGION` and `AWS_PROFILE`. These credentials are never included in the model prompt or the Context Bundle.
+
+Both live providers cache their static prefix. The Anthropic provider marks the system prompt and the last tool definition. Nova 2 Lite accepts cache checkpoints only in `system` and `messages`, so the Bedrock provider places one `cachePoint` after the system prompt, which caches the tool definitions with it. Nova 2 Lite does not support Bedrock structured outputs, so a Diagnosis or Proposal travels as one forced tool call on both providers. [ADR-0023](../docs/adr/0023-bedrock-uses-amazon-nova-2-lite.md) records the decision.
 
 ## Evidence and tool policy
 
@@ -29,7 +31,7 @@ Tools are named with service prefixes (`k8s__`, `grafana__`, `argocd__`, and `gi
 
 A live provider can be wrapped with `RecordingProvider` by setting `PAGERLESS_RECORDING_FILE`. After the server accepts the report, the runtime validates the normalized recording and replaces the destination atomically. Failed investigations leave the previous artifact intact. Replay continues to execute real MCP tool calls.
 
-The deployed Replay artifact must be captured from a live investigation, as required by ADR-0010 and ADR-0016. The synthetic recordings in the test suite exercise the format and runtime; they are not live captures and must not be promoted as demonstration recordings.
+The deployed Replay artifact must be captured from a live investigation, as required by ADR-0010, ADR-0016 and ADR-0023. A capture for that artifact uses the Anthropic provider and Claude Haiku 5.5. The synthetic recordings in the test suite exercise the format and runtime; they are not live captures and must not be promoted as demonstration recordings.
 
 ## Narrative
 

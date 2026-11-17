@@ -8,12 +8,12 @@
 
 1. **Trigger.** An authenticated, opted-in Alertmanager delivery or a CLI request creates a Triage for one failing Deployment or StatefulSet. Repeated Triggers join its Active Triage.
 2. **Context.** `pagerless-server` starts a short-lived agent Job. Deterministic Python code gathers the Context Bundle through read-only MCP tools, reached through agentgateway: Workload status, pods, events, recent logs, Argo CD status and recent Sandbox commits.
-3. **Investigate.** The LangGraph agent uses Replay, the Anthropic API or Amazon Bedrock. Every MCP call carries a Keycloak token that agentgateway validates and authorizes by tool, and the agent posts step events and Findings to the server.
+3. **Investigate.** The LangGraph agent uses Replay, the Anthropic API with Claude Haiku 5.5, or Amazon Bedrock with Amazon Nova 2 Lite. Every MCP call carries a Keycloak token that agentgateway validates and authorizes by tool, and the agent posts step events and Findings to the server.
 4. **Propose.** The agent submits a Diagnosis and one typed Proposal. Phase 1 implements PatchResources and NoAction. The server validates allowed namespaces, parameter bounds and the server-side dry run, then renders the exact Sandbox patch and computes its hash.
 5. **Approve.** A human reviews the rendered change in the CLI and creates a TriageApproval bound to that hash. The admission webhooks stamp the authenticated Kubernetes identity and refuse a Stale Proposal, an expired Proposal or a mismatched hash.
 6. **Execute.** The separate Executor independently checks the Approval and stored change before opening an auto-merging Sandbox pull request. Argo CD applies the merged commit. A NoAction Approval acknowledges the Diagnosis without changing the Workload.
 7. **Verify.** Go checks the rollout, Argo CD health at the merge commit, restarts during the full five-minute observation window, and resolution of any triggering alert. The Triage ends Recovered or NotRecovered; NotRecovered starts a linked Follow-up Triage when no other Active Triage already covers the Workload.
-8. **Narrate.** After Verification ends, `pagerless-server` starts one short-lived Narrative Job. It makes one Claude Haiku 5.5 call capped at about 2,000 output tokens and stores a short, purely descriptive account in the Triage's status. It never changes the outcome: a failed or timed-out Narrative Job leaves the Verification outcome and every other status field as they were.
+8. **Narrate.** After Verification ends, `pagerless-server` starts one short-lived Narrative Job. It makes one model call, capped at about 2,000 output tokens, through the selected provider (Claude Haiku 5.5 on the Anthropic API or Amazon Nova 2 Lite on Bedrock), and stores a short, purely descriptive account in the Triage's status. It never changes the outcome: a failed or timed-out Narrative Job leaves the Verification outcome and every other status field as they were.
 
 The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repository for demo Workload manifests. Failure injection and remediation pull requests change that repository, as specified in [ADR-0003](docs/adr/0003-separate-sandbox-repository.md).
 
@@ -21,7 +21,7 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 
 - **Control plane:** `pagerless-server` in Go, with the reconcilers, agent report endpoint, authenticated Alertmanager receiver and admission webhooks.
 - **Execution:** `pagerless-executor` in Go, with the separate GitHub write token and idempotent pull request execution.
-- **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching. A separate short-lived Narrative Job writes each Triage's account after Verification.
+- **Agent:** Python 3.14, LangGraph, sequence-based Replay, Claude Haiku 5.5 for the Anthropic API and Amazon Nova 2 Lite for Bedrock, with prompt caching. A separate short-lived Narrative Job writes each Triage's account after Verification.
 - **CLI:** the Go/Cobra `kubectl-triage` plugin, using the selected kube context.
 - **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP, fronted by agentgateway 1.7.0 and authenticated with Keycloak 26.8.2. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md), [deploy/gateway](deploy/gateway/README.md) and [deploy/keycloak](deploy/keycloak/README.md).
 - **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment, with a provisioned Grafana dashboard for Pagerless's own behaviour.
@@ -134,7 +134,7 @@ The harness checks the complete Triage phase sequence, CLI Approval, a merged Sa
 
 ### Use a live model and capture Replay
 
-Select `MODEL_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` in the ignored setup file, or `MODEL_PROVIDER=bedrock` with `AWS_REGION` and inference-scoped AWS credentials. Host AWS profile files are not mounted into agent Jobs. Live providers use the fixed Haiku 5.5 identifiers and prompt caching described in [agent](agent/README.md).
+Select `MODEL_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` in the ignored setup file, or `MODEL_PROVIDER=bedrock` with a US `AWS_REGION` and inference-scoped AWS credentials. Host AWS profile files are not mounted into agent Jobs. The Anthropic API uses the fixed Claude Haiku 5.5 identifier; Bedrock uses Amazon Nova 2 Lite through `us.amazon.nova-2-lite-v1:0`. Both paths cache their static prefix, as described in [agent](agent/README.md) and [ADR-0023](docs/adr/0023-bedrock-uses-amazon-nova-2-lite.md).
 
 The genuine OOMKilled recording at `evals/replay/oom.json` was captured from one live investigation, and its provenance records the agent Job, proposal hash, model and token usage. Its durable claim, retrieval, credential checks, normalization and provenance workflow are documented in [evals/replay](evals/replay/README.md). Synthetic test responses are kept separate and are never promoted as live evidence. Development and CI remain on Replay by default.
 

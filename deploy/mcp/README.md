@@ -25,7 +25,7 @@ The Kubernetes MCP server relies on its restricted service account for authoriza
 
 The bootstrap writes non-secret settings to `pagerless-agent-config`. The server copies an explicit set of those settings into each Job. Credential references select only the active provider's keys from `pagerless-agent-credentials`; Replay Jobs receive no model credentials. The MCP caller tokens are referenced by individual Secret keys. No Secret is imported wholesale into a Job environment.
 
-Replay remains the default. Set `MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` in the git-ignored `.env` to select the Anthropic API. For Bedrock, set `MODEL_PROVIDER=bedrock`, `AWS_REGION`, and inference-scoped AWS credentials; temporary credentials also require `AWS_SESSION_TOKEN`. Host AWS profile files are not mounted into Jobs. EKS Pod Identity can supply credentials through the SDK chain without static keys.
+Replay remains the default. Set `MODEL_PROVIDER=anthropic` and `ANTHROPIC_API_KEY` in the git-ignored `.env` to select the Anthropic API with Claude Haiku 5.5. For Bedrock, set `MODEL_PROVIDER=bedrock`, a US `AWS_REGION`, and inference-scoped AWS credentials; temporary credentials also require `AWS_SESSION_TOKEN`. The Bedrock provider calls Amazon Nova 2 Lite through the `us.amazon.nova-2-lite-v1:0` inference profile. Host AWS profile files are not mounted into Jobs. EKS Pod Identity can supply credentials through the SDK chain without static keys.
 
 `PAGERLESS_REPLAY_FILE` selects a captured recording; its image default is `/app/recordings/oom.json`. A real OOMKilled recording must be captured before that image can provide the complete Replay loop.
 
