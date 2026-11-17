@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -39,6 +40,10 @@ func generate(directory string) error {
 		return fmt.Errorf("create CA serial: %w", err)
 	}
 	now := time.Now().UTC()
+	caKeyID, err := keyIdentifier(caPublic)
+	if err != nil {
+		return fmt.Errorf("identify the CA key: %w", err)
+	}
 	caTemplate := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "Pagerless E2E adapter CA"},
@@ -47,6 +52,11 @@ func generate(directory string) error {
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		// Modern TLS implementations require the authority key identifier
+		// extension even on a self-signed CA. A certificate without it is
+		// rejected instead of being treated as a trust anchor.
+		SubjectKeyId:   caKeyID,
+		AuthorityKeyId: caKeyID,
 	}
 	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, caPublic, caPrivate)
 	if err != nil {
@@ -94,6 +104,15 @@ func generate(directory string) error {
 		return err
 	}
 	return nil
+}
+
+func keyIdentifier(publicKey any) ([]byte, error) {
+	encoded, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha1.Sum(encoded)
+	return sum[:], nil
 }
 
 func writePEM(filename, kind string, contents []byte, mode os.FileMode) error {
