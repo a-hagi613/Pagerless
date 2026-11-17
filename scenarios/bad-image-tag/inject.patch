@@ -1,13 +1,13 @@
-diff --git a/workloads/checkout/deployment.yaml b/workloads/checkout/deployment.yaml
-index 3e51275..7d4f807 100644
---- a/workloads/checkout/deployment.yaml
-+++ b/workloads/checkout/deployment.yaml
-@@ -20,7 +20,7 @@ spec:
-     spec:
+diff --git a/workloads/deployments/checkout.yaml b/workloads/deployments/checkout.yaml
+index ab4b463..3e8f932 100644
+--- a/workloads/deployments/checkout.yaml
++++ b/workloads/deployments/checkout.yaml
+@@ -34,7 +34,7 @@ spec:
+       serviceAccountName: demo
        containers:
-         - name: checkout
--          image: python:3.14.10-alpine3.24@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67
-+          image: python:3.14.10-alpine3.24-nonexistent
-           command:
-             - python
-             - -c
+       - name: checkout
+-        image: ghcr.io/open-telemetry/demo:3.1.0-checkout
++        image: ghcr.io/open-telemetry/demo:3.1.0-checkout-nonexistent
+         imagePullPolicy: IfNotPresent
+         ports:
+         - containerPort: 8080

@@ -1,13 +1,16 @@
-diff --git a/workloads/checkout/deployment.yaml b/workloads/checkout/deployment.yaml
-index 3e51275..e6b3ef1 100644
---- a/workloads/checkout/deployment.yaml
-+++ b/workloads/checkout/deployment.yaml
-@@ -27,6 +27,6 @@ spec:
-             - "import time; held = bytearray(48 * 1024 * 1024); time.sleep(10 ** 9)"
-           resources:
-             requests:
--              memory: 64Mi
-+              memory: 256Gi
-             limits:
--              memory: 128Mi
-+              memory: 256Gi
+diff --git a/workloads/deployments/checkout.yaml b/workloads/deployments/checkout.yaml
+index ab4b463..73168d9 100644
+--- a/workloads/deployments/checkout.yaml
++++ b/workloads/deployments/checkout.yaml
+@@ -101,9 +101,9 @@ spec:
+         env: []
+         resources:
+           limits:
+-            memory: 128Mi
++            memory: 256Gi
+           requests:
+-            memory: 64Mi
++            memory: 256Gi
+       initContainers:
+       - command:
+         - sh
