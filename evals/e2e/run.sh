@@ -38,7 +38,10 @@ forward=""
 observer=""
 policies_saved=0
 . "$script_dir/cleanup.sh"
-trap 'result=$?; trap - EXIT; cleanup_e2e "$result"; exit "$?"' EXIT
+. "$script_dir/diagnostics.sh"
+PAGERLESS_E2E_DIAGNOSTICS="${PAGERLESS_E2E_DIAGNOSTICS:-$state/diagnostics}"
+export PAGERLESS_E2E_DIAGNOSTICS
+trap 'result=$?; trap - EXIT; if [ "$result" != 0 ]; then dump_e2e_diagnostics; fi; cleanup_e2e "$result"; exit "$?"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
