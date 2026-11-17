@@ -6,6 +6,7 @@ resources:
   - crds/pagerless.dev_triages.yaml
   - serviceaccounts.yaml
   - rbac.yaml
+  - dry-run-policy.yaml
   - webhook.yaml
   - service.yaml
   - deployment.yaml

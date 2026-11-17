@@ -19,6 +19,17 @@ require_commands uv
 bash "$REPO_ROOT/hack/configure.sh"
 load_env
 require_env SANDBOX_URL GITHUB_READ_TOKEN GITHUB_WRITE_TOKEN MODEL_PROVIDER
+if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	require_env PAGERLESS_E2E_TOKEN PAGERLESS_E2E_CA_FILE PAGERLESS_E2E_GIT_HOST PAGERLESS_E2E_REPOSITORY
+	[ -r "$PAGERLESS_E2E_CA_FILE" ] || die "the E2E adapter CA certificate is not readable."
+	[[ "$PAGERLESS_E2E_TOKEN" == e2e-write-* && "$PAGERLESS_E2E_TOKEN" = "$GITHUB_WRITE_TOKEN" &&
+		"$GITHUB_READ_TOKEN" == e2e-read-* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
+		die "E2E bootstrap requires distinct disposable adapter tokens from its isolated configuration."
+	[ "$PAGERLESS_E2E_GIT_HOST" = sandbox-adapter.pagerless-e2e.svc ] ||
+		die "E2E adapter Git host must be the isolated Sandbox adapter Service."
+	[ "${PAGERLESS_MCP_GITHUB_HOST:-}" = http://127.0.0.1:8083 ] ||
+		die "E2E GitHub MCP traffic must use the isolated loopback relay."
+fi
 
 if kind get clusters | grep -qx "$KIND_CLUSTER_NAME"; then
 	echo "Reusing the kind cluster $KIND_CLUSTER_NAME."
@@ -27,9 +38,15 @@ else
 fi
 
 if [ "${PAGERLESS_LOCAL_IMAGES:-0}" = "1" ]; then
-	kind load docker-image --name "$KIND_CLUSTER_NAME" \
-		"$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_EXECUTOR_IMAGE" "$PAGERLESS_AGENT_IMAGE"
+	images=("$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_EXECUTOR_IMAGE" "$PAGERLESS_AGENT_IMAGE")
+	if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+		images+=("$PAGERLESS_E2E_ADAPTER_IMAGE")
+	fi
+	kind load docker-image --name "$KIND_CLUSTER_NAME" "${images[@]}"
 fi
+
+# Authentication Secrets must exist before the observability Application can create Alertmanager.
+uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-authorization.py" alerts
 
 helm repo add argo "$ARGOCD_CHART_REPO" --force-update >/dev/null
 helm upgrade --install argocd argo/argo-cd \
@@ -39,8 +56,25 @@ helm upgrade --install argocd argo/argo-cd \
 	--kube-context "kind-${KIND_CLUSTER_NAME}" \
 	--wait --timeout 5m
 
+if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	kc -n argocd create configmap argocd-tls-certs-cm \
+		--from-file="$PAGERLESS_E2E_GIT_HOST=$PAGERLESS_E2E_CA_FILE" \
+		--dry-run=client -o yaml |
+		kc label --local -f - app.kubernetes.io/part-of=argocd -o yaml |
+		kc apply -f -
+fi
+
 kc create namespace pagerless-system --dry-run=client -o yaml | kc apply -f -
 kc create namespace pagerless --dry-run=client -o yaml | kc apply -f -
+if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	kc create namespace pagerless-e2e --dry-run=client -o yaml | kc apply -f -
+fi
+
+if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	kc -n pagerless create configmap pagerless-e2e-ca \
+		--from-file=ca.crt="$PAGERLESS_E2E_CA_FILE" \
+		--dry-run=client -o yaml | kc apply -f -
+fi
 
 # Secrets from .env. Tokens reach kubectl through file descriptors, not argv.
 kc -n pagerless create secret generic github-read \
@@ -60,6 +94,15 @@ kc -n argocd create secret generic sandbox-repository \
 	--dry-run=client -o yaml |
 	kc label --local -f - argocd.argoproj.io/secret-type=repository -o yaml |
 	kc apply -f -
+
+if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	kc -n pagerless-e2e create secret generic sandbox-adapter-token \
+		--from-file=read-token=<(printf '%s' "$GITHUB_READ_TOKEN") \
+		--from-file=write-token=<(printf '%s' "$GITHUB_WRITE_TOKEN") \
+		--dry-run=client -o yaml | kc apply -f -
+	kc apply -f "$REPO_ROOT/evals/e2e/manifests/adapter.yaml"
+	kc -n pagerless-e2e rollout status deployment/sandbox-adapter --timeout=180s
+fi
 
 helm template pagerless-root "$REPO_ROOT/deploy/root" \
 	--namespace argocd \
@@ -84,6 +127,7 @@ if kc -n pagerless get deployment pagerless-server >/dev/null 2>&1; then
 fi
 wait_for_application pagerless-server "" 300
 wait_for_application pagerless-executor "" 300
+uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-authorization.py" approver
 
 echo
 echo "The local stack is up. The checkout Workload in the sandbox namespace is healthy."

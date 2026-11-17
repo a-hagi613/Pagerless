@@ -5,11 +5,14 @@ package alerts
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -56,6 +59,8 @@ type Receiver struct {
 	Namespace string
 	// Namespaces are the namespaces whose alerts may start Triages. An empty list accepts none.
 	Namespaces []string
+	// Token reads the expected bearer token for each request, so Secret rotation takes effect.
+	Token func() (string, error)
 }
 
 // payload is the part of an Alertmanager webhook payload that the receiver reads.
@@ -79,6 +84,22 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.Token == nil {
+		http.Error(w, "alert authentication unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	expected, err := r.Token()
+	if err != nil || expected == "" {
+		http.Error(w, "alert authentication unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	provided, bearer := strings.CutPrefix(req.Header.Get("Authorization"), "Bearer ")
+	want, got := sha256.Sum256([]byte(expected)), sha256.Sum256([]byte(provided))
+	if !bearer || subtle.ConstantTimeCompare(want[:], got[:]) != 1 {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	var body payload

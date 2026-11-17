@@ -21,7 +21,7 @@ rules:
     verbs: [update]
   - apiGroups: [batch]
     resources: [jobs]
-    verbs: [create, get, list, watch]
+    verbs: [create, delete, get, list, watch]
   # Reads the pod that a presented agent token is bound to.
   - apiGroups: [""]
     resources: [pods]
@@ -42,6 +42,34 @@ subjects:
     namespace: pagerless
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pagerless-server-validation
+  namespace: sandbox
+rules:
+  # Admission independently rejects live writes, even when the server can authorize an update for a dry run.
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets]
+    verbs: [get, update]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pagerless-server-validation
+  namespace: sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pagerless-server-validation
+subjects:
+  - kind: ServiceAccount
+    name: pagerless-server
+    namespace: pagerless
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: pagerless-server
@@ -49,17 +77,6 @@ rules:
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]
     verbs: [create]
-  # Validation reads the target Workload and dry-runs the patched Workload against it. Kubernetes RBAC cannot
-  # limit a verb to dry runs, so the server's code sends update only with dryRun=All and only to Workloads in
-  # the namespaces allowed for PatchResources. The Executor, not the server, makes live changes (ADR-0008).
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [get, update]
-  # Verification lists a Workload's pods to see whether any container restarted or was OOMKilled during the
-  # observation window (ADR-0006). It only reads them.
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list]
   # Publishes the generated certificate authority in its own webhook configuration.
   - apiGroups: [admissionregistration.k8s.io]
     resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]

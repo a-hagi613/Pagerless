@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -18,6 +20,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/verification"
@@ -36,6 +39,9 @@ const defaultExecutorTokenFile = "/var/run/secrets/pagerless/executor/token"
 
 // defaultArgoCDTokenFile is where the Argo CD API token is mounted.
 const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
+
+// defaultAlertmanagerTokenFile is the rotating Secret that authenticates webhook deliveries.
+const defaultAlertmanagerTokenFile = "/var/run/pagerless/alertmanager/token"
 
 // tokenFromFile returns a source that reads the token at every call, because
 // the kubelet rotates a projected token in place.
@@ -61,6 +67,8 @@ func splitList(s string) []string {
 }
 
 func run() error {
+	defaults := patchresources.DefaultBounds()
+	defaultCPU, defaultMemory := defaults[corev1.ResourceCPU], defaults[corev1.ResourceMemory]
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
 			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
@@ -89,6 +97,14 @@ func run() error {
 			"optional file that holds the read-only token for the HTTPS Sandbox repository")
 		patchable = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
 			"comma-separated namespaces whose Workloads PatchResources may change")
+		patchMinCPU = flag.String("patch-min-cpu", defaultCPU.Min.String(),
+			"minimum CPU request or limit in PatchResources")
+		patchMaxCPU = flag.String("patch-max-cpu", defaultCPU.Max.String(),
+			"maximum CPU request or limit in PatchResources")
+		patchMinMemory = flag.String("patch-min-memory", defaultMemory.Min.String(),
+			"minimum memory request or limit in PatchResources")
+		patchMaxMemory = flag.String("patch-max-memory", defaultMemory.Max.String(),
+			"maximum memory request or limit in PatchResources")
 		executorURL = flag.String("executor-url", "",
 			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
 		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
@@ -102,6 +118,8 @@ func run() error {
 			"Argo CD application that deploys the Sandbox")
 		alertmanagerURL = flag.String("alertmanager-url", "http://alertmanager.monitoring.svc:9093",
 			"base URL of Alertmanager, which Verification asks whether the triggering alert has resolved")
+		alertmanagerTokenFile = flag.String("alertmanager-token-file", defaultAlertmanagerTokenFile,
+			"file that holds the required bearer token for Alertmanager webhook deliveries")
 		verificationWindow = flag.Duration("verification-window", verification.DefaultWindow,
 			"how long Verification observes the Workload for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
@@ -111,6 +129,10 @@ func run() error {
 	zapOptions.BindFlags(flag.CommandLine)
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
+	bounds, err := parsePatchBounds(*patchMinCPU, *patchMaxCPU, *patchMinMemory, *patchMaxMemory)
+	if err != nil {
+		return err
+	}
 
 	allowed, err := parseNamespaces(*alertNamespaces)
 	if err != nil {
@@ -164,6 +186,7 @@ func run() error {
 		ArgoCDToken:          tokenFromFile(*argoCDTokenFile),
 		ArgoCDApplication:    *argoCDApplication,
 		AlertmanagerURL:      *alertmanagerURL,
+		AlertmanagerToken:    tokenFromFile(*alertmanagerTokenFile),
 		VerificationWindow:   *verificationWindow,
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
@@ -172,6 +195,7 @@ func run() error {
 			URL: *sandboxURL, Branch: *sandboxBranch, ReadToken: sandboxReadToken,
 		},
 		AllowedNamespaces:  splitList(*patchable),
+		PatchBounds:        bounds,
 		AlertNamespaces:    allowed,
 		WebhookPort:        *webhookPort,
 		WebhookCertDir:     *webhookCertDir,
@@ -185,6 +209,34 @@ func run() error {
 		return fmt.Errorf("run manager: %w", err)
 	}
 	return nil
+}
+
+// parsePatchBounds validates the resource quantities supplied through the server's flags.
+func parsePatchBounds(
+	cpuMin, cpuMax, memoryMin, memoryMax string,
+) (map[corev1.ResourceName]patchresources.Bounds, error) {
+	bounds := make(map[corev1.ResourceName]patchresources.Bounds, 2)
+	for _, setting := range []struct {
+		name     corev1.ResourceName
+		min, max string
+	}{
+		{corev1.ResourceCPU, cpuMin, cpuMax},
+		{corev1.ResourceMemory, memoryMin, memoryMax},
+	} {
+		minimum, err := resource.ParseQuantity(setting.min)
+		if err != nil {
+			return nil, fmt.Errorf("%s minimum bound is not a resource quantity", setting.name)
+		}
+		maximum, err := resource.ParseQuantity(setting.max)
+		if err != nil {
+			return nil, fmt.Errorf("%s maximum bound is not a resource quantity", setting.name)
+		}
+		if minimum.Sign() <= 0 || maximum.Sign() <= 0 || minimum.Cmp(maximum) > 0 {
+			return nil, fmt.Errorf("%s bounds must be positive and minimum must not exceed maximum", setting.name)
+		}
+		bounds[setting.name] = patchresources.Bounds{Min: minimum, Max: maximum}
+	}
+	return bounds, nil
 }
 
 // agentRuntimeFromEnvironment copies the non-secret configuration supplied by the bootstrap.

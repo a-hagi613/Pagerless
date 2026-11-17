@@ -39,6 +39,7 @@ spec:
             - --executor-url=http://pagerless-executor.pagerless.svc:8080
             - --argocd-url=http://argocd-server.argocd.svc
             - --alertmanager-url=http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+            - --alertmanager-token-file=/var/run/pagerless/alertmanager/token
             - --sandbox-read-token-file=/var/run/pagerless/github-read/token
           envFrom:
             - configMapRef:
@@ -75,6 +76,9 @@ spec:
             capabilities:
               drop: [ALL]
           volumeMounts:
+            - name: alertmanager-token
+              mountPath: /var/run/pagerless/alertmanager
+              readOnly: true
             - name: webhook-certs
               mountPath: /var/run/pagerless/webhook-certs
             - name: executor-token
@@ -89,6 +93,9 @@ spec:
               mountPath: /var/run/pagerless/github-read
               readOnly: true
       volumes:
+        - name: alertmanager-token
+          secret:
+            secretName: pagerless-alertmanager
         - name: github-read
           secret:
             secretName: github-read

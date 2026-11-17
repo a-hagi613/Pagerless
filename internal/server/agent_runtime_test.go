@@ -203,6 +203,7 @@ func TestAgentRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *te
 				Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
 				ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
 				ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
+				AlertmanagerToken: token,
 				AgentRuntime: controller.AgentRuntimeConfig{
 					Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
 				},

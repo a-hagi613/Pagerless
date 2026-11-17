@@ -1,0 +1,27 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: pagerless-server-dry-run-only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [apps]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [deployments, statefulsets, deployments/*, statefulsets/*]
+  matchConditions:
+    - name: pagerless-server-identity
+      expression: request.userInfo.username == 'system:serviceaccount:pagerless:pagerless-server'
+  validations:
+    - expression: request.dryRun == true
+      message: pagerless-server may update Workloads only through a server-side dry-run
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: pagerless-server-dry-run-only
+spec:
+  policyName: pagerless-server-dry-run-only
+  validationActions: [Deny]

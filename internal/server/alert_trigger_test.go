@@ -3,8 +3,10 @@ package server_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -65,6 +67,11 @@ func checkoutAlert(fingerprint, pod string) webhookAlert {
 // postAlerts posts one firing Alertmanager payload to the receiver and returns the status code.
 func postAlerts(t *testing.T, env *testenv.Env, items ...webhookAlert) int {
 	t.Helper()
+	return postAlertsWithToken(t, env, testenv.AlertmanagerToken, items...)
+}
+
+func postAlertsWithToken(t *testing.T, env *testenv.Env, token string, items ...webhookAlert) int {
+	t.Helper()
 	body, err := json.Marshal(webhookBody{
 		Version:  "4",
 		GroupKey: `{}:{alertname="OOMKilled"}`,
@@ -80,6 +87,7 @@ func postAlerts(t *testing.T, env *testenv.Env, items ...webhookAlert) int {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("post alerts: %v", err)
@@ -96,6 +104,81 @@ func triagesInNamespace(t *testing.T, env *testenv.Env) []v1alpha1.Triage {
 		t.Fatalf("list Triages: %v", err)
 	}
 	return list.Items
+}
+
+func TestAlertReceiverRefusesUnauthenticatedTriggers(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace))
+	for _, authorization := range []string{"", "Bearer wrong-token", "Basic wrong-token"} {
+		body, err := json.Marshal(webhookBody{Alerts: []webhookAlert{checkoutAlert("fp-unauthorized", "checkout-1")}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			env.ReportURL+alerts.Path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", authorization)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("authorization %q: status = %d, want 401", authorization, resp.StatusCode)
+		}
+	}
+	if count := len(triagesInNamespace(t, env)); count != 0 {
+		t.Errorf("unauthenticated requests created %d Triages", count)
+	}
+}
+
+func TestAlertReceiverReadsTheRotatedTokenForEveryDelivery(t *testing.T) {
+	t.Parallel()
+	var expected atomic.Value
+	expected.Store(testenv.AlertmanagerToken)
+	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace),
+		testenv.WithAlertmanagerToken(func() (string, error) { return expected.Load().(string), nil }))
+	if code := postAlerts(t, env, checkoutAlert("fp-before", "checkout-1")); code != http.StatusOK {
+		t.Fatalf("before rotation: status = %d, want 200", code)
+	}
+	expected.Store("rotated-alertmanager-token")
+	if code := postAlerts(t, env, checkoutAlert("fp-after", "checkout-1")); code != http.StatusUnauthorized {
+		t.Fatalf("old token after rotation: status = %d, want 401", code)
+	}
+	items := triagesInNamespace(t, env)
+	if len(items) != 1 {
+		t.Fatalf("Triages = %d, want only the authenticated delivery", len(items))
+	}
+	tr := env.WaitForPhase(t, items[0].Name, v1alpha1.PhaseInvestigating)
+	if tr.Status.TriggerCount != 1 {
+		t.Errorf("unauthorized delivery changed trigger count to %d", tr.Status.TriggerCount)
+	}
+	code := postAlertsWithToken(t, env, "rotated-alertmanager-token", checkoutAlert("fp-new", "checkout-1"))
+	if code != http.StatusOK {
+		t.Errorf("new token after rotation: status = %d, want 200", code)
+	}
+	env.WaitFor(t, tr.Name, "the rotated token's delivery is recorded", func(latest *v1alpha1.Triage) bool {
+		return latest.Status.TriggerCount == 2
+	})
+	// A Secret that is momentarily empty must fail closed rather than accepting an empty bearer token.
+	expected.Store("")
+	if code := postAlerts(t, env, checkoutAlert("fp-empty", "checkout-1")); code != http.StatusServiceUnavailable {
+		t.Errorf("empty expected token: status = %d, want 503", code)
+	}
+}
+
+func TestAlertReceiverFailsClosedWhenTheSecretCannotBeRead(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace),
+		testenv.WithAlertmanagerToken(func() (string, error) { return "", errors.New("unavailable") }))
+	if code := postAlerts(t, env, checkoutAlert("fp-unavailable", "checkout-1")); code != http.StatusServiceUnavailable {
+		t.Errorf("unreadable token: status = %d, want 503", code)
+	}
+	if items := triagesInNamespace(t, env); len(items) != 0 {
+		t.Errorf("a request without a readable expected token created %d Triages", len(items))
+	}
 }
 
 func TestOptedInAlertStartsATriageForItsWorkload(t *testing.T) {
@@ -235,6 +318,7 @@ func TestAlertReceiverRefusesMalformedBodiesAndOtherMethods(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Authorization", "Bearer "+testenv.AlertmanagerToken)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

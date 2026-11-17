@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"go.uber.org/zap/zapcore"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -50,6 +51,8 @@ const (
 	Namespace = "pagerless"
 	// AgentImage is the agent image that Jobs reference. No container ever runs in envtest.
 	AgentImage = "registry.invalid/pagerless-agent:test"
+	// AlertmanagerToken is the deterministic bearer token used by alert receiver seam tests.
+	AlertmanagerToken = "pagerless-alertmanager-test-token"
 
 	pollInterval = 50 * time.Millisecond
 	waitTimeout  = 30 * time.Second
@@ -97,6 +100,7 @@ type options struct {
 	agentDeadline    time.Duration
 	agentRuntime     controller.AgentRuntimeConfig
 	alertNamespaces  []string
+	alertToken       func() (string, error)
 }
 
 // Option customizes the harness.
@@ -119,11 +123,17 @@ func WithAlertNamespaces(namespaces ...string) Option {
 	return func(o *options) { o.alertNamespaces = namespaces }
 }
 
+// WithAlertmanagerToken sets the alert receiver's rotating token source.
+func WithAlertmanagerToken(source func() (string, error)) Option {
+	return func(o *options) { o.alertToken = source }
+}
+
 // Start runs the API server, installs the manifests of pagerless-server and
 // pagerless-executor, and runs both. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
 	o := options{executionPoll: defaultExecutionPoll, verificationPoll: defaultVerificationPoll}
+	o.alertToken = func() (string, error) { return AlertmanagerToken, nil }
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -174,11 +184,15 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("create clientset: %v", err)
 	}
 	ctx := t.Context()
+	if err := c.Create(ctx, &corev1.Namespace{Name: "sandbox"}); err != nil {
+		t.Fatalf("create the allowlisted Workload namespace: %v", err)
+	}
 	executorDir := filepath.Join(root, "deploy", "pagerless-executor")
 	for _, manifest := range []string{
 		filepath.Join(deployDir, "namespace.yaml"),
 		filepath.Join(deployDir, "serviceaccounts.yaml"),
 		filepath.Join(deployDir, "rbac.yaml"),
+		filepath.Join(deployDir, "dry-run-policy.yaml"),
 		filepath.Join(executorDir, "serviceaccounts.yaml"),
 		filepath.Join(executorDir, "rbac.yaml"),
 	} {
@@ -235,6 +249,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ArgoCDURL:                env.ArgoCD.URL,
 		ArgoCDToken:              func() (string, error) { return env.ArgoCD.Token(), nil },
 		AlertmanagerURL:          env.Alertmanager.URL,
+		AlertmanagerToken:        o.alertToken,
 		VerificationPollInterval: o.verificationPoll,
 		AlertNamespaces:          o.alertNamespaces,
 		Clock:                    env.Clock,

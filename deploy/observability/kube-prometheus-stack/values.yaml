@@ -38,6 +38,8 @@ prometheusOperator:
 
 alertmanager:
   alertmanagerSpec:
+    secrets:
+      - pagerless-alertmanager
     resources:
       requests:
         cpu: 10m
@@ -64,9 +66,10 @@ alertmanager:
         webhook_configs:
           - url: http://pagerless-server.pagerless.svc:8080/v1/alerts/alertmanager
             send_resolved: true
-            # Bearer token authentication is added here, through http_config.authorization,
-            # by the receiver authentication follow-up.
-            http_config: {}
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager/secrets/pagerless-alertmanager/token
 
 grafana:
   resources:

@@ -74,6 +74,8 @@ type Config struct {
 	// AlertmanagerURL is the base URL of Alertmanager, which Verification asks whether the triggering alert has
 	// resolved. It is required.
 	AlertmanagerURL string
+	// AlertmanagerToken reads the bearer token required by the alert receiver. It is required.
+	AlertmanagerToken func() (string, error)
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
 	AgentServiceAccount string
@@ -155,6 +157,8 @@ func (c Config) validate() error {
 		return errors.New("an Argo CD token source is required")
 	case c.AlertmanagerURL == "":
 		return errors.New("an Alertmanager URL is required")
+	case c.AlertmanagerToken == nil:
+		return errors.New("an Alertmanager token source is required")
 	case c.WebhookListener != nil && c.WebhookCertDir == "":
 		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
@@ -321,6 +325,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Store:      store,
 		Namespace:  cfg.Namespace,
 		Namespaces: cfg.AlertNamespaces,
+		Token:      cfg.AlertmanagerToken,
 	}
 	mux := http.NewServeMux()
 	mux.Handle(alerts.Path, receiver)
