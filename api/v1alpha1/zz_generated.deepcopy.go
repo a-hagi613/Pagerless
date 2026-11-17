@@ -433,6 +433,10 @@ func (in *TriageStatus) DeepCopyInto(out *TriageStatus) {
 		*out = new(Execution)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.VerificationStartedAt != nil {
+		in, out := &in.VerificationStartedAt, &out.VerificationStartedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.VerificationChecks != nil {
 		in, out := &in.VerificationChecks, &out.VerificationChecks
 		*out = make([]VerificationCheck, len(*in))

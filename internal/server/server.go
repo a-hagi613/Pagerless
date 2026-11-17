@@ -1,4 +1,4 @@
-// Package server assembles pagerless-server: the Triage, TriageApproval, and execution reconcilers, the
+// Package server assembles pagerless-server: the Triage, TriageApproval, execution, and verification reconcilers, the
 // agent report endpoint, and the admission webhooks, run by one manager (ADR-0005).
 package server
 
@@ -33,6 +33,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/reportapi"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/triage"
+	"github.com/a-hagi613/pagerless/internal/verification"
 )
 
 const (
@@ -63,6 +64,14 @@ type Config struct {
 	// ExecutorToken returns the projected service account token, with the audience
 	// executorapi.Audience, that authenticates the server to the Executor. It is required.
 	ExecutorToken func() (string, error)
+	// ArgoCDURL is the base URL of the Argo CD API server, which Verification asks whether the merged change is
+	// synced. It is required.
+	ArgoCDURL string
+	// ArgoCDToken returns the bearer token that authenticates to the Argo CD API. It is required.
+	ArgoCDToken func() (string, error)
+	// AlertmanagerURL is the base URL of Alertmanager, which Verification asks whether the triggering alert has
+	// resolved. It is required.
+	AlertmanagerURL string
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
 	AgentServiceAccount string
@@ -91,11 +100,25 @@ type Config struct {
 	// ExecutionPollInterval is how often the Executor is asked whether an open pull request has merged.
 	// It defaults to controller.DefaultExecutionPollInterval.
 	ExecutionPollInterval time.Duration
+	// ArgoCDApplication is the Argo CD application that deploys the Sandbox. It defaults to
+	// verification.DefaultApplication.
+	ArgoCDApplication string
+	// VerificationWindow is how long Verification observes the Workload for new restarts and OOMKills.
+	// It defaults to verification.DefaultWindow, five minutes.
+	VerificationWindow time.Duration
+	// VerificationPollInterval is how often Verification checks a Triage.
+	// It defaults to controller.DefaultVerificationPollInterval.
+	VerificationPollInterval time.Duration
 
 	// WebhookHost, WebhookPort, and WebhookCertDir configure the admission webhook server.
 	WebhookHost    string
 	WebhookPort    int
 	WebhookCertDir string
+	// WebhookListener is an already-bound listener that the webhook server
+	// serves on. When it is set, the webhook server does not bind WebhookHost
+	// and WebhookPort when the manager starts; the listener carries the port
+	// for the whole serving span, so nothing can take it in between.
+	WebhookListener net.Listener
 	// HealthProbeAddress is the address of the health probes, or empty to disable them.
 	HealthProbeAddress string
 }
@@ -124,6 +147,14 @@ func (c Config) validate() error {
 		return errors.New("executor URL is required")
 	case c.ExecutorToken == nil:
 		return errors.New("executor token source is required")
+	case c.ArgoCDURL == "":
+		return errors.New("an Argo CD URL is required")
+	case c.ArgoCDToken == nil:
+		return errors.New("an Argo CD token source is required")
+	case c.AlertmanagerURL == "":
+		return errors.New("an Alertmanager URL is required")
+	case c.WebhookListener != nil && c.WebhookCertDir == "":
+		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
 	return nil
 }
@@ -150,6 +181,15 @@ func (c Config) withDefaults() Config {
 	if c.ExecutionPollInterval == 0 {
 		c.ExecutionPollInterval = controller.DefaultExecutionPollInterval
 	}
+	if c.ArgoCDApplication == "" {
+		c.ArgoCDApplication = verification.DefaultApplication
+	}
+	if c.VerificationWindow == 0 {
+		c.VerificationWindow = verification.DefaultWindow
+	}
+	if c.VerificationPollInterval == 0 {
+		c.VerificationPollInterval = controller.DefaultVerificationPollInterval
+	}
 	return c
 }
 
@@ -168,11 +208,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: cfg.HealthProbeAddress,
 		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}}},
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Host:    cfg.WebhookHost,
-			Port:    cfg.WebhookPort,
-			CertDir: cfg.WebhookCertDir,
-		}),
+		WebhookServer:          webhookServer(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create manager: %w", err)
@@ -231,6 +267,23 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 	if err := executions.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the execution controller: %w", err)
+	}
+
+	verifications := &controller.VerificationReconciler{
+		Client: mgr.GetClient(),
+		Status: store,
+		Verifier: &verification.Verifier{
+			Reader:       mgr.GetAPIReader(),
+			Applications: &verification.ArgoCD{BaseURL: cfg.ArgoCDURL, Token: cfg.ArgoCDToken},
+			Alerts:       &verification.Alertmanager{BaseURL: cfg.AlertmanagerURL, Clock: cfg.Clock},
+			Application:  cfg.ArgoCDApplication,
+		},
+		Clock:        cfg.Clock,
+		Window:       cfg.VerificationWindow,
+		PollInterval: cfg.VerificationPollInterval,
+	}
+	if err := verifications.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the verification controller: %w", err)
 	}
 
 	webhooks := mgr.GetWebhookServer()

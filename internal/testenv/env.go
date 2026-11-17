@@ -76,6 +76,10 @@ type Env struct {
 	Sandbox *BareRepo
 	// GitHub is the fake GitHub API that pagerless-executor opens pull requests on. Its repository is Sandbox.
 	GitHub *FakeGitHub
+	// ArgoCD is the fake Argo CD API that pagerless-server asks whether the merged change is synced.
+	ArgoCD *FakeArgoCD
+	// Alertmanager is the fake Alertmanager API that pagerless-server asks whether the triggering alert resolved.
+	Alertmanager *FakeAlertmanager
 	// ExecutorURL is the base URL of pagerless-executor, which runs in the harness under its own service account.
 	ExecutorURL string
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
@@ -85,11 +89,12 @@ type Env struct {
 }
 
 type options struct {
-	validators      func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	proposalPoll    time.Duration
-	executionPoll   time.Duration
-	agentDeadline   time.Duration
-	alertNamespaces []string
+	validators       func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll     time.Duration
+	executionPoll    time.Duration
+	verificationPoll time.Duration
+	agentDeadline    time.Duration
+	alertNamespaces  []string
 }
 
 // Option customizes the harness.
@@ -116,7 +121,7 @@ func WithAlertNamespaces(namespaces ...string) Option {
 // pagerless-executor, and runs both. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
-	o := options{executionPoll: defaultExecutionPoll}
+	o := options{executionPoll: defaultExecutionPoll, verificationPoll: defaultVerificationPoll}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -133,6 +138,17 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ErrorIfCRDPathMissing: true,
 		WebhookInstallOptions: envtest.WebhookInstallOptions{Paths: []string{filepath.Join(deployDir, "webhook.yaml")}},
 	}
+	// Serve the webhooks on a listener that is bound before the API server starts. envtest chooses a port by
+	// binding and immediately closing a listener, and the webhook server does not start until the manager does,
+	// so an unbound port can be taken by another listener or connection in between, after which the webhook
+	// server never starts. Serving the webhooks on the listener that reserved the port leaves no gap for that.
+	webhookListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for the webhook server: %v", err)
+	}
+	t.Cleanup(func() { _ = webhookListener.Close() })
+	testEnv.WebhookInstallOptions.LocalServingHost = "127.0.0.1"
+	testEnv.WebhookInstallOptions.LocalServingPort = webhookListener.Addr().(*net.TCPAddr).Port
 	cfg, err := testEnv.Start()
 	if err != nil {
 		t.Fatalf("start envtest: %v", err)
@@ -192,6 +208,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 	}
 	env.Sandbox = NewBareRepo(t)
 	env.GitHub = NewFakeGitHub(t, env.Sandbox)
+	env.ArgoCD = NewFakeArgoCD(t)
+	env.Alertmanager = NewFakeAlertmanager(t)
 	env.ExecutorURL = startExecutor(t, env)
 
 	validators := proposal.DefaultValidators()
@@ -202,21 +220,24 @@ func Start(t testing.TB, opts ...Option) *Env {
 		return env.issueToken(context.Background(), Namespace, server.DefaultServerServiceAccount, executorapi.Audience)
 	}
 	mgr, err := server.New(serverConfig, server.Config{
-		Namespace:             Namespace,
-		AgentImage:            AgentImage,
-		AgentServerURL:        env.ReportURL,
-		ReportListener:        listener,
-		ExecutorURL:           env.ExecutorURL,
-		ExecutorToken:         executorToken,
-		AgentDeadline:         o.agentDeadline,
-		ProposalPollInterval:  o.proposalPoll,
-		ExecutionPollInterval: o.executionPoll,
-		AlertNamespaces:       o.alertNamespaces,
-		Clock:                 env.Clock,
-		Validators:            validators,
-		WebhookHost:           testEnv.WebhookInstallOptions.LocalServingHost,
-		WebhookPort:           testEnv.WebhookInstallOptions.LocalServingPort,
-		WebhookCertDir:        testEnv.WebhookInstallOptions.LocalServingCertDir,
+		Namespace:                Namespace,
+		AgentImage:               AgentImage,
+		AgentServerURL:           env.ReportURL,
+		ReportListener:           listener,
+		ExecutorURL:              env.ExecutorURL,
+		ExecutorToken:            executorToken,
+		AgentDeadline:            o.agentDeadline,
+		ProposalPollInterval:     o.proposalPoll,
+		ExecutionPollInterval:    o.executionPoll,
+		ArgoCDURL:                env.ArgoCD.URL,
+		ArgoCDToken:              func() (string, error) { return env.ArgoCD.Token(), nil },
+		AlertmanagerURL:          env.Alertmanager.URL,
+		VerificationPollInterval: o.verificationPoll,
+		AlertNamespaces:          o.alertNamespaces,
+		Clock:                    env.Clock,
+		Validators:               validators,
+		WebhookCertDir:           testEnv.WebhookInstallOptions.LocalServingCertDir,
+		WebhookListener:          webhookListener,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)
