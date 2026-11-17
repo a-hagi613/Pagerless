@@ -163,16 +163,10 @@ data "aws_iam_policy_document" "destroy_trust" {
 # creates uses.
 data "aws_iam_policy_document" "destroy_identities" {
   statement {
-    sid    = "ManageThisProjectsIdentities"
+    sid    = "DeleteThisProjectsIdentities"
     effect = "Allow"
 
     actions = [
-      "iam:AddRoleToInstanceProfile",
-      "iam:AttachRolePolicy",
-      "iam:CreateInstanceProfile",
-      "iam:CreatePolicy",
-      "iam:CreatePolicyVersion",
-      "iam:CreateRole",
       "iam:DeleteInstanceProfile",
       "iam:DeletePolicy",
       "iam:DeletePolicyVersion",
@@ -185,21 +179,10 @@ data "aws_iam_policy_document" "destroy_identities" {
       "iam:GetRole",
       "iam:GetRolePolicy",
       "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfileTags",
       "iam:ListInstanceProfilesForRole",
-      "iam:ListPolicyTags",
       "iam:ListPolicyVersions",
       "iam:ListRolePolicies",
-      "iam:ListRoleTags",
-      "iam:PassRole",
       "iam:RemoveRoleFromInstanceProfile",
-      "iam:TagInstanceProfile",
-      "iam:TagPolicy",
-      "iam:TagRole",
-      "iam:UntagInstanceProfile",
-      "iam:UntagPolicy",
-      "iam:UntagRole",
-      "iam:UpdateAssumeRolePolicy",
     ]
 
     # Karpenter names the instance profiles it creates after the cluster with an
@@ -212,23 +195,21 @@ data "aws_iam_policy_document" "destroy_identities" {
   }
 }
 
-# Everything a teardown reads and deletes, and nothing that creates or starts
-# anything. PowerUserAccess would have been simpler to write but would also have
-# allowed this role to run instances and create clusters, which is more than a
-# destroy needs (spec #33, ticket #36).
+# Everything a teardown reads and deletes, and nothing that creates, tags or
+# starts anything (spec #33, ticket #36). The managed node group is an EKS
+# resource, so deleting it never touches Autoscaling directly, and the volumes
+# belong to the CSI driver rather than to this state.
 data "aws_iam_policy_document" "destroy" {
   statement {
     sid    = "ReadTheStackDuringDestroy"
     effect = "Allow"
 
     actions = [
-      "autoscaling:Describe*",
       "ec2:Describe*",
       "eks:Describe*",
       "eks:List*",
       "events:DescribeRule",
       "events:ListRules",
-      "events:ListTagsForResource",
       "events:ListTargetsByRule",
       "iam:Get*",
       "iam:List*",
@@ -238,7 +219,6 @@ data "aws_iam_policy_document" "destroy" {
       "kms:ListKeys",
       "kms:ListResourceTags",
       "logs:Describe*",
-      "logs:ListTags*",
       "sqs:GetQueueAttributes",
       "sqs:GetQueueUrl",
       "sqs:ListQueues",
@@ -255,12 +235,6 @@ data "aws_iam_policy_document" "destroy" {
     effect = "Allow"
 
     actions = [
-      "autoscaling:DeleteAutoScalingGroup",
-      "autoscaling:DeleteLaunchConfiguration",
-      "autoscaling:ResumeProcesses",
-      "autoscaling:SuspendProcesses",
-      "autoscaling:TerminateInstanceInAutoScalingGroup",
-      "autoscaling:UpdateAutoScalingGroup",
       "ec2:DeleteInternetGateway",
       "ec2:DeleteLaunchTemplate",
       "ec2:DeleteLaunchTemplateVersions",
@@ -268,15 +242,11 @@ data "aws_iam_policy_document" "destroy" {
       "ec2:DeleteSecurityGroup",
       "ec2:DeleteSubnet",
       "ec2:DeleteTags",
-      "ec2:DeleteVolume",
       "ec2:DeleteVpc",
       "ec2:DetachInternetGateway",
-      "ec2:DetachVolume",
       "ec2:DisassociateRouteTable",
-      "ec2:ModifyInstanceAttribute",
       "ec2:RevokeSecurityGroupEgress",
       "ec2:RevokeSecurityGroupIngress",
-      "ec2:TerminateInstances",
       "eks:DeleteAccessEntry",
       "eks:DeleteAddon",
       "eks:DeleteCluster",
