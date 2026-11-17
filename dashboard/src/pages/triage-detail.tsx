@@ -395,7 +395,11 @@ export function TriageDetailPage() {
                   className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-900 shadow-xs placeholder:text-slate-400"
                 />
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button disabled={deciding} onClick={() => void decide("Approved")}>
+                  <Button
+                    data-testid="approve"
+                    disabled={deciding}
+                    onClick={() => void decide("Approved")}
+                  >
                     {proposal.action === "NoAction" ? "Acknowledge Diagnosis" : "Approve"}
                   </Button>
                   <Button

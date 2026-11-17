@@ -27,11 +27,12 @@ test("an approver signs in, watches live steps, and approves", async ({ page }) 
   await page.locator("#password").fill(user.password);
   await page.locator("#kc-login").click();
 
-  await expect(page.getByRole("link", { name: "Start Triage" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Triage" }))
+    .toBeVisible();
   await expect(page.getByText(user.username, { exact: true })).toBeVisible();
 
   // Start a Triage for the checkout Deployment through the dashboard.
-  await page.getByRole("link", { name: "Start Triage" }).click();
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Triage" }).click();
   await page.locator("#workload").click();
   await page.getByRole("option", { name: /sandbox\/checkout/ }).click();
   await page.getByRole("button", { name: "Start Triage" }).click();
@@ -45,7 +46,7 @@ test("an approver signs in, watches live steps, and approves", async ({ page }) 
 
   // The Proposal arrives after the steps; approving records the Keycloak user.
   await page.locator("#decision-reason").fill("smoke test approval");
-  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await page.getByTestId("approve").click();
 
   await expect(page.getByTestId("decision-approver")).toHaveText(user.username);
   await expect(page.getByText("Approved", { exact: true })).toBeVisible();

@@ -71,7 +71,8 @@ def wait_for_keycloak(base, timeout=180):
             status, _ = request(base, "GET", "/realms/master")
             if status == 200:
                 return
-        except urllib.error.URLError:
+        except OSError:
+            # A starting Keycloak accepts the socket and resets the connection.
             pass
         time.sleep(1)
     raise RuntimeError("Keycloak did not answer its master realm in time")
@@ -89,9 +90,16 @@ def ensure_realm(base, token):
 
 
 def ensure_group(base, token):
-    _, groups = request(base, "GET", f"/admin/realms/{REALM}/groups?search={GROUP}&exact=true", token)
-    group = groups[0] if groups else require(base, "POST", f"/admin/realms/{REALM}/groups", token,
-                                             {"name": GROUP})
+    def find():
+        _, groups = request(base, "GET", f"/admin/realms/{REALM}/groups?search={GROUP}&exact=true", token)
+        return groups[0] if groups else None
+
+    group = find()
+    if group is None:
+        require(base, "POST", f"/admin/realms/{REALM}/groups", token, {"name": GROUP})
+        group = find()
+    if group is None:
+        raise RuntimeError(f"Keycloak did not create the {GROUP} group")
     return group["id"]
 
 
