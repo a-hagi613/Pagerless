@@ -1,0 +1,6 @@
+ARG BASE_IMAGE=ghcr.io/a-hagi613/pagerless-agent:0.1.0
+FROM ${BASE_IMAGE}
+
+USER 0:0
+COPY --chown=65532:65532 evals/e2e/fixtures/synthetic-oom.json /app/recordings/synthetic-oom.json
+USER 65532:65532

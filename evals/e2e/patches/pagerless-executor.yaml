@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerless-executor
+  namespace: pagerless
+spec:
+  template:
+    spec:
+      containers:
+        - name: executor
+          args:
+            - --github-token-file=/var/run/pagerless/github/token
+            - --github-api-url=https://sandbox-adapter.pagerless-e2e.svc:8443
+          env:
+            - name: SSL_CERT_FILE
+              value: /var/run/pagerless/e2e-ca/ca.crt
+            - name: GIT_SSL_CAINFO
+              value: /var/run/pagerless/e2e-ca/ca.crt
+          volumeMounts:
+            - name: pagerless-e2e-ca
+              mountPath: /var/run/pagerless/e2e-ca
+              readOnly: true
+      volumes:
+        - name: pagerless-e2e-ca
+          configMap:
+            name: pagerless-e2e-ca
