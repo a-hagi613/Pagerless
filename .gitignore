@@ -21,3 +21,12 @@ __pycache__/
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
+
+# Terraform working directories, local state and plans
+**/.terraform/
+**/.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+.tflint-cache/
+tfplan
+crash.log
