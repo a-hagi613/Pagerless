@@ -143,6 +143,10 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 	if errs := checkMerged(merged); len(errs) > 0 {
 		return proposal.Outcome{Errors: errs}, nil
 	}
+	if errs, err := v.checkUnschedulable(
+		ctx, live, workload, sourcePath, params.Container, merged); err != nil || len(errs) > 0 {
+		return proposal.Outcome{Errors: errs}, err
+	}
 	patch, err := checkout.Diff(ctx, sourcePath, rendered)
 	if err != nil {
 		return proposal.Outcome{}, err
@@ -215,6 +219,125 @@ func checkMerged(r corev1.ResourceRequirements) []agentapi.ValidationError {
 		}
 	}
 	return errs
+}
+
+// errNoKnownGood means that the bound of an unschedulable Workload cannot be
+// checked, because the Sandbox's known-good state does not declare the value.
+var errNoKnownGood = errors.New("the Unschedulable bound cannot be checked against the Sandbox's known-good state")
+
+// checkUnschedulable enforces the bound that applies when the live Workload's
+// requests cannot fit any node: the Proposal must set each such request within
+// the largest value that any node reports as allocatable, and no higher than
+// the value that the Sandbox's known-good state declares.
+func (v *Validator) checkUnschedulable(
+	ctx context.Context, live *liveWorkload, workload v1alpha1.WorkloadReference, sourcePath, container string,
+	merged corev1.ResourceRequirements,
+) ([]agentapi.ValidationError, error) {
+	var nodes corev1.NodeList
+	if err := v.cfg.Reader.List(ctx, &nodes); err != nil {
+		return nil, fmt.Errorf("list the nodes for the Unschedulable bound: %w", err)
+	}
+	largest := largestAllocatable(nodes.Items)
+	if len(largest) == 0 {
+		return nil, nil
+	}
+	current := findLiveContainer(live.podSpec, container).Resources.Requests
+	var constrained []corev1.ResourceName
+	for _, name := range sortedNames(current) {
+		request := current[name]
+		if allocatable, ok := largest[name]; !ok || request.Cmp(allocatable) > 0 {
+			constrained = append(constrained, name)
+		}
+	}
+	if len(constrained) == 0 {
+		return nil, nil
+	}
+	knownGood, err := v.knownGoodRequests(ctx, workload, sourcePath, container)
+	switch {
+	case errors.Is(err, errNoKnownGood):
+		return []agentapi.ValidationError{{Field: fieldPrefix, Message: err.Error()}}, nil
+	case err != nil:
+		return nil, err
+	}
+	var errs []agentapi.ValidationError
+	for _, name := range constrained {
+		field := fmt.Sprintf("%s.requests[%s]", fieldPrefix, name)
+		bound, declared := knownGood[name]
+		reach, reachable := largest[name]
+		requested := merged.Requests[name]
+		switch {
+		case !declared:
+			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
+				"%v: it declares no %s request for container %s", errNoKnownGood, name, container)})
+		case !reachable:
+			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
+				"no node reports allocatable %s, so a %s request cannot fit one", name, name)})
+		case reach.Cmp(requested) < 0:
+			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
+				"the Workload is unschedulable because its %s request %s fits no node; "+
+					"the request must not exceed the largest node's allocatable %s",
+				name, requested.String(), reach.String())})
+		case bound.Cmp(requested) < 0:
+			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
+				"the %s request %s exceeds the known-good request %s",
+				name, requested.String(), bound.String())})
+		}
+	}
+	return errs, nil
+}
+
+// largestAllocatable returns, for each resource, the largest allocatable value
+// that any node reports. A resource that no node reports is absent.
+func largestAllocatable(nodes []corev1.Node) corev1.ResourceList {
+	largest := corev1.ResourceList{}
+	for i := range nodes {
+		for name, quantity := range nodes[i].Status.Allocatable {
+			if current, ok := largest[name]; !ok || quantity.Cmp(current) > 0 {
+				largest[name] = quantity
+			}
+		}
+	}
+	return largest
+}
+
+// knownGoodRequests returns the requests that the Sandbox's known-good state
+// declares for the container. It reports errNoKnownGood when that state does
+// not declare them, because the bound must not be guessed.
+func (v *Validator) knownGoodRequests(
+	ctx context.Context, workload v1alpha1.WorkloadReference, sourcePath, container string,
+) (corev1.ResourceList, error) {
+	history, err := v.cfg.Sandbox.History(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = history.Close() }()
+	content, err := history.FileAtTag(ctx, sandbox.KnownGoodTag, sourcePath)
+	if errors.Is(err, sandbox.ErrNotFound) || errors.Is(err, sandbox.ErrInvalidPath) {
+		return nil, fmt.Errorf("%w: tag %s holds no %s", errNoKnownGood, sandbox.KnownGoodTag, sourcePath)
+	}
+	if err != nil {
+		return nil, err
+	}
+	docs, err := parseDocuments(content)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
+	}
+	index, err := findWorkload(docs, workload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
+	}
+	containerNode, err := findContainer(docs[index], container)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
+	}
+	_, resourcesValue := mapEntry(containerNode, "resources")
+	var knownGood corev1.ResourceRequirements
+	if resourcesValue != nil {
+		if knownGood, err = decodeResources(resourcesValue); err != nil {
+			return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
+		}
+	}
+	return knownGood.Requests, nil
 }
 
 func sortedNames(list corev1.ResourceList) []corev1.ResourceName {

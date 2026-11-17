@@ -82,6 +82,10 @@ rules:
     resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
     resourceNames: [pagerless-server]
     verbs: [get, patch]
+  # Reads each node's allocatable resources for the Unschedulable bound of PatchResources Validation.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
