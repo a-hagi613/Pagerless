@@ -34,7 +34,12 @@ const (
 func dashboardGet(t *testing.T, env *testenv.Env, target string) (*http.Response, []byte) {
 	t.Helper()
 	client := &http.Client{Timeout: 10 * time.Second}
-	response, err := client.Get(env.DashboardURL + target)
+	request, err := http.NewRequest(http.MethodGet, env.DashboardURL+target, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", target, err)
+	}
+	request.AddCookie(env.Dashboard.Cookie)
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatalf("GET %s: %v", target, err)
 	}
@@ -407,6 +412,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	request.AddCookie(env.Dashboard.Cookie)
 	client := &http.Client{Timeout: 30 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
@@ -469,6 +475,7 @@ func TestDashboardRefusesAnUnknownTriageStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	request.AddCookie(env.Dashboard.Cookie)
 	response, err := (&http.Client{}).Do(request)
 	if err != nil {
 		t.Fatalf("open an absent stream: %v", err)

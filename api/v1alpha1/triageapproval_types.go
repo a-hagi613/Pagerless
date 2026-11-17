@@ -47,7 +47,9 @@ type TriageApprovalSpec struct {
 	Reason string `json:"reason,omitempty"`
 
 	// Approver is the identity of the requester. A mutating admission webhook sets it from the admission
-	// request and overwrites any value the client supplied, so it cannot be forged.
+	// request; the one requester that may do otherwise is pagerless-server's service account, which asserts
+	// the dashboard user it verified through Keycloak, and the validating webhook accepts that only for a
+	// member of the Keycloak approvers group (ADR-0020).
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	Approver string `json:"approver,omitempty"`

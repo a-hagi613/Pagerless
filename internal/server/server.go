@@ -79,6 +79,13 @@ type Config struct {
 	MetricsListener net.Listener
 	// DashboardListener is the listener the dashboard and its read-only API serve on. It is required.
 	DashboardListener net.Listener
+	// DashboardAuth authenticates dashboard users and serves the sign-in routes. It is required.
+	DashboardAuth dashboardapi.Auth
+	// WorkloadNamespaces are the namespaces whose Workloads Start Triage offers.
+	WorkloadNamespaces []string
+	// Approvers answers whether a user that pagerless-server asserts may approve. An asserted approver is
+	// refused when it is nil.
+	Approvers admissionpkg.ApproverGroups
 	// GrafanaURL is the Grafana base URL that the browser can reach, for example http://localhost:3000 while the
 	// Grafana Service is port-forwarded. Empty disables the embedded Grafana panels.
 	GrafanaURL string
@@ -212,6 +219,8 @@ func (c Config) validate() error {
 		return errors.New("a metrics listener is required")
 	case c.DashboardListener == nil:
 		return errors.New("a dashboard listener is required")
+	case c.DashboardAuth == nil:
+		return errors.New("dashboard authentication is required")
 	}
 	// A Job cannot authenticate to Keycloak or reach the MCP gateway without this.
 	return c.AgentRuntime.ValidateGateway()
@@ -418,19 +427,24 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 
 	webhooks := mgr.GetWebhookServer()
+	serverUsername := fmt.Sprintf("system:serviceaccount:%s:%s", cfg.Namespace, cfg.ServerServiceAccount)
 	webhooks.Register(admissionpkg.CreatePath, &webhook.Admission{Handler: &admissionpkg.CreateValidator{
 		Reader:    mgr.GetAPIReader(),
 		Namespace: cfg.Namespace,
 	}})
-	webhooks.Register(admissionpkg.ApprovalStampPath, &webhook.Admission{Handler: admissionpkg.ApprovalStamper{}})
+	webhooks.Register(admissionpkg.ApprovalStampPath, &webhook.Admission{Handler: admissionpkg.ApprovalStamper{
+		ServerUsername: serverUsername,
+	}})
 	webhooks.Register(admissionpkg.ApprovalValidatePath, &webhook.Admission{Handler: &admissionpkg.ApprovalValidator{
-		Reader:    mgr.GetAPIReader(),
-		Namespace: cfg.Namespace,
-		Proposals: proposals,
-		Clock:     cfg.Clock,
+		Reader:         mgr.GetAPIReader(),
+		Namespace:      cfg.Namespace,
+		Proposals:      proposals,
+		Clock:          cfg.Clock,
+		ServerUsername: serverUsername,
+		Approvers:      cfg.Approvers,
 	}})
 	webhooks.Register(admissionpkg.StatusPath, &webhook.Admission{Handler: &admissionpkg.StatusGuard{
-		ServerUsername: fmt.Sprintf("system:serviceaccount:%s:%s", cfg.Namespace, cfg.ServerServiceAccount),
+		ServerUsername: serverUsername,
 	}})
 
 	handler := &reportapi.Handler{
@@ -460,13 +474,18 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err := mgr.Add(serve("metrics API", cfg.MetricsListener, metricsAPI.Handler())); err != nil {
 		return nil, fmt.Errorf("add the metrics API: %w", err)
 	}
-	// The dashboard reads through the manager's client, so it inherits the server's RBAC, and its API never writes.
+	// The dashboard reads through the manager's client, so it inherits the server's RBAC. Its write routes run as
+	// the server's service account and assert the dashboard user on the TriageApproval (ADR-0020).
 	dashboard := dashboardapi.New(dashboardapi.Config{
-		Namespace: cfg.Namespace,
-		Reader:    mgr.GetClient(),
-		History:   historyStore,
-		Broker:    broker,
-		Clock:     cfg.Clock,
+		Namespace:          cfg.Namespace,
+		Reader:             mgr.GetClient(),
+		Writer:             mgr.GetClient(),
+		Workloads:          mgr.GetAPIReader(),
+		WorkloadNamespaces: cfg.WorkloadNamespaces,
+		Auth:               cfg.DashboardAuth,
+		History:            historyStore,
+		Broker:             broker,
+		Clock:              cfg.Clock,
 		Grafana: dashboardapi.GrafanaConfig{
 			BaseURL:             cfg.GrafanaURL,
 			MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
