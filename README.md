@@ -120,7 +120,7 @@ To start a Triage manually, use `kubectl triage --context kind-pagerless --names
 
 ### Run the isolated end-to-end harness
 
-The `make e2e` target uses the ordinary local stack and a local Git/GitHub adapter with disposable read/write credentials. It exercises real Kubernetes, Argo CD, Git commits and the upstream MCP images with the explicitly synthetic recording at `evals/e2e/fixtures/synthetic-oom.json`. It neither needs a paid model key nor mutates your remote Sandbox. CI runs this harness on every pull request, and it is the same flow that was validated locally against the pinned platform commit.
+The `make e2e` target uses the ordinary local stack and a local Git/GitHub adapter with disposable read/write credentials. It exercises real Kubernetes, Argo CD, Git commits and the upstream MCP images with the explicitly synthetic recording at `evals/e2e/fixtures/synthetic-oom.json`. It neither needs a paid model key nor mutates your remote Sandbox. CI runs this harness for pull requests and pushes into `main` or `integration/*`, for the nightly scheduled run and for a manual dispatch, and skips changes that touch only Markdown or `docs/`; it is the same flow that was validated locally against the pinned platform commit.
 
 A local run requires the exact platform commit already pushed to the public repository:
 
@@ -160,7 +160,7 @@ The observability stack runs in `monitoring`. Grafana has Loki and Tempo data so
 kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, credential-free kind integration, and versioned runtime image publication on release tags. The `v0.1.0` tag published the server, Executor and agent images, and anonymous registry pulls succeed for all three.
+Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) runs the Go, agent, dashboard and manifest checks on every push and pull request, the credential-free kind integration for pull requests and pushes into `main` or `integration/*` as well as the nightly schedule and a manual dispatch, and versioned runtime image publication on release tags. The `v0.1.0` tag published the server, Executor and agent images, and anonymous registry pulls succeed for all three.
 
 ## Roadmap
 
