@@ -16,5 +16,10 @@ RUN uv sync --locked --no-install-project
 COPY agent/src/ ./src/
 RUN uv sync --locked --no-dev
 
+ARG VERSION=local
+ARG VCS_REF=local
+LABEL org.opencontainers.image.source="https://github.com/a-hagi613/pagerless" \
+	org.opencontainers.image.version="$VERSION" \
+	org.opencontainers.image.revision="$VCS_REF"
 USER 65532:65532
 ENTRYPOINT ["python", "-m", "pagerless_agent"]

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import selectors
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +31,14 @@ def triage_snapshot() -> dict[str, Any] | None:
     return max(items, key=lambda item: item.get("metadata", {}).get("creationTimestamp", ""))
 
 
+def complete_lines(buffer: bytearray) -> list[bytes]:
+    lines = []
+    while (newline := buffer.find(b"\n")) >= 0:
+        lines.append(bytes(buffer[:newline]))
+        del buffer[: newline + 1]
+    return lines
+
+
 def collect(history: Path, snapshot: Path, timeout: int) -> None:
     command = [
         "kubectl", "--context", "kind-pagerless", "-n", "pagerless", "get", "triages",
@@ -36,7 +46,7 @@ def collect(history: Path, snapshot: Path, timeout: int) -> None:
         "-o", "custom-columns=NAME:.metadata.name,WORKLOAD:.spec.workload.name,PHASE:.status.phase",
     ]
     try:
-        watcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        watcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     except OSError as error:
         raise RuntimeError("could not start the Triage watch") from error
     deadline = time.monotonic() + timeout
@@ -46,31 +56,37 @@ def collect(history: Path, snapshot: Path, timeout: int) -> None:
             raise RuntimeError("kubectl did not provide a Triage watch stream")
         with selectors.DefaultSelector() as selector:
             selector.register(watcher.stdout, selectors.EVENT_READ)
+            pending = bytearray()
             while time.monotonic() < deadline:
                 if not selector.select(timeout=min(1, deadline - time.monotonic())):
                     if watcher.poll() is not None:
                         raise RuntimeError("the Kubernetes Triage watch exited unexpectedly")
                     continue
-                line = watcher.stdout.readline()
-                if not line:
+                chunk = os.read(watcher.stdout.fileno(), 65536)
+                if not chunk:
                     if watcher.poll() is not None:
                         raise RuntimeError("the Kubernetes Triage watch exited unexpectedly")
                     continue
-                fields = line.split()
-                if len(fields) < 3 or fields[1] != "checkout":
-                    continue
-                phase = fields[-1]
-                if phase and phase != last_phase:
-                    with history.open("a", encoding="utf-8") as output:
-                        output.write(phase + "\n")
-                    last_phase = phase
-                    current = triage_snapshot()
-                    if current is not None:
-                        snapshot.write_text(json.dumps(current), encoding="utf-8")
-                if phase == "Recovered":
-                    return
-                if phase in {"NotRecovered", "Failed", "Invalid", "Expired", "Rejected"}:
-                    raise RuntimeError(f"the checkout Triage ended in {phase}")
+                pending.extend(chunk)
+                for raw_line in complete_lines(pending):
+                    line = raw_line.decode("utf-8", errors="replace")
+                    fields = line.split()
+                    if len(fields) < 3 or fields[1] != "checkout":
+                        continue
+                    phase = fields[-1]
+                    if phase and phase != last_phase:
+                        observed = datetime.now(timezone.utc)
+                        current = triage_snapshot()
+                        if current is not None:
+                            snapshot.write_text(json.dumps(current), encoding="utf-8")
+                        event = {"phase": phase, "observedAt": observed.isoformat()}
+                        with history.open("a", encoding="utf-8") as output:
+                            output.write(json.dumps(event) + "\n")
+                        last_phase = phase
+                    if phase == "Recovered":
+                        return
+                    if phase in {"NotRecovered", "Failed", "Invalid", "Expired", "Rejected"}:
+                        raise RuntimeError(f"the checkout Triage ended in {phase}")
         raise RuntimeError("the checkout Triage did not reach Recovered before timeout")
     finally:
         watcher.terminate()
@@ -103,7 +119,8 @@ def verify(snapshot: Path, history: Path) -> None:
         raise RuntimeError(f"the final Triage phase is {status.get('phase')!r}, not Recovered")
     if (status.get("proposal") or {}).get("action") != "PatchResources":
         raise RuntimeError("the agent did not propose PatchResources")
-    phases = history.read_text(encoding="utf-8").splitlines()
+    events = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    phases = [event["phase"] for event in events]
     required = ["Pending", "Investigating", "Proposed", "Approved", "Executing", "Verifying", "Recovered"]
     cursor = 0
     for phase in phases:
@@ -138,6 +155,17 @@ def verify(snapshot: Path, history: Path) -> None:
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     if elapsed < 300:
         raise RuntimeError(f"Verification ended after {elapsed:.1f}s; at least 300s is required")
+    verifying_event = next((event for event in events if event["phase"] == "Verifying"), None)
+    recovered_event = next((event for event in events if event["phase"] == "Recovered"), None)
+    if not verifying_event or not recovered_event:
+        raise RuntimeError("the observer did not promptly record Verifying and Recovered")
+    verify_observed = datetime.fromisoformat(verifying_event["observedAt"])
+    recovered_observed = datetime.fromisoformat(recovered_event["observedAt"])
+    if abs((verify_observed - start_time).total_seconds()) > 60:
+        raise RuntimeError("the Verifying phase was not observed near its server start timestamp")
+    observed_window = (recovered_observed - verify_observed).total_seconds()
+    if observed_window < 300:
+        raise RuntimeError(f"the observed Verification window was {observed_window:.1f}s; at least 300s is required")
     checks = status.get("verificationChecks", [])
     if len(checks) < 4 or any(check.get("passed") is not True for check in checks):
         raise RuntimeError(f"the deterministic Verification checks did not all pass: {checks}")

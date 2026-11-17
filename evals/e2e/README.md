@@ -20,4 +20,16 @@ healthy, reset Sandbox and the generated state for a coordinated live capture.
 The retained mode prints the state directory; it contains disposable adapter
 tokens and TLS private material and must be kept private. Set
 `PAGERLESS_E2E_REUSE_CLUSTER=1` only when reusing the isolated Pagerless E2E
-cluster. The runner never reads the repository's `.env` file.
+cluster. A local run must set `PLATFORM_REVISION` to the full SHA of the exact
+commit already pushed to the public repository; CI uses its triggering commit
+SHA. The runner never silently targets `main` and never reads the repository's
+`.env` file.
+
+After `make dev` converges, the runner saves and pauses automated sync for the
+Argo CD `root`, `pagerless-server`, `pagerless-executor`, and `mcp` Applications
+before applying the E2E TLS and relay overlay patches. The `sandbox` Application
+keeps automated sync, so the tested merge is still applied by Argo CD. A
+default run deletes its cluster, restoring the unmodified Argo state. A
+retained run leaves those four Applications paused for the coordinated capture;
+after capture, restore their saved policies with
+`bash evals/e2e/restore.sh <retained-state-directory>`.

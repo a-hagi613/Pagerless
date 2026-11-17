@@ -13,5 +13,10 @@ FROM alpine:3.23.8
 
 RUN apk add --no-cache ca-certificates-bundle=20261020-r0 git=2.52.1-r0
 COPY --from=build /out/pagerless-server /usr/local/bin/pagerless-server
+ARG VERSION=local
+ARG VCS_REF=local
+LABEL org.opencontainers.image.source="https://github.com/a-hagi613/pagerless" \
+	org.opencontainers.image.version="$VERSION" \
+	org.opencontainers.image.revision="$VCS_REF"
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/pagerless-server"]
