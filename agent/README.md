@@ -17,9 +17,9 @@ The Anthropic provider reads `ANTHROPIC_API_KEY`. Bedrock uses the AWS SDK crede
 
 ## Evidence and tool policy
 
-The deterministic Context Bundle reads the Workload's status and selector, its pods in creation order, associated events, bounded recent logs, Argo CD status, and the newest Sandbox commits. The pinned Kubernetes MCP service supplies structured resource objects and event rows; the agent does not parse rendered tables or YAML.
+The deterministic Context Bundle reads the Workload's status and selector, its pods in creation order, associated events, bounded recent logs, Argo CD status, the active Chaos Mesh experiments that select its pods, and the newest Sandbox commits. The pinned Kubernetes MCP service supplies structured resource objects and event rows; the agent does not parse rendered tables or YAML.
 
-Tools are named with service prefixes (`k8s__`, `grafana__`, `argocd__`, and `github__`). Only explicitly allowlisted read tools are advertised or callable. Kubernetes calls cannot select another namespace or cluster, read Secrets, execute commands, proxy, or port-forward. GitHub calls are restricted to the configured Sandbox and Argo CD calls to its application. Server-side read-only modes, scoped service credentials, and Kubernetes RBAC enforce independent boundaries.
+Tools are named with service prefixes (`k8s__`, `grafana__`, `argocd__`, and `github__`). Only explicitly allowlisted read tools are advertised or callable. Kubernetes calls cannot select another namespace or cluster, read Secrets, execute commands, proxy, or port-forward, and the only custom resource they may read is `chaos-mesh.org/v1alpha1` `StressChaos`. GitHub calls are restricted to the configured Sandbox and Argo CD calls to its application. Server-side read-only modes, scoped service credentials, and Kubernetes RBAC enforce independent boundaries.
 
 ## Replay capture
 

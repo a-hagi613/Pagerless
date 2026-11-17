@@ -45,7 +45,18 @@ _ALLOWED_TOOLS: dict[str, frozenset[str]] = {
     ),
     "github": frozenset({"list_commits", "get_commit", "get_file_contents", "get_pull_request"}),
 }
-_KINDS = frozenset({"Pod", "Deployment", "StatefulSet", "ReplicaSet", "Event"})
+# Each readable kind is bound to the API version that serves it, so that a read
+# cannot reach a custom resource outside the allowlisted group. StressChaos is
+# the only Chaos Mesh kind the agent may read, and only to see the external
+# cause of a failure (spec #16, Scenario 9).
+_READABLE_API_VERSIONS = {
+    "Pod": frozenset({"v1"}),
+    "Deployment": frozenset({"apps/v1"}),
+    "StatefulSet": frozenset({"apps/v1"}),
+    "ReplicaSet": frozenset({"apps/v1"}),
+    "Event": frozenset({"v1", "events.k8s.io/v1"}),
+    "StressChaos": frozenset({"chaos-mesh.org/v1alpha1"}),
+}
 _MAX_DISCOVERY_PAGES = 20
 
 
@@ -201,7 +212,9 @@ class MCPTools:
             args["namespace"] = self._namespace
             if tool in {"resources_get", "resources_list"}:
                 kind = args.get("kind")
-                if kind not in _KINDS or args.get("apiVersion") not in {"v1", "apps/v1", "events.k8s.io/v1"}:
+                if kind not in _READABLE_API_VERSIONS or (
+                    args.get("apiVersion") not in _READABLE_API_VERSIONS[kind]
+                ):
                     raise ToolPolicyError("this Kubernetes resource kind is not allowlisted")
         elif server == "github":
             if (
