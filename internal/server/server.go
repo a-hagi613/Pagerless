@@ -1,4 +1,4 @@
-// Package server assembles pagerless-server: the Triage reconciler, the agent
+// Package server assembles pagerless-server: the Triage and TriageApproval reconcilers, the agent
 // report endpoint, and the admission webhooks, run by one manager (ADR-0005).
 package server
 
@@ -196,10 +196,27 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("set up the Triage controller: %w", err)
 	}
 
+	approvals := &controller.ApprovalReconciler{
+		Client:    mgr.GetClient(),
+		Status:    store,
+		Proposals: proposals,
+		Clock:     cfg.Clock,
+	}
+	if err := approvals.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the TriageApproval controller: %w", err)
+	}
+
 	webhooks := mgr.GetWebhookServer()
 	webhooks.Register(admissionpkg.CreatePath, &webhook.Admission{Handler: &admissionpkg.CreateValidator{
 		Reader:    mgr.GetAPIReader(),
 		Namespace: cfg.Namespace,
+	}})
+	webhooks.Register(admissionpkg.ApprovalStampPath, &webhook.Admission{Handler: admissionpkg.ApprovalStamper{}})
+	webhooks.Register(admissionpkg.ApprovalValidatePath, &webhook.Admission{Handler: &admissionpkg.ApprovalValidator{
+		Reader:    mgr.GetAPIReader(),
+		Namespace: cfg.Namespace,
+		Proposals: proposals,
+		Clock:     cfg.Clock,
 	}})
 	webhooks.Register(admissionpkg.StatusPath, &webhook.Admission{Handler: &admissionpkg.StatusGuard{
 		ServerUsername: fmt.Sprintf("system:serviceaccount:%s:%s", cfg.Namespace, cfg.ServerServiceAccount),

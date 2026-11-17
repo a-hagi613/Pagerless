@@ -53,6 +53,8 @@ func run() error {
 			"name of the Service that fronts the admission webhooks")
 		webhookConfig = flag.String("webhook-config", "pagerless-server",
 			"name of the ValidatingWebhookConfiguration that receives the certificate authority")
+		mutatingWebhookConfig = flag.String("mutating-webhook-config", "pagerless-server",
+			"name of the MutatingWebhookConfiguration that receives the certificate authority")
 		agentAccount = flag.String("agent-service-account", server.DefaultAgentServiceAccount,
 			"service account that agent Jobs run as")
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
@@ -90,11 +92,12 @@ func run() error {
 		return fmt.Errorf("create client: %w", err)
 	}
 	if _, err := webhooktls.Provision(ctx, plain, webhooktls.Options{
-		ServiceName: *webhookService,
-		Namespace:   *namespace,
-		ConfigName:  *webhookConfig,
-		CertDir:     *webhookCertDir,
-		Now:         time.Now(),
+		ServiceName:        *webhookService,
+		Namespace:          *namespace,
+		ConfigName:         *webhookConfig,
+		MutatingConfigName: *mutatingWebhookConfig,
+		CertDir:            *webhookCertDir,
+		Now:                time.Now(),
 	}); err != nil {
 		return fmt.Errorf("provision webhook TLS: %w", err)
 	}

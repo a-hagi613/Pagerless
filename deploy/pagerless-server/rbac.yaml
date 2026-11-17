@@ -11,6 +11,10 @@ rules:
   - apiGroups: [pagerless.dev]
     resources: [triages/status]
     verbs: [get, update, patch]
+  # Reads each TriageApproval and applies its decision to the Triage; it never creates or changes one.
+  - apiGroups: [pagerless.dev]
+    resources: [triageapprovals]
+    verbs: [get, list, watch]
   # Needed to set blockOwnerDeletion on the agent Job's owner reference.
   - apiGroups: [pagerless.dev]
     resources: [triages/finalizers]
@@ -53,7 +57,7 @@ rules:
     verbs: [get, update]
   # Publishes the generated certificate authority in its own webhook configuration.
   - apiGroups: [admissionregistration.k8s.io]
-    resources: [validatingwebhookconfigurations]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
     resourceNames: [pagerless-server]
     verbs: [get, patch]
 ---
@@ -69,3 +73,20 @@ subjects:
   - kind: ServiceAccount
     name: pagerless-server
     namespace: pagerless
+---
+# Bind this Role to the people who may approve or reject a Proposal. Creating a
+# TriageApproval is the only act that moves a Proposed Triage forward, so
+# Kubernetes RBAC decides who may approve (ADR-0004). It grants no write access
+# to Triages or their status.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pagerless-approver
+  namespace: pagerless
+rules:
+  - apiGroups: [pagerless.dev]
+    resources: [triages, triageapprovals]
+    verbs: [get, list, watch]
+  - apiGroups: [pagerless.dev]
+    resources: [triageapprovals]
+    verbs: [create]

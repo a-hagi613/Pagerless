@@ -40,9 +40,24 @@ func TestProvisionPublishesACertificateAuthorityThatTrustsTheServingPair(t *test
 		ConfigName:  serverName,
 		CertDir:     dir,
 		Now:         time.Now(),
+
+		MutatingConfigName: serverName,
 	})
 	if err != nil {
 		t.Fatalf("Provision() error = %v", err)
+	}
+
+	var mutating admissionregistrationv1.MutatingWebhookConfiguration
+	if err := env.Client.Get(t.Context(), types.NamespacedName{Name: serverName}, &mutating); err != nil {
+		t.Fatal(err)
+	}
+	if len(mutating.Webhooks) == 0 {
+		t.Fatal("the mutating webhook configuration has no webhooks")
+	}
+	for _, w := range mutating.Webhooks {
+		if !bytes.Equal(w.ClientConfig.CABundle, bundle.CACertPEM) {
+			t.Errorf("mutating webhook %s: caBundle was not replaced with the generated certificate authority", w.Name)
+		}
 	}
 
 	var config admissionregistrationv1.ValidatingWebhookConfiguration
