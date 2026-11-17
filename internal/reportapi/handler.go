@@ -48,18 +48,43 @@ var errReportRaced = errors.New("another report for the Triage was recorded firs
 // errNoFindings is returned when a report would leave the Diagnosis without a cited Finding.
 var errNoFindings = errors.New("the report must carry at least one finding")
 
+// errNotVerified is returned when a Narrative request arrives before Verification has reached a terminal outcome.
+var errNotVerified = errors.New("the Triage has not reached a terminal Verification outcome")
+
+// errNarrativeRecorded is returned when the Triage already stores a different Narrative.
+var errNarrativeRecorded = errors.New("the Triage already records a different Narrative")
+
 // ServeHTTP routes requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/triages/{name}/events", h.handle(h.events))
 	mux.HandleFunc("POST /v1/triages/{name}/report", h.handle(h.report))
+	mux.HandleFunc("GET /v1/triages/{name}/narrative", h.handleNarrative(h.narrativeRecord))
+	mux.HandleFunc("POST /v1/triages/{name}/narrative", h.handleNarrative(h.narrative))
 	mux.ServeHTTP(w, r)
 }
 
 type endpoint func(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage)
 
-// handle authenticates the caller as the Triage's Job, then runs the endpoint.
+// authorizer checks that the authenticated caller may act on the Triage.
+type authorizer func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error
+
+// handle authenticates the caller as the Triage's investigation Job, then runs the endpoint.
 func (h *Handler) handle(next endpoint) http.HandlerFunc {
+	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+		return h.Auth.Authorize(ctx, caller, t)
+	}, next)
+}
+
+// handleNarrative authenticates the caller as the Triage's Narrative Job, then runs the endpoint.
+func (h *Handler) handleNarrative(next endpoint) http.HandlerFunc {
+	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+		return h.Auth.AuthorizeNarrative(ctx, caller, t)
+	}, next)
+}
+
+// serve authenticates the caller, finds the Triage, authorizes the caller for it, and runs the endpoint.
+func (h *Handler) serve(authorize authorizer, next endpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -82,7 +107,7 @@ func (h *Handler) handle(next endpoint) http.HandlerFunc {
 			h.writeInternal(ctx, w, err)
 			return
 		}
-		if err := h.Auth.Authorize(ctx, caller, &t); err != nil {
+		if err := authorize(ctx, caller, &t); err != nil {
 			h.writeAuthError(ctx, w, err)
 			return
 		}
@@ -256,6 +281,10 @@ func (h *Handler) writeUpdateError(ctx context.Context, w http.ResponseWriter, e
 		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNotInvestigating.Error()})
 	case errors.Is(err, errReportRaced):
 		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errReportRaced.Error()})
+	case errors.Is(err, errNotVerified):
+		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNotVerified.Error()})
+	case errors.Is(err, errNarrativeRecorded):
+		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNarrativeRecorded.Error()})
 	case errors.Is(err, errNoFindings):
 		writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{
 			Errors: []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}},
@@ -263,6 +292,53 @@ func (h *Handler) writeUpdateError(ctx context.Context, w http.ResponseWriter, e
 	default:
 		h.writeInternal(ctx, w, err)
 	}
+}
+
+// narrativeRecord answers the Narrative Job with the Triage rendered for description.
+func (h *Handler) narrativeRecord(_ context.Context, w http.ResponseWriter, _ io.Reader, t *v1alpha1.Triage) {
+	if !verificationConcluded(t.Status.Phase) {
+		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNotVerified.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, agentapi.NarrativeRecord{
+		Workload: t.Spec.Workload,
+		Text:     narrativeRecordText(t),
+	})
+}
+
+// narrative stores the Narrative that the Job wrote. It is the only place the
+// Narrative is written, and it changes nothing else in the status: a Job that
+// fails or times out never reaches it.
+func (h *Handler) narrative(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage) {
+	var report agentapi.NarrativeReport
+	if !decode(w, body, &report) {
+		return
+	}
+	if errs := report.Check(); len(errs) > 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs})
+		return
+	}
+	narrative := strings.TrimSpace(report.Narrative)
+	_, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+		if !verificationConcluded(latest.Status.Phase) {
+			return errNotVerified
+		}
+		if latest.Status.Narrative != "" && latest.Status.Narrative != narrative {
+			return errNarrativeRecorded
+		}
+		latest.Status.Narrative = narrative
+		return nil
+	})
+	if err != nil {
+		h.writeUpdateError(ctx, w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// verificationConcluded reports whether Verification has reached a terminal outcome.
+func verificationConcluded(phase v1alpha1.Phase) bool {
+	return phase == v1alpha1.PhaseRecovered || phase == v1alpha1.PhaseNotRecovered
 }
 
 // mergeFindings appends the new Findings that are not already recorded, up to

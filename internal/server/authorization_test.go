@@ -75,7 +75,7 @@ func TestServerCannotCreateJobsThatEscapeTheAgentBoundary(t *testing.T) {
 		}},
 		{"unrelated capture claim", func(p *corev1.PodSpec) {
 			p.Volumes = append(p.Volumes, corev1.Volume{Name: "recordings",
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "private-data"}})
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: unrelatedClaimName}})
 		}},
 		{"host path", func(p *corev1.PodSpec) {
 			p.Volumes = append(p.Volumes, corev1.Volume{Name: "host", HostPath: &corev1.HostPathVolumeSource{Path: "/"}})
