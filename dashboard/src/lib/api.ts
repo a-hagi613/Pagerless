@@ -155,19 +155,78 @@ export interface TriageFilters {
   since?: string;
 }
 
+export interface Session {
+  authenticated: boolean;
+  username: string;
+  subject: string;
+  groups: string[];
+  canApprove: boolean;
+  csrfToken: string;
+  expiresAt: string;
+}
+
+export interface WorkloadOption {
+  kind: "Deployment" | "StatefulSet";
+  namespace: string;
+  name: string;
+}
+
+export interface DecisionAnswer {
+  name: string;
+  triage: string;
+  decision: "Approved" | "Rejected";
+  approver: string;
+}
+
+export interface StartAnswer {
+  name: string;
+  alreadyActive: boolean;
+}
+
 interface ListResponse {
   triages: TriageSummary[];
+}
+
+interface WorkloadListResponse {
+  workloads: WorkloadOption[];
 }
 
 interface ErrorResponse {
   error?: string;
 }
 
-async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
+// The session's CSRF token, which every write repeats in the X-CSRF-Token header.
+let csrfToken = "";
+
+export function setCSRFToken(token: string): void {
+  csrfToken = token;
+}
+
+async function requestJSON<T>(
+  path: string,
+  init: RequestInit = {},
+  signal?: AbortSignal,
+): Promise<T> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  if (init.body !== undefined) {
+    headers.set("Content-Type", "application/json");
+  }
+  if (method !== "GET" && method !== "HEAD") {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
   const response = await fetch(path, {
-    headers: { Accept: "application/json" },
+    ...init,
+    headers,
     signal,
+    credentials: "same-origin",
   });
+  if (response.status === 401) {
+    // The session expired or was revoked. The server's sign-in route starts the flow.
+    window.location.assign("/login");
+    throw new Error("the session has ended; sign in again");
+  }
   if (!response.ok) {
     let message = `${String(response.status)} ${response.statusText}`;
     try {
@@ -183,6 +242,12 @@ async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function getSession(signal?: AbortSignal): Promise<Session> {
+  const session = await requestJSON<Session>("/api/session", {}, signal);
+  setCSRFToken(session.csrfToken);
+  return session;
+}
+
 export async function listTriages(
   filters: TriageFilters,
   signal?: AbortSignal,
@@ -194,15 +259,56 @@ export async function listTriages(
     }
   }
   const encoded = query.toString();
-  const response = await getJSON<ListResponse>(
+  const response = await requestJSON<ListResponse>(
     encoded === "" ? "/api/triages" : `/api/triages?${encoded}`,
+    {},
     signal,
   );
   return response.triages;
 }
 
 export async function getTriage(name: string, signal?: AbortSignal): Promise<TriageDetail> {
-  return await getJSON<TriageDetail>(`/api/triages/${encodeURIComponent(name)}`, signal);
+  return await requestJSON<TriageDetail>(`/api/triages/${encodeURIComponent(name)}`, {}, signal);
+}
+
+export async function decideTriage(
+  name: string,
+  decision: "Approved" | "Rejected",
+  reason: string,
+): Promise<DecisionAnswer> {
+  const body: Record<string, string> = { decision };
+  if (reason !== "") {
+    body.reason = reason;
+  }
+  return await requestJSON<DecisionAnswer>(
+    `/api/triages/${encodeURIComponent(name)}/decision`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+}
+
+export async function listWorkloads(signal?: AbortSignal): Promise<WorkloadOption[]> {
+  const response = await requestJSON<WorkloadListResponse>("/api/workloads", {}, signal);
+  return response.workloads;
+}
+
+export async function startTriage(workload: WorkloadOption, hint: string): Promise<StartAnswer> {
+  const body: { workload: WorkloadOption; hint?: string } = { workload };
+  if (hint !== "") {
+    body.hint = hint;
+  }
+  return await requestJSON<StartAnswer>("/api/triages", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function signOut(): Promise<void> {
+  await fetch("/logout", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    credentials: "same-origin",
+  });
+  window.location.assign("/signed-out");
 }
 
 export function eventsURL(name: string): string {

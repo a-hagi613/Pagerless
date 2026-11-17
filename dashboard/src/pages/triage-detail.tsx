@@ -7,8 +7,10 @@ import { ErrorNotice } from "../components/notices";
 import { PhaseBadge } from "../components/phase-badge";
 import { TriggerLabel } from "../components/trigger-label";
 import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import {
+  decideTriage,
   eventsURL,
   getTriage,
   type DashboardLink,
@@ -17,6 +19,7 @@ import {
   type Step,
   type TriageDetail,
 } from "../lib/api";
+import { useSession } from "../lib/use-session";
 import { formatTime } from "../lib/time";
 
 type StreamState = "connecting" | "live" | "reconnecting" | "closed";
@@ -58,9 +61,13 @@ function streamLabel(state: StreamState): string {
 
 export function TriageDetailPage() {
   const { name = "" } = useParams();
+  const session = useSession();
   const [record, setRecord] = useState<TriageDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stream, setStream] = useState<StreamState>("connecting");
+  const [reason, setReason] = useState("");
+  const [deciding, setDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
 
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
@@ -76,6 +83,23 @@ export function TriageDetailPage() {
       }
     },
     [name],
+  );
+
+  const decide = useCallback(
+    async (outcome: "Approved" | "Rejected") => {
+      setDeciding(true);
+      setDecisionError(null);
+      try {
+        await decideTriage(name, outcome, reason.trim());
+        setReason("");
+        await refresh();
+      } catch (cause) {
+        setDecisionError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        setDeciding(false);
+      }
+    },
+    [name, reason, refresh],
   );
 
   useEffect(() => {
@@ -257,9 +281,17 @@ export function TriageDetailPage() {
           {record.steps.length === 0 ? (
             <p className="px-4 py-3 text-sm text-slate-500">No steps have been reported yet.</p>
           ) : (
-            <ol className="max-h-[28rem] divide-y divide-slate-100 overflow-y-auto" aria-live="polite">
+            <ol
+              className="max-h-[28rem] divide-y divide-slate-100 overflow-y-auto"
+              aria-live="polite"
+              data-testid="steps"
+            >
               {record.steps.map((step, index) => (
-                <li key={`${String(index)}-${stepKey(step)}`} className="flex gap-3 px-4 py-2 text-sm">
+                <li
+                  key={`${String(index)}-${stepKey(step)}`}
+                  className="flex gap-3 px-4 py-2 text-sm"
+                  data-testid="step"
+                >
                   <span className="w-20 shrink-0 font-mono text-xs text-slate-500" title={formatTime(step.time)}>
                     {new Date(step.time).toLocaleTimeString(undefined, { hour12: false })}
                   </span>
@@ -324,10 +356,65 @@ export function TriageDetailPage() {
             <Badge variant={record.decision.outcome === "Approved" ? "success" : "danger"}>
               {record.decision.outcome}
             </Badge>
-            <span className="text-slate-700">{record.decision.approver}</span>
+            <span className="text-slate-700" data-testid="decision-approver">
+              {record.decision.approver}
+            </span>
             <span className="text-xs text-slate-500">{formatTime(record.decision.decidedAt)}</span>
             {record.decision.reason !== undefined && record.decision.reason !== "" && (
               <span className="basis-full text-slate-700">{record.decision.reason}</span>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {record.phase === "Proposed" && proposal !== undefined && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Decision</CardTitle>
+            <CardDescription>
+              Approving binds exactly this Proposal, identified by its hash. If it changes before the decision is
+              admitted, the decision is refused and the new Proposal must be reviewed.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {decisionError !== null && <ErrorNotice>{decisionError}</ErrorNotice>}
+            {session.canApprove ? (
+              <>
+                <label htmlFor="decision-reason" className="text-xs font-medium text-slate-600">
+                  Reason (optional)
+                </label>
+                <textarea
+                  id="decision-reason"
+                  rows={2}
+                  value={reason}
+                  maxLength={1000}
+                  onChange={(event) => {
+                    setReason(event.target.value);
+                  }}
+                  placeholder="Why this decision is right."
+                  className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-2 text-sm text-slate-900 shadow-xs placeholder:text-slate-400"
+                />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button disabled={deciding} onClick={() => void decide("Approved")}>
+                    {proposal.action === "NoAction" ? "Acknowledge Diagnosis" : "Approve"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    disabled={deciding}
+                    onClick={() => void decide("Rejected")}
+                  >
+                    Reject
+                  </Button>
+                  <span className="text-xs text-slate-500">
+                    Recorded as {session.username}, verified through Keycloak.
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p className="text-sm text-slate-600">
+                Your account is not a member of the Keycloak approvers group, so it can read this Triage but not
+                decide it.
+              </p>
             )}
           </CardContent>
         </Card>

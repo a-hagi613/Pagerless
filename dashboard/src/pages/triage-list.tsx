@@ -141,6 +141,9 @@ export function TriageListPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-slate-500">
+          <Link to="/start">
+            <Button size="sm">Start Triage</Button>
+          </Link>
           <RefreshCw aria-hidden="true" className="size-3.5" />
           <span aria-live="polite">
             {loading ? "Loading" : `${String(triages.length)} Triages`}
