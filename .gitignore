@@ -6,8 +6,18 @@
 # Claude Code local settings
 .claude/settings.local.json
 
+# Build output of the Go binaries
+/bin/
+
 # Editor and OS files
 .idea/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Python agent caches and virtual environments
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/

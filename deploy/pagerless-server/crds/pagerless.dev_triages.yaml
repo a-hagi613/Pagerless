@@ -1,0 +1,540 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: triages.pagerless.dev
+spec:
+  group: pagerless.dev
+  names:
+    kind: Triage
+    listKind: TriageList
+    plural: triages
+    shortNames:
+    - trg
+    singular: triage
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.workload.namespace
+      name: Namespace
+      type: string
+    - jsonPath: .spec.workload.name
+      name: Workload
+      type: string
+    - jsonPath: .status.proposal.action
+      name: Action
+      type: string
+    - jsonPath: .status.triggerCount
+      name: Triggers
+      priority: 1
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Triage is one investigation of one failing Workload, from Trigger
+          to verified outcome.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TriageSpec describes what to investigate. It is immutable
+              after creation.
+            properties:
+              followsTriage:
+                description: FollowsTriage names the Triage that this Follow-up Triage
+                  follows.
+                maxLength: 253
+                type: string
+              hint:
+                description: Hint is optional guidance from a human, passed to the
+                  agent as human input.
+                maxLength: 1000
+                type: string
+              trigger:
+                description: Trigger records what started the Triage.
+                properties:
+                  alertFingerprint:
+                    description: AlertFingerprint is the Alertmanager fingerprint
+                      of the triggering alert.
+                    maxLength: 128
+                    type: string
+                  pod:
+                    description: Pod is the pod that raised the Trigger. It is evidence,
+                      not the target.
+                    maxLength: 253
+                    type: string
+                  source:
+                    description: Source is what started the Triage.
+                    enum:
+                    - Alertmanager
+                    - CLI
+                    - Dashboard
+                    - FollowUp
+                    type: string
+                required:
+                - source
+                type: object
+              workload:
+                description: Workload is the Workload to investigate.
+                properties:
+                  kind:
+                    description: Kind is the Workload's kind.
+                    enum:
+                    - Deployment
+                    - StatefulSet
+                    type: string
+                  name:
+                    description: Name is the Workload's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace is the Workload's namespace.
+                    maxLength: 63
+                    minLength: 1
+                    type: string
+                required:
+                - kind
+                - name
+                - namespace
+                type: object
+            required:
+            - trigger
+            - workload
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+          status:
+            description: TriageStatus is the observed state of a Triage. Only pagerless-server
+              writes it (ADR-0001).
+            properties:
+              conditions:
+                description: Conditions describe the Triage's state in machine-readable
+                  form.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              decision:
+                description: Decision is the human decision on the current Proposal.
+                properties:
+                  approver:
+                    description: Approver is the identity of the requester, stamped
+                      by an admission webhook.
+                    maxLength: 253
+                    type: string
+                  decidedAt:
+                    description: DecidedAt is when the decision was made.
+                    format: date-time
+                    type: string
+                  outcome:
+                    description: Outcome is the decision.
+                    enum:
+                    - Approved
+                    - Rejected
+                    type: string
+                  reason:
+                    description: Reason is the optional reason the human gave.
+                    maxLength: 1000
+                    type: string
+                required:
+                - approver
+                - decidedAt
+                - outcome
+                type: object
+              diagnosis:
+                description: Diagnosis is the agent's root-cause conclusion.
+                maxLength: 4000
+                type: string
+              execution:
+                description: Execution is the result of executing the Proposal.
+                properties:
+                  executedAt:
+                    description: ExecutedAt is when the Executor finished.
+                    format: date-time
+                    type: string
+                  mergeCommit:
+                    description: MergeCommit is the commit that merged the pull request.
+                    maxLength: 64
+                    type: string
+                  pullRequestURL:
+                    description: PullRequestURL is the pull request the Executor opened,
+                      for pull request Actions.
+                    maxLength: 500
+                    type: string
+                  restartedPods:
+                    description: RestartedPods lists the pods the Executor deleted,
+                      for RestartWorkload.
+                    items:
+                      type: string
+                    maxItems: 100
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              findings:
+                description: Findings are the cited evidence the agent reported.
+                items:
+                  description: Finding is one cited piece of evidence that supports
+                    a Diagnosis.
+                  properties:
+                    kind:
+                      description: Kind classifies the evidence.
+                      enum:
+                      - Log
+                      - Metric
+                      - Trace
+                      - Event
+                      - Commit
+                      type: string
+                    source:
+                      description: Source cites where the evidence came from, such
+                        as a tool call and its query.
+                      maxLength: 500
+                      minLength: 1
+                      type: string
+                    summary:
+                      description: Summary states what the evidence shows.
+                      maxLength: 1000
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - source
+                  - summary
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              followUpTriage:
+                description: FollowUpTriage names the Follow-up Triage started after
+                  a NotRecovered outcome.
+                maxLength: 253
+                type: string
+              jobName:
+                description: JobName is the name of the agent Job.
+                maxLength: 253
+                type: string
+              phase:
+                description: Phase is the stage the Triage is in.
+                enum:
+                - Pending
+                - Investigating
+                - Proposed
+                - Approved
+                - Executing
+                - Verifying
+                - Recovered
+                - NotRecovered
+                - Diagnosed
+                - Rejected
+                - Expired
+                - Invalid
+                - Failed
+                type: string
+              proposal:
+                description: Proposal is the current Proposal.
+                properties:
+                  action:
+                    description: Action is the remediation.
+                    enum:
+                    - RestartWorkload
+                    - Scale
+                    - PatchResources
+                    - Rollback
+                    - NoAction
+                    type: string
+                  attempt:
+                    description: Attempt is 1 for the first Proposal the agent submitted
+                      and 2 for its revision.
+                    format: int32
+                    maximum: 2
+                    minimum: 1
+                    type: integer
+                  base:
+                    description: Base is the state the change was rendered against.
+                    properties:
+                      commit:
+                        description: Commit is the Sandbox commit the patch applies
+                          to.
+                        maxLength: 64
+                        type: string
+                      workloadGeneration:
+                        description: WorkloadGeneration is the Workload's metadata.generation
+                          when the Proposal was rendered.
+                        format: int64
+                        type: integer
+                    type: object
+                  expiresAt:
+                    description: ExpiresAt is when an unapproved Proposal expires.
+                    format: date-time
+                    type: string
+                  hash:
+                    description: Hash binds an Approval to this exact Proposal. It
+                      is a lowercase hexadecimal SHA-256 digest.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  parameters:
+                    description: Parameters are the typed parameters of the Action.
+                    maxProperties: 1
+                    properties:
+                      patchResources:
+                        description: PatchResources holds the parameters of the PatchResources
+                          Action.
+                        properties:
+                          container:
+                            description: Container names the container to patch.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: Limits are the desired resource limits.
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: Requests are the desired resource requests.
+                            type: object
+                        required:
+                        - container
+                        type: object
+                      rollback:
+                        description: Rollback holds the parameters of the Rollback
+                          Action.
+                        properties:
+                          commit:
+                            description: Commit is the Sandbox commit to revert. It
+                              must be among the last 20 commits touching the Workload's
+                              path.
+                            maxLength: 64
+                            minLength: 7
+                            pattern: ^[0-9a-f]+$
+                            type: string
+                        required:
+                        - commit
+                        type: object
+                      scale:
+                        description: Scale holds the parameters of the Scale Action.
+                        properties:
+                          replicas:
+                            description: Replicas is the desired replica count.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        required:
+                        - replicas
+                        type: object
+                    type: object
+                  renderedChange:
+                    description: RenderedChange is the exact change that Validation
+                      rendered.
+                    properties:
+                      patch:
+                        description: Patch is the git patch against the recorded base
+                          commit, for pull request Actions.
+                        maxLength: 32768
+                        type: string
+                      path:
+                        description: Path is the Sandbox path that the patch changes.
+                        maxLength: 500
+                        type: string
+                    type: object
+                required:
+                - action
+                - attempt
+                - expiresAt
+                - hash
+                type: object
+                x-kubernetes-validations:
+                - message: parameters.scale must be set exactly when the action is
+                    Scale
+                  rule: 'self.action == ''Scale'' ? (has(self.parameters) && has(self.parameters.scale))
+                    : (!has(self.parameters) || !has(self.parameters.scale))'
+                - message: parameters.patchResources must be set exactly when the
+                    action is PatchResources
+                  rule: 'self.action == ''PatchResources'' ? (has(self.parameters)
+                    && has(self.parameters.patchResources)) : (!has(self.parameters)
+                    || !has(self.parameters.patchResources))'
+                - message: parameters.rollback must be set exactly when the action
+                    is Rollback
+                  rule: 'self.action == ''Rollback'' ? (has(self.parameters) && has(self.parameters.rollback))
+                    : (!has(self.parameters) || !has(self.parameters.rollback))'
+              stepCount:
+                description: StepCount is the total number of steps the agent reported.
+                format: int32
+                type: integer
+              steps:
+                description: Steps is the bounded summary of the agent's most recent
+                  steps.
+                items:
+                  description: Step is one entry of the bounded step summary.
+                  properties:
+                    kind:
+                      description: Kind classifies the step.
+                      enum:
+                      - ToolCall
+                      - Finding
+                      - Progress
+                      type: string
+                    summary:
+                      description: Summary is a short description of the step.
+                      maxLength: 300
+                      type: string
+                    time:
+                      description: Time is when the server recorded the step.
+                      format: date-time
+                      type: string
+                    tool:
+                      description: Tool names the tool for a ToolCall step.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - kind
+                  - summary
+                  - time
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-type: atomic
+              toolCallCount:
+                description: ToolCallCount is the number of tool calls the agent reported.
+                format: int32
+                type: integer
+              triggerCount:
+                description: TriggerCount is the number of Triggers that started or
+                  joined the Triage.
+                format: int32
+                type: integer
+              validationAttempts:
+                description: ValidationAttempts is the number of Proposals from the
+                  agent that failed Validation.
+                format: int32
+                maximum: 2
+                minimum: 0
+                type: integer
+              verificationChecks:
+                description: VerificationChecks are the results of the deterministic
+                  Verification checks.
+                items:
+                  description: VerificationCheck is the result of one deterministic
+                    Verification check.
+                  properties:
+                    message:
+                      description: Message explains the result.
+                      maxLength: 500
+                      type: string
+                    name:
+                      description: Name identifies the check.
+                      maxLength: 128
+                      type: string
+                    passed:
+                      description: Passed reports whether the check passed.
+                      type: boolean
+                  required:
+                  - name
+                  - passed
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              verificationStartedAt:
+                description: |-
+                  VerificationStartedAt is when the five-minute observation window began: the moment Pagerless saw Argo CD
+                  report the application Synced and Healthy at the merge commit.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

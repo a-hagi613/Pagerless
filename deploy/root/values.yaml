@@ -1,0 +1,13 @@
+# Rendered by hack/up.sh, which sets every value with --set. The defaults
+# point at the main branch of the platform repository.
+platform:
+  repoURL: https://github.com/a-hagi613/pagerless
+  targetRevision: main
+
+# The Sandbox fork URL is required and comes from .env.
+sandbox:
+  repoURL: ""
+  targetRevision: main
+
+mcp:
+  githubHost: ""

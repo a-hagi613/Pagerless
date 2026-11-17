@@ -1,74 +1,148 @@
 # Pagerless
 
-**An AI agent that diagnoses failing Kubernetes workloads and remediates them only after a human approves the exact change.**
+**An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** design complete, implementation in progress. This document describes the target system. The architecture and every significant decision are recorded in [`docs/adr/`](docs/adr/README.md).
+> **Project status:** Phase 1 implementation is in progress. The operator, CLI, read-only MCP integrations, model providers, Validation, Executor and deterministic Verification are implemented. A genuine live OOMKilled Replay recording, complete kind end-to-end validation, and publication of the pinned runtime images remain release gates. The dashboard, agentgateway, Keycloak and EKS deployment are planned for later phases.
 
-## Overview
+## The Phase 1 loop
 
-An alert or a command starts a Triage. A read-only agent investigates using logs, metrics, traces, events, Argo CD state, and Git history, then proposes a single remediation from a fixed menu. Deterministic code validates the Proposal and renders the exact change. Nothing is executed until a human approves that change, and recovery is verified by code rather than by the model.
+1. **Trigger.** An authenticated, opted-in Alertmanager delivery or a CLI request creates a Triage for one failing Deployment or StatefulSet. Repeated Triggers join its Active Triage.
+2. **Context.** `pagerless-server` starts a short-lived agent Job. Deterministic Python code gathers the Context Bundle through read-only MCP tools: Workload status, pods, events, recent logs, Argo CD status and recent Sandbox commits.
+3. **Investigate.** The LangGraph agent uses Replay, the Anthropic API or Amazon Bedrock. Phase 1 connects directly to the MCP services and posts step events and Findings to the server.
+4. **Propose.** The agent submits a Diagnosis and one typed Proposal. Phase 1 implements PatchResources and NoAction. The server validates allowed namespaces, parameter bounds and the server-side dry run, then renders the exact Sandbox patch and computes its hash.
+5. **Approve.** A human reviews the rendered change in the CLI and creates a TriageApproval bound to that hash. The admission webhooks stamp the authenticated Kubernetes identity and refuse a Stale Proposal, an expired Proposal or a mismatched hash.
+6. **Execute.** The separate Executor independently checks the Approval and stored change before opening an auto-merging Sandbox pull request. Argo CD applies the merged commit. A NoAction Approval acknowledges the Diagnosis without changing the Workload.
+7. **Verify.** Go checks the rollout, Argo CD health at the merge commit, restarts during the full five-minute observation window, and resolution of any triggering alert. The Triage ends Recovered or NotRecovered; NotRecovered starts a linked Follow-up Triage when no other Active Triage already covers the Workload.
 
-## How it works
+The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repository for demo Workload manifests. Failure injection and remediation pull requests change that repository, as specified in [ADR-0003](docs/adr/0003-separate-sandbox-repository.md).
 
-1. **Trigger.** An opted-in Alertmanager alert, or `kubectl triage deploy/checkout`, creates a Triage resource for the failing Workload.
-2. **Context.** `pagerless-server` gathers a Context Bundle and starts a short-lived, read-only agent Job.
-3. **Investigate.** The LangGraph agent, running Claude on Amazon Bedrock, queries MCP tools through agentgateway and reports its steps back to the server as it works.
-4. **Propose.** The agent submits a Diagnosis and one typed Proposal. The server validates it against allowed Actions, parameter bounds, and namespaces, performs a server-side dry run, and renders the exact patch.
-5. **Approve.** A human reviews the rendered change in the CLI or dashboard and approves it. The Approval is bound to the Proposal's hash.
-6. **Execute.** A separate Executor, the only component with write credentials, independently re-checks the Approval and either restarts the Workload or opens a pull request that Argo CD syncs.
-7. **Verify.** Deterministic checks decide whether the Workload recovered. If it did not, a Follow-up Triage begins.
+## Implemented components
 
-## Safety model
+- **Control plane:** `pagerless-server` in Go, with the reconcilers, agent report endpoint, authenticated Alertmanager receiver and admission webhooks.
+- **Execution:** `pagerless-executor` in Go, with the separate GitHub write token and idempotent pull request execution.
+- **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching.
+- **CLI:** the Go/Cobra `kubectl-triage` plugin, using the selected kube context.
+- **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md).
+- **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment.
+- **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
+
+The React dashboard and its API, SQLite history, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+
+## Safety boundaries
 
 The model proposes; deterministic code decides.
 
-- The agent has no write credentials and cannot read Secrets or execute commands in pods.
-- Remediations come from a fixed menu: RestartWorkload, Scale, PatchResources, Rollback, and NoAction.
-- Every Proposal is validated and its exact change rendered before a human sees it.
-- Approval is bound to a hash of the exact change. If the Workload or the repository changes first, the Proposal becomes Stale and must be approved again.
-- The Executor verifies the Approval independently before acting.
-- Each investigation is capped by tool-call, time, and token budgets.
-- Logs are treated as untrusted input, and a prompt-injection suite tests that the agent ignores instructions embedded in them.
-- Every MCP tool call is authenticated with a Keycloak-issued token, authorized by policy, and logged by agentgateway.
+- The agent service account has no Kubernetes API permissions. The Kubernetes MCP identity can read only allowlisted namespaced resources and pod logs; it cannot read Secrets, exec, proxy or port-forward.
+- MCP services run read-only. The agent's registry independently restricts tool names, the Workload namespace, the Sandbox repository and the Argo CD application. Grafana uses a Viewer account, and GitHub uses a read-only Sandbox token.
+- Only the Executor receives the GitHub write token. Independent Job admission prevents the server from creating agent Jobs with another ServiceAccount, arbitrary Secret references, host access or privileged containers.
+- A separate admission policy permits the server's Workload updates only as dry runs. The corresponding Role is scoped to `sandbox`; Validation also checks its configured namespace allowlist and CPU/memory bounds.
+- Approval is tied to the exact rendered change, its Workload generation and its Sandbox base. Approval and Rejection for the same Proposal contend for one canonical TriageApproval name.
+- The Executor recomputes the stored change's hash and checks a matching Approval before applying the patch. It rejects changes outside the Proposal's single file and changes to `.github/`.
+- Alertmanager deliveries require a bearer token read from a mounted Secret on every request. Bootstrap provisions matching sender and receiver tokens and binds the approver Role to the explicit current Kubernetes user.
+- Investigation budgets are 15 tool calls, five minutes and approximately 100,000 input tokens, including cached input. Tool outputs and the Context Bundle are bounded and wrapped as untrusted data. The current tests cover those boundaries; the broader prompt-injection evaluation suite is planned for Phase 2.
+- Verification is decided by Go after the observation window. An unavailable evidence API leaves the outcome undecided; it does not count as recovery.
 
-## Architecture
+Keycloak authentication and per-call authorization/auditing through agentgateway are planned for Phase 2. Phase 1 uses direct MCP connections, service credentials and Kubernetes RBAC. The architecture decisions are recorded in [docs/adr](docs/adr/README.md).
 
-| Layer | Components |
-| --- | --- |
-| Control plane | `pagerless-server` (Go): reconciler, agent report endpoint, Alertmanager receiver, admission webhook, dashboard API |
-| Execution | `pagerless-executor` (Go): the only write identity |
-| Agent | Python, LangGraph, Claude on Amazon Bedrock |
-| CLI | `kubectl-triage` (Go, Cobra) |
-| Dashboard | React, TypeScript, shadcn/ui, with embedded Grafana panels |
-| MCP tools | kubernetes-mcp-server, mcp-grafana, mcp-for-argocd, GitHub MCP, all read-only |
-| MCP security | agentgateway, Keycloak |
-| Observability | OpenTelemetry Collector, Prometheus, Alertmanager, Loki, Tempo, Grafana |
-| GitOps and CI | Argo CD (app of apps), GitHub Actions |
-| Infrastructure | kind locally; Amazon EKS with Terraform, Karpenter, and EKS Pod Identity in the cloud |
-| Failure injection | OpenTelemetry Demo with flagd, Chaos Mesh, purpose-built manifests |
-| Evaluation | pytest harness, promptfoo |
+## Local workflow
 
-## CLI
+Development uses WSL2 Ubuntu with the repository in the Linux filesystem. Allocate roughly 24 GB to WSL for the single unified stack described in [AGENTS.md](AGENTS.md). The bootstrap's Docker preflight rejects engines below its 8 GiB minimum.
 
-| Command | Description |
-| --- | --- |
-| `kubectl triage <pod/name \| deploy/name>` | Start a Triage for a failing Workload |
-| `kubectl triage list` | List recent Triages |
-| `kubectl triage show <name>` | Show the Diagnosis, Findings, and Proposal with its rendered change |
-| `kubectl triage approve <name>` | Approve the current Proposal |
-| `kubectl triage reject <name>` | Reject the current Proposal |
-| `kubectl get triages` | List Triages with plain `kubectl` |
+Install a reachable Docker engine, GNU make, Git with a configured commit identity, and these pinned tools:
+
+- Go **1.27.4**, as declared in [go.mod](go.mod), for the CLI, tests and end-to-end harness.
+- kind **v0.33.0**, kubectl **v1.37.0**, Helm **v4.3.2** and uv **0.13.8**.
+- Python **3.14.10**, managed by uv.
+- GitHub CLI **v2.104.0**, required for the real Sandbox paths in `make break` and `make reset`.
+
+[hack/versions.env](hack/versions.env) pins the bootstrap tools, kind node image, Argo CD chart and Pagerless image references. [Makefile](Makefile) lists the supported targets.
+
+### Use your Sandbox fork
+
+1. Create a repository from the [Sandbox template](https://github.com/a-hagi613/pagerless-sandbox). Enable auto-merge and require its `kubeconform` check on `main`, following that repository's setup instructions.
+2. Prepare two fine-grained GitHub tokens scoped to that copy: a read-only token with Contents read access, and a separate write token with Contents and Pull requests write access. Replay avoids model charges; it still performs real MCP reads and real Sandbox GitHub operations in this workflow.
+3. Run the local bootstrap. It prompts for the Sandbox URL, tokens and model provider, defaulting to `replay`, and preserves them in the ignored root `.env`. The ordinary `make up` path uses the pinned GHCR references; it requires those versioned images to be published and publicly pullable. Until that release gate is verified, use `make dev` to build and load this checkout's images.
+
+Argo CD reads platform manifests from Git even when images are built locally. Push the intended commit before selecting it with `PLATFORM_REVISION`; set `PLATFORM_REPO_URL` as well when using another platform repository. From a checkout at that pushed commit:
+
+```bash
+make build-cli
+export PATH="$PWD/bin:$PATH"
+PLATFORM_REVISION="$(git rev-parse HEAD)" make dev
+```
+
+The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation and validated, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. The default Replay investigation uses it.
+
+The terminal workflow is:
+
+```bash
+make break SCENARIO=oom
+kubectl triage --context kind-pagerless list
+```
+
+`make break` opens an auto-merging Scenario pull request in your Sandbox and waits for the checkout Workload to become OOMKilled and for `ContainerOOMKilled` to fire in Alertmanager. The alert carries `pagerless_triage="true"`, `namespace`, `deployment` and `pod` labels. Use the printed Triage name with `kubectl triage --context kind-pagerless show <name> --watch`, review its rendered change, and approve it with `kubectl triage --context kind-pagerless approve <name>`. Approval prompts for confirmation; `--yes` is available for an explicitly reviewed noninteractive invocation.
+
+To start a Triage manually, use `kubectl triage --context kind-pagerless --namespace sandbox deploy/checkout`. The CLI also accepts `pod/<name>` and `sts/<name>`, resolves pods to their owning Workload, and returns the existing Active Triage when one already exists.
+
+`make reset` force-resets your Sandbox's `main` to its `known-good` tag and waits for a healthy Argo CD rollout. `make down` deletes the local kind stack and keeps `.env`.
+
+### Run the isolated end-to-end harness
+
+The `make e2e` target uses the ordinary local stack and a local Git/GitHub adapter with disposable read/write credentials. It exercises real Kubernetes, Argo CD, Git commits and the upstream MCP images with the explicitly synthetic recording at `evals/e2e/fixtures/synthetic-oom.json`. It neither needs a paid model key nor mutates your remote Sandbox. CI runs this harness on every pull request, and it is the same flow that was validated locally against the pinned platform commit.
+
+A local run requires the exact platform commit already pushed to the public repository:
+
+```bash
+PLATFORM_REVISION="$(git rev-parse HEAD)" make e2e
+```
+
+The runner refuses to reuse an existing `pagerless` kind cluster unless `PAGERLESS_E2E_REUSE_CLUSTER=1` is explicitly set for the isolated test cluster. It uses a separate protected configuration file and never reads the root `.env`. By default it removes the cluster and temporary test state; retained-cluster and recovery behavior are documented in [evals/e2e](evals/e2e/README.md).
+
+The harness checks the complete Triage phase sequence, CLI Approval, a merged Sandbox pull request, Argo CD health at the merge commit, and the full five-minute Verification window. Its adapter does not test GitHub.com's external API or hosted branch protection.
+
+### Use a live model and capture Replay
+
+Select `MODEL_PROVIDER=anthropic` with `ANTHROPIC_API_KEY` in the ignored setup file, or `MODEL_PROVIDER=bedrock` with `AWS_REGION` and inference-scoped AWS credentials. Host AWS profile files are not mounted into agent Jobs. Live providers use the fixed Haiku 5.5 identifiers and prompt caching described in [agent](agent/README.md).
+
+The genuine OOMKilled recording at `evals/replay/oom.json` was captured from one live investigation, and its provenance records the agent Job, proposal hash, model and token usage. Its durable claim, retrieval, credential checks, normalization and provenance workflow are documented in [evals/replay](evals/replay/README.md). Synthetic test responses are kept separate and are never promoted as live evidence. Development and CI remain on Replay by default.
+
+## CLI reference
+
+- `kubectl triage <pod/name | deploy/name | sts/name>` starts or joins a Triage; `--namespace` selects the Workload namespace and `--hint` adds human guidance.
+- `kubectl triage list` lists Triages. `list -o json` and `list -o yaml` return structured output.
+- `kubectl triage show <name>` shows Findings, the Diagnosis, Proposal, execution and Verification checks. `show -o json` and `show -o yaml` return structured output.
+- `kubectl triage show <name> --watch` streams investigation steps and stops at Proposed or a terminal phase. It cannot be combined with structured output.
+- `kubectl triage approve <name>` reviews and approves the exact current Proposal.
+- `kubectl triage reject <name> --reason "The proposed memory limit needs further review."` records a final Rejection.
+- `kubectl --context kind-pagerless -n pagerless get triages` lists the underlying resources.
+
+Triages are stored in `pagerless`; the Workload namespace is independent. The plugin uses the current kube context unless `--context` or `--kubeconfig` selects another one.
+
+## Development checks and services
+
+`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster.
+
+The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and can be opened with:
+
+```bash
+kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, credential-free kind integration, and versioned runtime image publication on release tags. Public image availability and the complete end-to-end release result are not yet established by this README.
 
 ## Roadmap
 
-1. **Core loop (local).** kind, the observability stack, Argo CD with the Sandbox, `pagerless-server`, the agent with read-only MCP tools, `pagerless-executor` with the pull request flow, the `kubectl triage` CLI, and Replay. Complete when the OOMKilled Scenario runs from alert through Diagnosis, Approval in the terminal, and pull request merge to a Verification of Recovered.
-2. **Complete product (local).** The dashboard, the remaining Scenarios, agentgateway and Keycloak in front of every MCP tool, and the evaluation harness with the prompt-injection suite. Complete when `make eval` runs all ten Scenarios on kind and a blocked tool call is demonstrated.
-3. **Cloud and release.** Terraform for EKS with Karpenter and Pod Identity, keyless Bedrock access, the nightly teardown workflow, and AWS Budgets alerts, followed by the demonstration video, published evaluation results, and measured operating costs. Complete when the stack runs on EKS, the demonstration is recorded, and the cluster is destroyed.
+1. **Phase 1: core loop locally.** Complete the genuine live OOMKilled capture, free Replay validation through Recovered on kind, and versioned image publication. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
+2. **Phase 2: complete the local product.** Add the custom React/shadcn dashboard with embedded Grafana panels, SQLite history, RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway and Keycloak, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
+3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
 
 ## Documentation
 
 - [Glossary](GLOSSARY.md): the project's domain vocabulary.
 - [Architecture Decision Records](docs/adr/README.md): significant decisions and their rationale.
+- [Server manifests and admission boundaries](deploy/pagerless-server/README.md).
+- [Read-only MCP services](deploy/mcp/README.md).
+- [Agent runtime and Replay](agent/README.md).
 
 ## License
 

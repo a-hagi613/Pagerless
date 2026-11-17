@@ -36,26 +36,9 @@ Development runs in WSL2 (Ubuntu), with the repository cloned into the Linux fil
 
 ## Development workflow
 
-Implementation is orchestrated by a Claude Opus session that delegates all ticket work to sub-agents defined in `.claude/agents/`. The orchestrator plans, routes, and integrates. It does not implement tickets itself.
+Claude Opus 5.5 orchestrates: it plans, routes work, and reviews. It does not implement tickets itself.
 
-| Sub-agent | Model | Used for |
-| --- | --- | --- |
-| `implementer` | Haiku 5.5 | Tickets labelled `model:haiku`, the default |
-| `implementer-complex` | Sonnet 5.5 | Tickets labelled `model:sonnet` |
-| `merger` | Haiku 5.5 | Merging completed ticket branches into the integration branch |
-| `explorer` | Haiku 5.5 | Shared research notes for upcoming tickets |
-| `reviewer` | Sonnet 5.5 | Every sub-agent spawned by the `code-review` skill |
-
-When a skill asks for implementer, merger, exploration, or review sub-agents, use these definitions.
-
-### Routing tickets to models
-
-When tickets are created, each one receives exactly one model label:
-
-- **`model:sonnet`:** security boundaries (Proposal hashing, admission webhooks, the Executor's Approval check), reconciliation and concurrency, cross-component contracts, the agent graph and Replay, and the end-to-end harness.
-- **`model:haiku`:** everything else, including scaffolding, manifests and Helm values, Make targets, CLI commands over an existing API, CI workflows, and documentation.
-
-If a Haiku implementer reports a ticket as harder than described, the orchestrator re-routes it to `implementer-complex` instead of retrying it on Haiku.
+Implementation is performed by OpenCode with `opencode-go/deepseek-v4.1-flash`, using parallel sub-agents, one ticket each. Free models are never used.
 
 ### Conserving tokens
 

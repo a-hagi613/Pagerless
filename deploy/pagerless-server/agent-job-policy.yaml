@@ -1,0 +1,103 @@
+# Job creation must not let the server assume the Executor's identity or mount
+# its write credentials. These checks are independent of the Job builder.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: pagerless-server-agent-jobs
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs]
+  matchConditions:
+    - name: pagerless-server-identity
+      expression: request.userInfo.username == 'system:serviceaccount:pagerless:pagerless-server'
+  variables:
+    - name: pod
+      expression: object.spec.template.spec
+  validations:
+    - expression: >-
+        has(variables.pod.serviceAccountName) && variables.pod.serviceAccountName == 'pagerless-agent' &&
+        has(variables.pod.automountServiceAccountToken) && !variables.pod.automountServiceAccountToken &&
+        (!has(variables.pod.hostNetwork) || !variables.pod.hostNetwork) &&
+        (!has(variables.pod.hostPID) || !variables.pod.hostPID) &&
+        (!has(variables.pod.hostIPC) || !variables.pod.hostIPC) &&
+        (!has(variables.pod.shareProcessNamespace) || !variables.pod.shareProcessNamespace) &&
+        !has(variables.pod.runtimeClassName) &&
+        (!has(variables.pod.imagePullSecrets) || size(variables.pod.imagePullSecrets) == 0) &&
+        (!has(variables.pod.resourceClaims) || size(variables.pod.resourceClaims) == 0) &&
+        (!has(variables.pod.initContainers) || size(variables.pod.initContainers) == 0) &&
+        (!has(variables.pod.ephemeralContainers) || size(variables.pod.ephemeralContainers) == 0) &&
+        size(variables.pod.containers) == 1 && variables.pod.containers[0].name == 'agent'
+      message: pagerless-server may create only isolated single-container pagerless-agent Jobs without automatic API tokens
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.securityContext) &&
+        has(variables.pod.securityContext.runAsNonRoot) && variables.pod.securityContext.runAsNonRoot &&
+        has(variables.pod.securityContext.runAsUser) && variables.pod.securityContext.runAsUser == 65532 &&
+        has(variables.pod.securityContext.runAsGroup) && variables.pod.securityContext.runAsGroup == 65532 &&
+        (!has(variables.pod.securityContext.fsGroup) || variables.pod.securityContext.fsGroup == 65532) &&
+        (!has(variables.pod.securityContext.supplementalGroups) || size(variables.pod.securityContext.supplementalGroups) == 0) &&
+        (!has(variables.pod.securityContext.sysctls) || size(variables.pod.securityContext.sysctls) == 0) &&
+        !has(variables.pod.securityContext.seLinuxOptions) && !has(variables.pod.securityContext.windowsOptions) &&
+        has(variables.pod.securityContext.seccompProfile) && variables.pod.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        (!has(variables.pod.securityContext.appArmorProfile) || variables.pod.securityContext.appArmorProfile.type == 'RuntimeDefault')
+      message: pagerless-agent Jobs must use the unprivileged non-root Pod security context
+      reason: Forbidden
+    - expression: >-
+        variables.pod.containers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) && !c.securityContext.allowPrivilegeEscalation &&
+          has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem &&
+          (!has(c.securityContext.privileged) || !c.securityContext.privileged) &&
+          (!has(c.securityContext.runAsNonRoot) || c.securityContext.runAsNonRoot) &&
+          (!has(c.securityContext.runAsUser) || c.securityContext.runAsUser == 65532) &&
+          (!has(c.securityContext.runAsGroup) || c.securityContext.runAsGroup == 65532) &&
+          (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') &&
+          !has(c.securityContext.seLinuxOptions) && !has(c.securityContext.windowsOptions) &&
+          (!has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
+          (!has(c.securityContext.appArmorProfile) || c.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+          has(c.securityContext.capabilities) &&
+          (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) &&
+          has(c.securityContext.capabilities.drop) && 'ALL' in c.securityContext.capabilities.drop &&
+          (!has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)) &&
+          (!has(c.volumeDevices) || size(c.volumeDevices) == 0))
+      message: pagerless-agent containers must retain the restricted security context and cannot use host ports or block devices
+      reason: Forbidden
+    - expression: >-
+        variables.pod.containers.all(c,
+          (!has(c.envFrom) || size(c.envFrom) == 0) &&
+          (!has(c.env) || c.env.all(e, !has(e.valueFrom) ||
+            (has(e.valueFrom.secretKeyRef) &&
+             e.valueFrom.secretKeyRef.name in ['mcp-client-tokens', 'pagerless-agent-credentials']))))
+      message: pagerless-agent Jobs may reference only explicit keys of their read-only MCP and inference Secrets
+      reason: Forbidden
+    - expression: >-
+        (!has(variables.pod.volumes) || variables.pod.volumes.all(v,
+          (v.name == 'temporary' && has(v.emptyDir)) ||
+          (v.name == 'recordings' && has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == 'pagerless-replay-capture') ||
+          (v.name == 'pagerless-token' && has(v.projected) && size(v.projected.sources) == 1 &&
+           v.projected.sources.all(s, has(s.serviceAccountToken) &&
+             has(s.serviceAccountToken.audience) && s.serviceAccountToken.audience == 'pagerless-server' &&
+             s.serviceAccountToken.path == 'token' &&
+             has(s.serviceAccountToken.expirationSeconds) && s.serviceAccountToken.expirationSeconds == 600))))
+      message: pagerless-agent Jobs may mount only temporary storage, the dedicated Replay capture claim, and the report-audience token
+      reason: Forbidden
+    - expression: >-
+        variables.pod.containers.all(c, !has(c.volumeMounts) || c.volumeMounts.all(m,
+          (m.name == 'temporary' && m.mountPath == '/tmp') ||
+          (m.name == 'recordings' && m.mountPath == '/recordings') ||
+          (m.name == 'pagerless-token' && m.mountPath == '/var/run/pagerless' && has(m.readOnly) && m.readOnly)))
+      message: pagerless-agent volume mounts must use their dedicated paths and keep the report token read-only
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: pagerless-server-agent-jobs
+spec:
+  policyName: pagerless-server-agent-jobs
+  validationActions: [Deny]

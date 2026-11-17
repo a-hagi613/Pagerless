@@ -1,0 +1,59 @@
+{
+  "format": "pagerless.dev/replay",
+  "version": 1,
+  "scenario": "oom",
+  "model": "synthetic-test-fixture",
+  "workload": "checkout",
+  "turns": [
+    {
+      "stage": "investigate",
+      "response": {
+        "text": "The checkout container was terminated after the Scenario reduced its memory limit below its allocation.",
+        "tool_calls": [],
+        "structured": null,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+      }
+    },
+    {
+      "stage": "diagnose",
+      "response": {
+        "text": "",
+        "tool_calls": [],
+        "structured": {
+          "diagnosis": "The checkout container was OOMKilled because the Scenario lowered its memory request and limit below the container's allocation.",
+          "findings": [
+            {
+              "kind": "Event",
+              "source": "Context Bundle: pod state",
+              "summary": "The checkout container terminated with reason OOMKilled."
+            },
+            {
+              "kind": "Commit",
+              "source": "Context Bundle: Sandbox commits",
+              "summary": "The newest Sandbox commit lowered the checkout memory limit to 32Mi."
+            }
+          ]
+        },
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+      }
+    },
+    {
+      "stage": "propose",
+      "response": {
+        "text": "",
+        "tool_calls": [],
+        "structured": {
+          "action": "PatchResources",
+          "parameters": {
+            "patchResources": {
+              "container": "checkout",
+              "requests": {"memory": "64Mi"},
+              "limits": {"memory": "128Mi"}
+            }
+          }
+        },
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerless-server
+  namespace: pagerless
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          env:
+            - name: SSL_CERT_FILE
+              value: /var/run/pagerless/e2e-ca/ca.crt
+            - name: GIT_SSL_CAINFO
+              value: /var/run/pagerless/e2e-ca/ca.crt
+          volumeMounts:
+            - name: pagerless-e2e-ca
+              mountPath: /var/run/pagerless/e2e-ca
+              readOnly: true
+      volumes:
+        - name: pagerless-e2e-ca
+          configMap:
+            name: pagerless-e2e-ca

@@ -19,3 +19,6 @@ Each record captures one significant decision, along with its context and conseq
 | [0013](0013-custom-dashboard-embedding-grafana.md) | Custom dashboard that embeds Grafana panels |
 | [0014](0014-executor-verifies-approval-independently.md) | The Executor verifies the Approval independently |
 | [0015](0015-fine-grained-tokens-for-github.md) | Fine-grained personal access tokens for GitHub |
+| [0016](0016-replay-recordings-normalize-volatile-identifiers.md) | Replay recordings normalize volatile identifiers |
+| [0017](0017-credential-free-sandbox-integration-adapter.md) | A local adapter tests Sandbox integration without GitHub credentials |
+| [0018](0018-deterministic-decisions-and-canonical-triages.md) | Deterministic decisions and canonical Active Triages |
