@@ -19,21 +19,34 @@ import (
 // TriageNamespace is the namespace that holds every Triage.
 const TriageNamespace = "pagerless"
 
-// NewRootCommand returns the kubectl-triage command. Its subcommands attach to
-// this root.
+// NewRootCommand returns the kubectl-triage command. Its own action starts a
+// Triage for the target that its argument names. The subcommands list and show
+// Triages, and approve and reject their Proposals.
 func NewRootCommand() *cobra.Command {
 	conn := &connection{}
+	start := &startOptions{conn: conn}
 	root := &cobra.Command{
-		Use:          "kubectl triage",
-		Short:        "Work with Triages of failing Workloads",
+		Use:   "kubectl triage <pod/name | deploy/name | sts/name>",
+		Short: "Start, list, and show Triages for failing Workloads",
+		Long: `Start a Triage for the Workload that owns a failing pod or that is named
+directly, list Triages, show a Triage's Diagnosis, Proposal, and outcome, and
+approve or reject its Proposal.
+
+A pod is resolved to its owning Deployment or StatefulSet. A Triage targets the
+Workload in the namespace given by --namespace, or in the namespace of the
+current context. Triages are stored in the pagerless namespace.`,
+		Args:         cobra.ExactArgs(1),
+		RunE:         start.run,
 		SilenceUsage: true,
 	}
+	root.Flags().StringVar(&start.hint, "hint", "",
+		"guidance for the agent, passed to it as human input (at most 1000 characters)")
 	root.PersistentFlags().StringVar(&conn.kubeconfig, "kubeconfig", "",
 		"path to the kubeconfig file (default: $KUBECONFIG, then ~/.kube/config)")
 	root.PersistentFlags().StringVar(&conn.context, "context", "", "kubeconfig context to use")
 	root.PersistentFlags().StringVarP(&conn.namespace, "namespace", "n", "",
 		"namespace of the Workload (default: the namespace of the current context)")
-	root.AddCommand(newApproveCommand(conn), newRejectCommand(conn))
+	root.AddCommand(newListCommand(conn), newShowCommand(conn), newApproveCommand(conn), newRejectCommand(conn))
 	return root
 }
 

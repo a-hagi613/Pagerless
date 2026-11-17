@@ -2,7 +2,7 @@
 
 include hack/versions.env
 
-.PHONY: help generate manifests test test-go test-agent lint lint-go lint-agent up down break reset
+.PHONY: help generate manifests build-cli test test-go test-agent lint lint-go lint-agent up down break reset
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -15,6 +15,9 @@ generate: ## Generate the deepcopy methods for the API types.
 
 manifests: ## Generate the CustomResourceDefinitions.
 	go tool controller-gen crd paths=./api/... output:crd:dir=$(CRD_DIR)
+
+build-cli: ## Build the kubectl-triage plugin into bin/.
+	go build -o bin/kubectl-triage ./cmd/kubectl-triage
 
 test: test-go test-agent ## Run the Go and Python test suites.
 
