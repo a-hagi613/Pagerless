@@ -1,0 +1,14 @@
+Make the nightly teardown a real backstop on the default branch
+
+GitHub runs a scheduled workflow only from the default branch, so the nightly
+destroy that keeps a forgotten session from running overnight did not exist
+until this repository's release merged. The account has no backstop at all
+before then.
+
+Land the workflow, its teardown check and the Terraform stack it destroys on
+main now. Nothing is applied: the workflow only destroys, and an empty state is
+a successful run.
+
+The roles it assumes already exist in the account, and the stack's files are
+identical to the ones under review on integration/phase-3, so the release merge
+has nothing to reconcile.

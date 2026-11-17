@@ -32,3 +32,12 @@ dashboard/dist/*
 # Playwright artifacts from the dashboard smoke test
 dashboard/test-results/
 dashboard/playwright-report/
+
+# Terraform working directories, local state and plans
+**/.terraform/
+**/.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+.tflint-cache/
+tfplan
+crash.log
