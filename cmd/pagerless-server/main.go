@@ -293,14 +293,14 @@ func parseScaleBounds(minimum, maximum int) (scale.Bounds, error) {
 }
 
 // agentRuntimeFromEnvironment copies the non-secret configuration supplied by the bootstrap.
-// Provider and MCP credentials are referenced directly by agent Jobs, not read by the server.
+// Inference credentials are referenced directly by agent Jobs, not read by the server.
 func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
 	return controller.AgentRuntimeConfig{
 		Provider:               os.Getenv(agentapi.EnvModelProvider),
-		KubernetesURL:          os.Getenv(agentapi.EnvMCPKubernetesURL),
-		GrafanaURL:             os.Getenv(agentapi.EnvMCPGrafanaURL),
-		ArgoCDURL:              os.Getenv(agentapi.EnvMCPArgoCDURL),
-		GitHubURL:              os.Getenv(agentapi.EnvMCPGitHubURL),
+		GatewayURL:             os.Getenv(agentapi.EnvMCPGatewayURL),
+		KeycloakIssuer:         os.Getenv(agentapi.EnvKeycloakIssuer),
+		KeycloakTokenURL:       os.Getenv(agentapi.EnvKeycloakTokenURL),
+		KeycloakClientID:       os.Getenv(agentapi.EnvKeycloakClientID),
 		ReplayFile:             os.Getenv(agentapi.EnvReplayFile),
 		RecordingFile:          os.Getenv(agentapi.EnvRecordingFile),
 		RecordingPVC:           os.Getenv("PAGERLESS_RECORDING_PVC"),

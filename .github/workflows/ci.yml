@@ -58,11 +58,42 @@ jobs:
       - run: make dashboard-check
       - run: make dashboard-build
 
+  manifests:
+    name: Manifest validation
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Helm and kubeconform
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+          curl --fail --silent --show-error --location \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            --output kubeconform.tar.gz
+          echo "${KUBECONFORM_LINUX_AMD64_SHA256}  kubeconform.tar.gz" | sha256sum --check --status
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo install kubeconform /usr/local/bin/kubeconform
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
+          chmod +x kubectl
+          sudo install kubectl /usr/local/bin/kubectl
+      - run: make validate
+
   e2e:
     name: Credential-free kind integration
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

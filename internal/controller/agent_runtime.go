@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"strings"
 
@@ -57,23 +58,64 @@ func validateRecording(file, pvc, provider, fileVariable string) error {
 	return nil
 }
 
+// ValidateGateway refuses configurations that cannot authenticate the agent to
+// Keycloak or cannot address the gateway that fronts the MCP servers. The
+// issuer and the token endpoint must describe the same realm, because the
+// issuer is also the audience of the projected service account token.
+func (c AgentRuntimeConfig) ValidateGateway() error {
+	if c.GatewayURL == "" {
+		return errors.New("PAGERLESS_MCP_GATEWAY_URL is required")
+	}
+	gateway, err := url.Parse(c.GatewayURL)
+	if err != nil || gateway.Host == "" || (gateway.Scheme != "http" && gateway.Scheme != "https") ||
+		gateway.User != nil || gateway.RawQuery != "" || gateway.Fragment != "" ||
+		(gateway.Path != "" && gateway.Path != "/") {
+		return errors.New("PAGERLESS_MCP_GATEWAY_URL must be an HTTP(S) base URL without a path or credentials")
+	}
+	if c.KeycloakIssuer == "" {
+		return errors.New("PAGERLESS_KEYCLOAK_ISSUER is required")
+	}
+	issuer, err := url.Parse(c.KeycloakIssuer)
+	if err != nil || issuer.Host == "" || (issuer.Scheme != "http" && issuer.Scheme != "https") ||
+		issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" ||
+		!strings.Contains(issuer.Path, "/realms/") || strings.HasSuffix(issuer.Path, "/") {
+		return errors.New("PAGERLESS_KEYCLOAK_ISSUER must be an HTTP(S) realm URL without a trailing slash")
+	}
+	if c.KeycloakTokenURL == "" {
+		return errors.New("PAGERLESS_KEYCLOAK_TOKEN_URL is required")
+	}
+	if c.KeycloakTokenURL != c.KeycloakIssuer+"/protocol/openid-connect/token" {
+		return errors.New("PAGERLESS_KEYCLOAK_TOKEN_URL must be the issuer's token endpoint")
+	}
+	if c.KeycloakClientID == "" || strings.ContainsAny(c.KeycloakClientID, " \t\r\n/") {
+		return errors.New("PAGERLESS_KEYCLOAK_CLIENT_ID must be a single non-empty client identifier")
+	}
+	return nil
+}
+
 const (
 	// AgentCredentialsSecret holds only the selected provider's inference credentials.
 	AgentCredentialsSecret = "pagerless-agent-credentials"
-	// MCPClientTokensSecret holds credentials that authorize read-only MCP calls.
-	MCPClientTokensSecret = "mcp-client-tokens"
+	// DefaultKeycloakClientID is the confidential client that authenticates the agent
+	// with its projected service account token.
+	DefaultKeycloakClientID = "pagerless-agent"
 )
 
-// AgentRuntimeConfig configures a Job's model provider and read-only evidence sources.
+// AgentRuntimeConfig configures the model provider, the MCP gateway, and the
+// Keycloak client that authenticates every tool call. The Narrative Job needs
+// none of the gateway settings and receives none of them.
 // Credentials are referenced by Secret key, never copied into the Job specification.
 type AgentRuntimeConfig struct {
 	Provider string
-	// KubernetesURL, GrafanaURL, ArgoCDURL, and GitHubURL are the read-only MCP endpoints. The Narrative Job
-	// needs none of them and receives none.
-	KubernetesURL     string
-	GrafanaURL        string
-	ArgoCDURL         string
-	GitHubURL         string
+	// GatewayURL is the base URL of agentgateway. The agent derives one route per MCP server.
+	GatewayURL string
+	// KeycloakIssuer is the realm issuer that agentgateway validates and the audience of the
+	// projected service account token.
+	KeycloakIssuer string
+	// KeycloakTokenURL is the realm's token endpoint.
+	KeycloakTokenURL string
+	// KeycloakClientID is the federated client the agent authenticates as.
+	KeycloakClientID  string
 	ReplayFile        string
 	RecordingFile     string
 	SandboxOwner      string
@@ -89,15 +131,19 @@ type AgentRuntimeConfig struct {
 	NarrativeRecordingFile string
 }
 
-// environment is the investigation Job's environment: the read-only MCP
-// endpoints, the Sandbox scope, the selected provider, and its credentials.
+// environment is the investigation Job's environment: the MCP gateway, the
+// Keycloak client, the Sandbox scope, the selected provider, and its credentials.
 func (c AgentRuntimeConfig) environment() []corev1.EnvVar {
-	env := []corev1.EnvVar{}
+	clientID := c.KeycloakClientID
+	if clientID == "" {
+		clientID = DefaultKeycloakClientID
+	}
+	env := c.providerEnvironment()
 	for _, setting := range []struct{ name, value string }{
-		{agentapi.EnvMCPKubernetesURL, c.KubernetesURL},
-		{agentapi.EnvMCPGrafanaURL, c.GrafanaURL},
-		{agentapi.EnvMCPArgoCDURL, c.ArgoCDURL},
-		{agentapi.EnvMCPGitHubURL, c.GitHubURL},
+		{agentapi.EnvMCPGatewayURL, c.GatewayURL},
+		{agentapi.EnvKeycloakIssuer, c.KeycloakIssuer},
+		{agentapi.EnvKeycloakTokenURL, c.KeycloakTokenURL},
+		{agentapi.EnvKeycloakClientID, clientID},
 		{agentapi.EnvReplayFile, c.ReplayFile},
 		{agentapi.EnvRecordingFile, c.RecordingFile},
 		{agentapi.EnvSandboxOwner, c.SandboxOwner},
@@ -107,16 +153,6 @@ func (c AgentRuntimeConfig) environment() []corev1.EnvVar {
 	} {
 		if setting.value != "" {
 			env = append(env, corev1.EnvVar{Name: setting.name, Value: setting.value})
-		}
-	}
-	env = append(env, c.providerEnvironment()...)
-	for _, endpoint := range []struct{ url, name, key string }{
-		{c.GrafanaURL, agentapi.EnvMCPGrafanaToken, "grafana"},
-		{c.ArgoCDURL, agentapi.EnvMCPArgoCDToken, "argocd"},
-		{c.GitHubURL, agentapi.EnvMCPGitHubToken, "github"},
-	} {
-		if endpoint.url != "" {
-			env = append(env, secretEnvironment(endpoint.name, MCPClientTokensSecret, endpoint.key, false))
 		}
 	}
 	return env

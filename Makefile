@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent up dev e2e down break reset
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate up dev e2e down break reset
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -51,6 +51,9 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 	cd agent && uv run --locked ruff check .
 	cd agent && uv run --locked ruff format --check .
 	cd agent && uv run --locked mypy
+
+validate: ## Render every manifest and validate it with the pinned kubeconform.
+	bash hack/validate-manifests.sh
 
 up: ## Create the kind cluster, install Argo CD, and deploy the Sandbox.
 	bash hack/up.sh

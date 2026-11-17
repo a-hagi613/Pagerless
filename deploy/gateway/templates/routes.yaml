@@ -1,0 +1,44 @@
+{{- range $name, $server := .Values.mcp.servers }}
+---
+# Each MCP server has its own path so that each route can carry the tool
+# policy for exactly that server.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-{{ $name }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  parentRefs:
+    - name: mcp-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /mcp/{{ $name }}
+      backendRefs:
+        - group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: mcp-{{ $name }}
+          port: {{ $server.port }}
+{{- if $server.tokenKey }}
+---
+# The gateway is the only caller. Servers that still authenticate their caller
+# receive their Phase 1 credential from the gateway, which reads it from a
+# Secret in this namespace; the agent never sees it.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-{{ $name }}-backend-auth
+  namespace: {{ $.Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: mcp-{{ $name }}
+  backend:
+    auth:
+      secretRef:
+        name: {{ $.Values.mcp.backendTokens.secret }}
+        key: {{ $server.tokenKey }}
+{{- end }}
+{{- end }}

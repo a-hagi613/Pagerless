@@ -213,7 +213,8 @@ func (c Config) validate() error {
 	case c.DashboardListener == nil:
 		return errors.New("a dashboard listener is required")
 	}
-	return nil
+	// A Job cannot authenticate to Keycloak or reach the MCP gateway without this.
+	return c.AgentRuntime.ValidateGateway()
 }
 
 func (c Config) withDefaults() Config {

@@ -12,6 +12,9 @@ from mcp.server import MCPServer
 from pagerless_agent.live_context import MCPContextSource
 from pagerless_agent.mcp import MCPServerConfig, MCPTools
 from pagerless_agent.settings import Target
+from tests.fakes import StaticToken
+
+TOKEN = StaticToken()
 
 
 def evidence_server() -> tuple[MCPServer, list[str]]:
@@ -184,9 +187,9 @@ async def test_the_bundle_uses_scoped_live_reads_and_canonical_evidence_order() 
     server, calls = evidence_server()
     async with MCPTools(
         (
-            MCPServerConfig("k8s", "http://evidence/mcp"),
-            MCPServerConfig("argocd", "http://evidence/mcp"),
-            MCPServerConfig("github", "http://evidence/mcp"),
+            MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("argocd", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("github", "http://evidence/mcp", TOKEN),
         ),
         namespace="sandbox",
         owner="example",
@@ -219,9 +222,9 @@ async def test_a_deleted_triggering_pod_does_not_prevent_investigating_the_workl
     server, _ = evidence_server()
     async with MCPTools(
         (
-            MCPServerConfig("k8s", "http://evidence/mcp"),
-            MCPServerConfig("argocd", "http://evidence/mcp"),
-            MCPServerConfig("github", "http://evidence/mcp"),
+            MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("argocd", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("github", "http://evidence/mcp", TOKEN),
         ),
         namespace="sandbox",
         owner="example",

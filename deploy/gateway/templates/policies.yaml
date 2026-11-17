@@ -1,0 +1,80 @@
+# Every request to the gateway must carry a Keycloak access token issued by the
+# Pagerless realm. The gateway removes the token before forwarding, so an MCP
+# server never receives the caller's credential.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-authentication
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mcp-gateway
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: {{ .Values.keycloak.issuer | quote }}
+          audiences: {{ .Values.keycloak.audiences | toJson }}
+          jwks:
+            remote:
+              backendRef:
+                group: ""
+                kind: Service
+                name: {{ .Values.keycloak.service }}
+                namespace: {{ .Values.keycloak.namespace }}
+                port: {{ .Values.keycloak.port }}
+              jwksPath: {{ .Values.keycloak.jwksPath }}
+              cacheDuration: 5m
+---
+# Access logs go to stdout, where the OpenTelemetry Collector reads them and
+# exports them to Loki. The added attribute identifies the calling agent: the
+# Keycloak subject of a federated client is its service account.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-access-log
+  namespace: {{ .Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: mcp-gateway
+  frontend:
+    accessLog:
+      attributes:
+        add:
+          - name: agent.subject
+            expression: 'default(jwt.sub, "")'
+{{- range $name, $server := .Values.mcp.servers }}
+---
+# An allow-only rule: a tool or MCP method that no expression matches is denied.
+# The authentication methods are part of the allowlist because the policy runs on
+# every HTTP request, including the session setup that precedes any tool call.
+# resources_get and resources_list additionally refuse a Secret by argument,
+# which is the only argument-level control agentgateway 1.7.0 offers.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-{{ $name }}-tools
+  namespace: {{ $.Release.Namespace }}
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: mcp-{{ $name }}
+  traffic:
+    authorization:
+      action: Allow
+      policy:
+        matchExpressions:
+          - 'request.method == "GET" || request.method == "DELETE"'
+          - 'mcp.methodName in ["initialize", "notifications/initialized", "tools/list", "ping", "notifications/cancelled"]'
+{{- with $server.tools }}
+          - 'mcp.tool.name in {{ . | toJson }}'
+{{- end }}
+{{- with $server.resourceTools }}
+          - 'mcp.tool.name in {{ . | toJson }} && "kind" in mcp.tool.arguments{{ range $server.deniedResourceKinds }} && mcp.tool.arguments.kind.lowerAscii() != {{ . | quote }}{{ end }}'
+{{- end }}
+{{- end }}

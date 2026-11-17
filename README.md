@@ -2,13 +2,13 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented; Start Triage, dashboard sign-in and approvals, agentgateway, Keycloak and the EKS deployment are later work.
+> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented, and agentgateway with Keycloak now fronts every MCP tool call. Start Triage, dashboard sign-in and approvals, and the EKS deployment are later work.
 
 ## The Phase 1 loop
 
 1. **Trigger.** An authenticated, opted-in Alertmanager delivery or a CLI request creates a Triage for one failing Deployment or StatefulSet. Repeated Triggers join its Active Triage.
-2. **Context.** `pagerless-server` starts a short-lived agent Job. Deterministic Python code gathers the Context Bundle through read-only MCP tools: Workload status, pods, events, recent logs, Argo CD status and recent Sandbox commits.
-3. **Investigate.** The LangGraph agent uses Replay, the Anthropic API or Amazon Bedrock. Phase 1 connects directly to the MCP services and posts step events and Findings to the server.
+2. **Context.** `pagerless-server` starts a short-lived agent Job. Deterministic Python code gathers the Context Bundle through read-only MCP tools, reached through agentgateway: Workload status, pods, events, recent logs, Argo CD status and recent Sandbox commits.
+3. **Investigate.** The LangGraph agent uses Replay, the Anthropic API or Amazon Bedrock. Every MCP call carries a Keycloak token that agentgateway validates and authorizes by tool, and the agent posts step events and Findings to the server.
 4. **Propose.** The agent submits a Diagnosis and one typed Proposal. Phase 1 implements PatchResources and NoAction. The server validates allowed namespaces, parameter bounds and the server-side dry run, then renders the exact Sandbox patch and computes its hash.
 5. **Approve.** A human reviews the rendered change in the CLI and creates a TriageApproval bound to that hash. The admission webhooks stamp the authenticated Kubernetes identity and refuse a Stale Proposal, an expired Proposal or a mismatched hash.
 6. **Execute.** The separate Executor independently checks the Approval and stored change before opening an auto-merging Sandbox pull request. Argo CD applies the merged commit. A NoAction Approval acknowledges the Diagnosis without changing the Workload.
@@ -23,13 +23,13 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 - **Execution:** `pagerless-executor` in Go, with the separate GitHub write token and idempotent pull request execution.
 - **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching. A separate short-lived Narrative Job writes each Triage's account after Verification.
 - **CLI:** the Go/Cobra `kubectl-triage` plugin, using the selected kube context.
-- **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md).
+- **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP, fronted by agentgateway 1.7.0 and authenticated with Keycloak 26.8.2. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md), [deploy/gateway](deploy/gateway/README.md) and [deploy/keycloak](deploy/keycloak/README.md).
 - **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment, with a provisioned Grafana dashboard for Pagerless's own behaviour.
 - **History:** an append-only SQLite record of every Phase change and every step event, with terminal Triages deleted after seven days while their history remains.
 - **Dashboard:** a Vite, React, TypeScript, Tailwind CSS and shadcn/ui application that `pagerless-server` serves from its binary, with a Triage list, a Triage detail view that streams live steps over Server-Sent Events, and embedded Grafana panels for the Workload's metrics and logs.
 - **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
 
-The Start Triage view, dashboard sign-in and approvals, agentgateway, Keycloak, the remaining Actions and Scenarios, and the published evaluation suite are Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+The Start Triage view, dashboard sign-in and approvals, the remaining Actions and Scenarios, and the published evaluation suite are remaining Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
 
 ## History, retention and metrics
 
@@ -58,7 +58,8 @@ Grafana embeds at `http://localhost:3000`, which is configurable with `--grafana
 The model proposes; deterministic code decides.
 
 - The agent service account has no Kubernetes API permissions. The Kubernetes MCP identity can read only allowlisted namespaced resources and pod logs; it cannot read Secrets, exec, proxy or port-forward.
-- MCP services run read-only. The agent's registry independently restricts tool names, the Workload namespace, the Sandbox repository and the Argo CD application. Grafana uses a Viewer account, and GitHub uses a read-only Sandbox token.
+- Every MCP call presents a Keycloak access token, which the agent obtains with its projected service account token. agentgateway validates it against the realm JWKS, removes it before forwarding, and allowlists the tools the agent may call. A `resources_get` or `resources_list` call that names a Secret is denied by argument.
+- MCP services run read-only. The agent's registry independently restricts tool names, the Workload namespace, the Sandbox repository and the Argo CD application. Grafana uses a Viewer account, and GitHub uses a read-only Sandbox token that only the gateway holds.
 - Only the Executor receives the GitHub write token. Independent Job admission prevents the server from creating agent Jobs with another ServiceAccount, arbitrary Secret references, host access or privileged containers.
 - A separate admission policy permits the server's Workload updates only as dry runs. The corresponding Role is scoped to `sandbox`; Validation also checks its configured namespace allowlist and CPU/memory bounds.
 - Approval is tied to the exact rendered change, its Workload generation and its Sandbox base. Approval and Rejection for the same Proposal contend for one canonical TriageApproval name.
@@ -67,7 +68,7 @@ The model proposes; deterministic code decides.
 - Investigation budgets are 15 tool calls, five minutes and approximately 100,000 input tokens, including cached input. Tool outputs and the Context Bundle are bounded and wrapped as untrusted data. The current tests cover those boundaries; the broader prompt-injection evaluation suite is planned for Phase 2.
 - Verification is decided by Go after the observation window. An unavailable evidence API leaves the outcome undecided; it does not count as recovery.
 
-Keycloak authentication and per-call authorization/auditing through agentgateway are planned for Phase 2. Phase 1 uses direct MCP connections, service credentials and Kubernetes RBAC. The architecture decisions are recorded in [docs/adr](docs/adr/README.md).
+Keycloak issues the agent's MCP token and is configured with the dashboard client for #29, and agentgateway enforces authentication and per-tool authorization on every call. The architecture decisions are recorded in [docs/adr](docs/adr/README.md).
 
 ## Local workflow
 
@@ -149,7 +150,7 @@ Triages are stored in `pagerless`; the Workload namespace is independent. The pl
 
 ## Development checks and services
 
-`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
+`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make validate` renders every chart and kustomization and checks it with the pinned kubeconform. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
 
 The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and the provisioned **Pagerless** dashboard, which charts Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and tokens and cost per Triage. It can be opened with:
 
@@ -174,6 +175,8 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 - [Server manifests and admission boundaries](deploy/pagerless-server/README.md).
 - [Read-only MCP services](deploy/mcp/README.md).
 - [Chaos Mesh](deploy/chaos-mesh/README.md).
+- [MCP gateway and tool policy](deploy/gateway/README.md).
+- [Keycloak realm and clients](deploy/keycloak/README.md).
 - [Agent runtime and Replay](agent/README.md).
 
 ## License

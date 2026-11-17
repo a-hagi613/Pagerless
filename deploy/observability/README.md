@@ -13,6 +13,8 @@ Argo CD deploys these components into the `monitoring` namespace. Each Applicati
 
 The OpenTelemetry Collector reads `/var/log/pods` on every node, attaches Kubernetes metadata, and exports the records over OTLP to Loki. Loki stores them with resource attributes such as `k8s_namespace_name` and `k8s_pod_name` as labels. Grafana queries them through the Loki data source.
 
+The agentgateway access logs are collected the same way. [The gateway README](../gateway/README.md#access-logs) lists the LogQL queries for allowed tool calls, the calling agent, and denied calls.
+
 ## Alert rules
 
 [`alerts/`](alerts) holds one PrometheusRule per alert. Every firing alert carries `pagerless_triage: "true"`, which opts it in to a Triage (spec #1, Alert Trigger), `namespace`, and either `deployment` or `statefulset`, which name the Workload.

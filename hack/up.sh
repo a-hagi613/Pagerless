@@ -14,7 +14,7 @@ PLATFORM_REPO_URL="${PLATFORM_REPO_URL:-https://github.com/a-hagi613/pagerless}"
 PLATFORM_REVISION="${PLATFORM_REVISION:-main}"
 
 bash "$REPO_ROOT/hack/preflight.sh"
-require_commands uv
+require_commands uv openssl
 [ "$(uv --version | cut -d ' ' -f 2)" = "$UV_VERSION" ] || die "uv $UV_VERSION is required for MCP account provisioning."
 bash "$REPO_ROOT/hack/configure.sh"
 load_env
@@ -73,9 +73,25 @@ fi
 
 kc create namespace pagerless-system --dry-run=client -o yaml | kc apply -f -
 kc create namespace pagerless --dry-run=client -o yaml | kc apply -f -
+kc create namespace keycloak --dry-run=client -o yaml | kc apply -f -
+kc create namespace agentgateway-system --dry-run=client -o yaml | kc apply -f -
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	kc create namespace pagerless-e2e --dry-run=client -o yaml | kc apply -f -
 fi
+
+# The Keycloak master-realm admin and database passwords are generated once and
+# reused, because KC_BOOTSTRAP_ADMIN_PASSWORD applies only to a fresh database.
+keycloak_admin_password="$(kc -n keycloak get secret keycloak-credentials \
+	-o jsonpath='{.data.admin-password}' 2>/dev/null | base64 --decode || true)"
+keycloak_database_password="$(kc -n keycloak get secret keycloak-credentials \
+	-o jsonpath='{.data.database-password}' 2>/dev/null | base64 --decode || true)"
+[ -n "$keycloak_admin_password" ] || keycloak_admin_password="$(openssl rand -hex 32)"
+[ -n "$keycloak_database_password" ] || keycloak_database_password="$(openssl rand -hex 32)"
+kc -n keycloak create secret generic keycloak-credentials \
+	--from-file=admin-password=<(printf '%s' "$keycloak_admin_password") \
+	--from-file=database-password=<(printf '%s' "$keycloak_database_password") \
+	--dry-run=client -o yaml | kc apply -f -
+unset keycloak_admin_password keycloak_database_password
 
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	kc -n pagerless create configmap pagerless-e2e-ca \
@@ -143,13 +159,24 @@ helm template pagerless-root "$REPO_ROOT/deploy/root" \
 
 # The MCP pods need the accounts provisioned after Grafana and Argo CD are ready.
 wait_for_application root "" 300 synced
+wait_for_application gateway-api-crds "" 300 synced
 wait_for_application sandbox "" 900
 for app in chaos-mesh kube-prometheus-stack loki tempo opentelemetry-collector observability-alerts \
 	observability-monitors observability-dashboards; do
 	wait_for_application "$app" "" 900
 done
 kc -n sandbox rollout status deployment/checkout --timeout=600s
+wait_for_application keycloak "" 900
+uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-keycloak.py"
+for app in agentgateway-crds agentgateway; do
+	wait_for_application "$app" "" 600 synced
+done
 uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-mcp.py"
+# The gateway routes wait for the caller credentials that provisioning writes.
+if kc -n agentgateway-system get deployment mcp-gateway >/dev/null 2>&1; then
+	kc -n agentgateway-system rollout restart deployment/mcp-gateway
+fi
+wait_for_application mcp-gateway "" 600 synced
 wait_for_application mcp "" 300
 if kc -n pagerless get deployment pagerless-server >/dev/null 2>&1; then
 	# Environment variables from a ConfigMap are read only when a container starts.

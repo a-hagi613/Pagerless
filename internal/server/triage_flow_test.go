@@ -14,6 +14,7 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
@@ -55,7 +56,7 @@ func TestNewTriageStartsAnAgentJob(t *testing.T) {
 	if got := job.Spec.ActiveDeadlineSeconds; got == nil || *got != 300 {
 		t.Errorf("activeDeadlineSeconds = %v, want 300", got)
 	}
-	if got := job.Spec.Template.Spec.ServiceAccountName; got != "pagerless-agent" {
+	if got := job.Spec.Template.Spec.ServiceAccountName; got != server.DefaultAgentServiceAccount {
 		t.Errorf("serviceAccountName = %q, want pagerless-agent", got)
 	}
 	if got := job.Spec.Template.Spec.AutomountServiceAccountToken; got == nil || *got {
@@ -72,8 +73,9 @@ func TestNewTriageStartsAnAgentJob(t *testing.T) {
 			}
 		}
 	}
-	if len(audiences) != 1 || audiences[0] != agentapi.Audience {
-		t.Errorf("projected token audiences = %v, want [pagerless-server]", audiences)
+	if len(audiences) != 2 || audiences[0] != agentapi.Audience ||
+		audiences[1] != "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless" {
+		t.Errorf("projected token audiences = %v, want the report and Keycloak realm audiences", audiences)
 	}
 	if owner := job.OwnerReferences; len(owner) != 1 || owner[0].Kind != "Triage" || owner[0].Name != created.Name {
 		t.Errorf("Job owner references = %+v, want the Triage", owner)

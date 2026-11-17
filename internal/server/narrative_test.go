@@ -80,7 +80,8 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 			variables[agentapi.EnvModelProvider], replayProvider)
 	}
 	for _, name := range []string{
-		agentapi.EnvMCPKubernetesURL, agentapi.EnvMCPGrafanaURL, agentapi.EnvMCPArgoCDURL, agentapi.EnvMCPGitHubURL,
+		agentapi.EnvMCPGatewayURL, agentapi.EnvKeycloakIssuer, agentapi.EnvKeycloakTokenURL,
+		agentapi.EnvKeycloakClientID, agentapi.EnvKeycloakTokenFile,
 		agentapi.EnvWorkloadName, agentapi.EnvWorkloadNamespace, agentapi.EnvSandboxOwner, agentapi.EnvReplayFile,
 	} {
 		if _, exists := variables[name]; exists {
