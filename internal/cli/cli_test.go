@@ -49,7 +49,6 @@ var (
 )
 
 func TestStartTargetsTheDeploymentThatOwnsAPod(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	deployment := createDeployment(t, env, checkout)
 	replicaSet := createReplicaSet(t, env, deployment, "checkout-7d9f")
@@ -79,7 +78,6 @@ func TestStartTargetsTheDeploymentThatOwnsAPod(t *testing.T) {
 }
 
 func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	createStatefulSet(t, env, ledger)
@@ -125,7 +123,6 @@ func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
 }
 
 func TestStartRefusesATargetWithoutAWorkload(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createPod(t, env, "orphan", nil)
 
@@ -151,7 +148,6 @@ func TestStartRefusesATargetWithoutAWorkload(t *testing.T) {
 }
 
 func TestStartPrintsTheNameOfTheActiveTriage(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 
@@ -175,7 +171,6 @@ func TestStartPrintsTheNameOfTheActiveTriage(t *testing.T) {
 }
 
 func TestListShowsEachTriageInEveryFormat(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	createDeployment(t, env, cart)
@@ -229,7 +224,6 @@ func TestListShowsEachTriageInEveryFormat(t *testing.T) {
 }
 
 func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	out, err := execute(t.Context(), kubeconfig, "-n", sandbox, "deploy/"+checkout)
@@ -289,7 +283,6 @@ func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 }
 
 func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
-	t.Parallel()
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	out, err := execute(t.Context(), kubeconfig, "-n", sandbox, "deploy/"+checkout)
@@ -347,7 +340,6 @@ func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
 }
 
 func TestShowRefusesAnUnknownTriage(t *testing.T) {
-	t.Parallel()
 	_, kubeconfig := startCluster(t)
 	_, err := execute(t.Context(), kubeconfig, "show", "missing")
 	if err == nil || !strings.Contains(err.Error(), `no Triage named "missing" in namespace "pagerless"`) {
@@ -391,6 +383,8 @@ func execute(ctx context.Context, kubeconfig string, args ...string) (string, er
 }
 
 // startCluster starts the harness and creates the sandbox namespace, in which the Workloads of these tests run.
+// The tests that call it run one after another. Each start runs a control plane, and when several packages start
+// control planes at once, the API servers time out while they start.
 func startCluster(t testing.TB) (*testenv.Env, string) {
 	t.Helper()
 	env := testenv.Start(t)
