@@ -29,13 +29,18 @@ is healthy. It is idempotent and provisions, through the Admin REST API:
 - confidential client `pagerless-dashboard` for #29, with the standard flow,
   PKCE `S256`, redirect URIs `http://localhost:8080/*` and
   `http://127.0.0.1:8080/*`, and a `groups` mapper on the ID token, access
-  token and userinfo response.
+  token and userinfo response;
+- confidential client `pagerless-server` with only the service-account flow,
+  whose service account holds the `realm-management` roles `view-users` and
+  `query-groups`. The admission webhook uses it to confirm that an asserted
+  approver is a member of `pagerless-approvers` (ADR-0020).
 
 The script reads the master-realm admin password from Secret
 `keycloak/keycloak-credentials`, which `hack/up.sh` generates once and reuses.
-It writes the dashboard client secret to
+It writes the dashboard and server client secrets to
 `pagerless/pagerless-keycloak-dashboard` (`client-id`, `client-secret`,
-`issuer`). Neither password is checked in, printed, or placed in argv.
+`server-client-id`, `server-client-secret`, `issuer`). No secret is checked in,
+printed, or placed in argv.
 
 Keycloak uses its own mounted service account token to read the API server's
 OIDC discovery document and JWKS, and trusts the cluster CA through
@@ -45,8 +50,9 @@ OIDC discovery document and JWKS, and trusts the cluster CA through
 
 Create users in the realm (the admin console is available through
 `kubectl -n keycloak port-forward svc/keycloak 8080:8080`) and add each one to
-`pagerless-approvers`. #29 reads the group from the token and records the
-approver identity on a dashboard Approval.
+`pagerless-approvers`. The dashboard reads the group from the ID token to decide
+whether to show the Approve and Reject controls, and the admission webhook asks
+Keycloak again before it accepts the asserted approver.
 
 ## Credentials
 

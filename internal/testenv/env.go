@@ -42,6 +42,7 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
@@ -51,6 +52,8 @@ import (
 const (
 	// Namespace is the namespace in which pagerless-server runs in the harness, as in a cluster.
 	Namespace = "pagerless"
+	// SandboxNamespace is the namespace whose Workloads the harness's executable Actions may change.
+	SandboxNamespace = "sandbox"
 	// AgentImage is the agent image that Jobs reference. No container ever runs in envtest.
 	AgentImage = "registry.invalid/pagerless-agent:test"
 	// AlertmanagerToken is the deterministic bearer token used by alert receiver seam tests.
@@ -98,20 +101,29 @@ type Env struct {
 	ExecutorURL string
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
 	WebhookInstall *envtest.WebhookInstallOptions
+	// Dashboard is the signed-in session that the dashboard tests send.
+	Dashboard DashboardSession
 
-	t testing.TB
+	auth      *fakeAuth
+	approvers *fakeApprovers
+	t         testing.TB
 }
 
 type options struct {
-	validators       func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	proposalPoll     time.Duration
-	executionPoll    time.Duration
-	verificationPoll time.Duration
-	retentionPoll    time.Duration
-	agentDeadline    time.Duration
-	agentRuntime     controller.AgentRuntimeConfig
-	alertNamespaces  []string
-	alertToken       func() (string, error)
+	validators        func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll      time.Duration
+	executionPoll     time.Duration
+	verificationPoll  time.Duration
+	retentionPoll     time.Duration
+	agentDeadline     time.Duration
+	agentRuntime      controller.AgentRuntimeConfig
+	alertNamespaces   []string
+	alertToken        func() (string, error)
+	approvers         *fakeApprovers
+	dashboardUser     string
+	dashboardApprover bool
+	dashboardAuth     dashboardapi.Auth
+	dashboardAddress  string
 }
 
 // Option customizes the harness.
@@ -139,6 +151,18 @@ func WithAlertmanagerToken(source func() (string, error)) Option {
 	return func(o *options) { o.alertToken = source }
 }
 
+// WithDashboardAuth replaces the harness's stand-in sign-in with a real one,
+// such as the Keycloak flow that the smoke test drives through a browser.
+func WithDashboardAuth(auth dashboardapi.Auth) Option {
+	return func(o *options) { o.dashboardAuth = auth }
+}
+
+// WithDashboardAddress binds the dashboard listener to a fixed address, so a
+// browser can be pointed at a URL that is known before the harness starts.
+func WithDashboardAddress(address string) Option {
+	return func(o *options) { o.dashboardAddress = address }
+}
+
 // WithRetentionPollInterval sets how often the retention controller checks a terminal Triage. The fake clock only
 // advances when a test steps it, so a test that observes the deletion boundary sets a short interval; every other
 // test keeps the server's one-minute default and does no retention work.
@@ -151,12 +175,17 @@ func WithRetentionPollInterval(d time.Duration) Option {
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
 	o := options{
-		executionPoll:    defaultExecutionPoll,
-		verificationPoll: defaultVerificationPoll,
+		executionPoll:     defaultExecutionPoll,
+		verificationPoll:  defaultVerificationPoll,
+		dashboardUser:     DashboardUser,
+		dashboardApprover: true,
 	}
 	o.alertToken = func() (string, error) { return AlertmanagerToken, nil }
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.approvers == nil {
+		o.approvers = newFakeApprovers()
 	}
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("KUBEBUILDER_ASSETS is not set; run the tests with `make test-go`, which downloads the envtest binaries")
@@ -205,7 +234,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("create clientset: %v", err)
 	}
 	ctx := t.Context()
-	if err := c.Create(ctx, &corev1.Namespace{Name: "sandbox"}); err != nil {
+	if err := c.Create(ctx, &corev1.Namespace{Name: SandboxNamespace}); err != nil {
 		t.Fatalf("create the allowlisted Workload namespace: %v", err)
 	}
 	executorDir := filepath.Join(root, "deploy", "pagerless-executor")
@@ -243,6 +272,13 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if err != nil {
 		t.Fatalf("listen for the dashboard: %v", err)
 	}
+	if o.dashboardAddress != "" {
+		_ = dashboardListener.Close()
+		dashboardListener, err = net.Listen("tcp", o.dashboardAddress)
+		if err != nil {
+			t.Fatalf("listen for the dashboard on %s: %v", o.dashboardAddress, err)
+		}
+	}
 	t.Cleanup(func() { _ = dashboardListener.Close() })
 	historyPath := filepath.Join(t.TempDir(), "history.db")
 	env := &Env{
@@ -256,7 +292,14 @@ func Start(t testing.TB, opts ...Option) *Env {
 		HistoryPath:    historyPath,
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
+		auth:           newFakeAuth(),
+		approvers:      o.approvers,
 		t:              t,
+	}
+	env.Dashboard = env.auth.signIn(o.dashboardUser, o.dashboardApprover)
+	auth := dashboardapi.Auth(env.auth)
+	if o.dashboardAuth != nil {
+		auth = o.dashboardAuth
 	}
 	env.Sandbox = NewBareRepo(t)
 	env.GitHub = NewFakeGitHub(t, env.Sandbox)
@@ -306,6 +349,9 @@ func Start(t testing.TB, opts ...Option) *Env {
 		VerificationPollInterval: o.verificationPoll,
 		RetentionPollInterval:    o.retentionPoll,
 		AlertNamespaces:          o.alertNamespaces,
+		WorkloadNamespaces:       []string{SandboxNamespace},
+		DashboardAuth:            auth,
+		Approvers:                env.approvers,
 		Clock:                    env.Clock,
 		Validators:               validators,
 		WebhookCertDir:           testEnv.WebhookInstallOptions.LocalServingCertDir,
@@ -487,7 +533,7 @@ func NewTriage(workloadName string) *v1alpha1.Triage {
 		Spec: v1alpha1.TriageSpec{
 			Workload: v1alpha1.WorkloadReference{
 				Kind:      v1alpha1.WorkloadKindDeployment,
-				Namespace: "sandbox",
+				Namespace: SandboxNamespace,
 				Name:      workloadName,
 			},
 			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI},

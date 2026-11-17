@@ -3,6 +3,7 @@ package admission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -28,15 +29,19 @@ const (
 	ApprovalValidatePath = "/validate-triageapproval"
 )
 
-// ApprovalStamper sets spec.approver of a new TriageApproval to the identity
-// that the API server authenticated for the request, and overwrites any value
-// the client supplied. A client therefore cannot name another approver
-// (ADR-0004). Impersonation is honored: a dashboard that impersonates a user
-// authenticated through Keycloak stamps that user.
-type ApprovalStamper struct{}
+// ApprovalStamper sets spec.approver of a new TriageApproval. A request from
+// pagerless-server's own service account may assert an approver: it is the
+// dashboard, which vouches for the user it verified through Keycloak
+// (ADR-0020). Every other requester has spec.approver set to the identity that
+// the API server authenticated, and any value it supplied is overwritten, so a
+// client cannot name another approver (ADR-0004).
+type ApprovalStamper struct {
+	// ServerUsername is the Kubernetes username of pagerless-server's service account.
+	ServerUsername string
+}
 
 // Handle implements admission.Handler.
-func (ApprovalStamper) Handle(_ context.Context, req admission.Request) admission.Response {
+func (s ApprovalStamper) Handle(_ context.Context, req admission.Request) admission.Response {
 	if req.Operation != admissionv1.Create {
 		return admission.Allowed("only creation is stamped")
 	}
@@ -47,12 +52,25 @@ func (ApprovalStamper) Handle(_ context.Context, req admission.Request) admissio
 	if req.UserInfo.Username == "" {
 		return admission.Denied("the request carries no authenticated identity to record as the approver")
 	}
-	approval.Spec.Approver = req.UserInfo.Username
+	if req.UserInfo.Username == s.ServerUsername {
+		if approval.Spec.Approver == "" {
+			return admission.Denied("pagerless-server must assert the signed-in user as the approver")
+		}
+	} else {
+		approval.Spec.Approver = req.UserInfo.Username
+	}
 	stamped, err := json.Marshal(&approval)
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, fmt.Errorf("encode TriageApproval: %w", err))
 	}
 	return admission.PatchResponseFromRaw(req.Object.Raw, stamped)
+}
+
+// ApproverGroups reports whether a user belongs to the Keycloak approvers group.
+type ApproverGroups interface {
+	// IsApprover reports whether the named Keycloak user may approve. An error
+	// means the answer is unknown, and the decision must be refused.
+	IsApprover(ctx context.Context, username string) (bool, error)
 }
 
 // StalenessChecker reports whether a Triage's Proposal is a Stale Proposal.
@@ -65,9 +83,10 @@ type StalenessChecker interface {
 // ApprovalValidator refuses a TriageApproval that does not bind to the
 // Triage's current Proposal: its Triage must exist and be Proposed, its hash
 // must be the current Proposal's, the Proposal must not be Stale or expired,
-// and no earlier decision may exist on that Proposal. It also refuses an
-// approver that is not the requester, so a missing or bypassed stamping
-// webhook cannot let a forged identity through.
+// and no earlier decision may exist on that Proposal. It also polices the
+// approver: a requester other than pagerless-server may only approve as
+// itself, and pagerless-server may assert a user only when that user is a
+// member of the Keycloak approvers group (ADR-0020).
 //
 // Every decision for the same Triage identity and exact hash must use one deterministic resource name. The
 // API server's atomic name reservation therefore admits at most one decision even when admissions overlap.
@@ -80,6 +99,12 @@ type ApprovalValidator struct {
 	Proposals StalenessChecker
 	// Clock decides whether a Proposal has expired.
 	Clock clock.PassiveClock
+	// ServerUsername is the Kubernetes username of pagerless-server's service account, the only requester
+	// that may assert an approver.
+	ServerUsername string
+	// Approvers answers whether an asserted user may approve. It is required for asserted approvers; when it
+	// is nil, every asserted approver is refused.
+	Approvers ApproverGroups
 
 	mu sync.Mutex
 }
@@ -97,10 +122,11 @@ func (v *ApprovalValidator) Handle(ctx context.Context, req admission.Request) a
 		return admission.Denied(fmt.Sprintf("TriageApprovals must be created in namespace %q, not %q",
 			v.Namespace, req.Namespace))
 	}
-	if approval.Spec.Approver != req.UserInfo.Username || req.UserInfo.Username == "" {
-		return admission.Denied(fmt.Sprintf(
-			"spec.approver is %q but the request comes from %q; the approver is set by the server",
-			approval.Spec.Approver, req.UserInfo.Username))
+	if req.UserInfo.Username == "" {
+		return admission.Denied("the request carries no authenticated identity to record as the approver")
+	}
+	if refusal := v.checkApprover(ctx, req.UserInfo.Username, approval.Spec.Approver); refusal != nil {
+		return *refusal
 	}
 
 	v.mu.Lock()
@@ -142,6 +168,46 @@ func (v *ApprovalValidator) Handle(ctx context.Context, req admission.Request) a
 		return admission.Denied("only the canonical Active Triage for the Workload accepts a decision")
 	}
 	return admission.Allowed("")
+}
+
+// checkApprover returns a refusal unless the approver is acceptable for the
+// requester. A requester other than pagerless-server may only approve as
+// itself: the stamping webhook rewrites any other value, and this check holds
+// if the stamping webhook is bypassed. pagerless-server may assert another
+// user, but only one that Keycloak reports as a member of the approvers group.
+func (v *ApprovalValidator) checkApprover(ctx context.Context, requester, approver string) *admission.Response {
+	deny := func(format string, args ...any) *admission.Response {
+		resp := admission.Denied(fmt.Sprintf(format, args...))
+		return &resp
+	}
+	if approver == "" {
+		return deny("spec.approver is empty; the approver is set by the server")
+	}
+	if requester != v.ServerUsername {
+		if approver != requester {
+			return deny("spec.approver is %q but the request comes from %q; only pagerless-server may assert an approver",
+				approver, requester)
+		}
+		return nil
+	}
+	if approver == v.ServerUsername {
+		return deny("pagerless-server must assert the signed-in user as the approver, not itself")
+	}
+	if v.Approvers == nil {
+		resp := admission.Errored(http.StatusInternalServerError,
+			errors.New("no Keycloak approver-group check is configured"))
+		return &resp
+	}
+	ok, err := v.Approvers.IsApprover(ctx, approver)
+	if err != nil {
+		resp := admission.Errored(http.StatusInternalServerError,
+			fmt.Errorf("check whether %q may approve: %w", approver, err))
+		return &resp
+	}
+	if !ok {
+		return deny("the asserted approver %q is not a member of the Keycloak group that may approve", approver)
+	}
+	return nil
 }
 
 // checkProposal returns a refusal unless the approval binds to the Triage's current Proposal.

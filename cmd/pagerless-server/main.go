@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -21,7 +22,9 @@ import (
 
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/keycloak"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
@@ -146,6 +149,27 @@ func run() error {
 			"how long Verification observes the Workload for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
 			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
+		workloadNamespaces = flag.String("workload-namespaces", "sandbox",
+			"comma-separated namespaces whose Workloads the dashboard's Start Triage offers")
+		dashboardBaseURL = flag.String("dashboard-base-url", "http://localhost:8080",
+			"browser-facing base URL of the dashboard, used to build the OIDC redirect URI")
+		oidcIssuer = flag.String("oidc-issuer", "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
+			"Keycloak realm issuer that signs dashboard users in")
+		oidcClientID = flag.String("oidc-client-id", "pagerless-dashboard",
+			"confidential Keycloak client for dashboard sign-in")
+		oidcClientSecretFile = flag.String("oidc-client-secret-file", "/var/run/pagerless/keycloak/client-secret",
+			"file that holds the dashboard client secret")
+		keycloakBaseURL = flag.String("keycloak-base-url", "http://keycloak.keycloak.svc.cluster.local:8080",
+			"base URL of the Keycloak admin API used to check approver group membership")
+		keycloakAdminClientID = flag.String("keycloak-admin-client-id", "pagerless-server",
+			"Keycloak client that reads user group membership")
+		keycloakAdminClientSecretFile = flag.String("keycloak-admin-client-secret-file",
+			"/var/run/pagerless/keycloak/server-client-secret",
+			"file that holds the secret of the Keycloak client that reads group membership")
+		approversGroup = flag.String("approvers-group", keycloak.DefaultGroup,
+			"Keycloak group whose members may approve through the dashboard")
+		dashboardCookieSecure = flag.Bool("dashboard-cookie-secure", true,
+			"mark dashboard session cookies Secure; set false only when the browser reaches the dashboard over HTTP")
 	)
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
@@ -163,6 +187,31 @@ func run() error {
 	allowed, err := parseNamespaces(*alertNamespaces)
 	if err != nil {
 		return err
+	}
+	workloads, err := parseNamespaces(*workloadNamespaces)
+	if err != nil {
+		return err
+	}
+	dashboardAuth, err := dashboardauth.New(dashboardauth.Config{
+		Issuer:         *oidcIssuer,
+		ClientID:       *oidcClientID,
+		ClientSecret:   tokenFromFile(*oidcClientSecretFile),
+		RedirectURL:    strings.TrimSuffix(*dashboardBaseURL, "/") + "/auth/callback",
+		ApproversGroup: *approversGroup,
+		SecureCookies:  *dashboardCookieSecure,
+	})
+	if err != nil {
+		return fmt.Errorf("configure dashboard sign-in: %w", err)
+	}
+	approvers, err := keycloak.New(keycloak.Config{
+		BaseURL:      *keycloakBaseURL,
+		Realm:        realmOf(*oidcIssuer),
+		ClientID:     *keycloakAdminClientID,
+		ClientSecret: tokenFromFile(*keycloakAdminClientSecretFile),
+		Group:        *approversGroup,
+	})
+	if err != nil {
+		return fmt.Errorf("configure the Keycloak approver check: %w", err)
 	}
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
@@ -239,6 +288,9 @@ func run() error {
 		PatchBounds:        bounds,
 		ScaleBounds:        scaleBounds,
 		AlertNamespaces:    allowed,
+		WorkloadNamespaces: workloads,
+		DashboardAuth:      dashboardAuth,
+		Approvers:          approvers,
 		WebhookPort:        *webhookPort,
 		WebhookCertDir:     *webhookCertDir,
 		HealthProbeAddress: *healthBind,
@@ -279,6 +331,20 @@ func parsePatchBounds(
 		bounds[setting.name] = patchresources.Bounds{Min: minimum, Max: maximum}
 	}
 	return bounds, nil
+}
+
+// realmOf returns the realm segment of a Keycloak issuer URL, such as
+// pagerless for http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless.
+func realmOf(issuer string) string {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return ""
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) == 2 && segments[0] == "realms" {
+		return segments[1]
+	}
+	return ""
 }
 
 // parseScaleBounds validates the replica bounds supplied through the server's flags.

@@ -20,6 +20,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/history"
 )
 
@@ -39,6 +40,16 @@ type Config struct {
 	Namespace string
 	// Reader reads Triages through the server's cache, so the dashboard inherits the server's RBAC.
 	Reader client.Reader
+	// Writer creates Triages and TriageApprovals as pagerless-server. It is required for Start Triage and
+	// for dashboard decisions.
+	Writer client.Client
+	// Workloads lists the Workloads that Start Triage may target. It defaults to Reader.
+	Workloads client.Reader
+	// WorkloadNamespaces are the namespaces whose Deployments and StatefulSets Start Triage offers. Empty
+	// offers none.
+	WorkloadNamespaces []string
+	// Auth authenticates dashboard requests and serves the sign-in routes. It is required.
+	Auth Auth
 	// History is the append-only record that supplies Triages whose resource is gone, and their steps.
 	History *history.Store
 	// Broker carries live steps and Phase changes to open streams.
@@ -51,43 +62,107 @@ type Config struct {
 	Assets fs.FS
 }
 
-// Handler serves the read-only dashboard API and the single-page application.
+// Auth authenticates dashboard requests and serves the sign-in routes. Its
+// implementation performs the Keycloak flow; the API only sees the verified
+// user and the opaque session cookie.
+type Auth interface {
+	// User returns the signed-in user of the request, or nil.
+	User(r *http.Request) *User
+	// SignIn starts the sign-in flow.
+	SignIn() http.Handler
+	// Callback completes the sign-in flow.
+	Callback() http.Handler
+	// SignOut ends the session.
+	SignOut() http.Handler
+}
+
+// User is the signed-in dashboard user, as dashboardauth reports it.
+type User = dashboardauth.User
+
+// Handler serves the dashboard API and the single-page application.
 type Handler struct {
-	namespace string
-	reader    client.Reader
-	history   *history.Store
-	broker    *Broker
-	clock     clock.PassiveClock
-	grafana   GrafanaConfig
-	mux       *http.ServeMux
+	namespace  string
+	reader     client.Reader
+	writer     client.Client
+	workloads  client.Reader
+	namespaces []string
+	auth       Auth
+	history    *history.Store
+	broker     *Broker
+	clock      clock.PassiveClock
+	grafana    GrafanaConfig
+	mux        *http.ServeMux
 }
 
 // New returns a Handler. The caller registers it on the dashboard listener.
 func New(cfg Config) *Handler {
 	h := &Handler{
-		namespace: cfg.Namespace,
-		reader:    cfg.Reader,
-		history:   cfg.History,
-		broker:    cfg.Broker,
-		clock:     cfg.Clock,
-		grafana:   cfg.Grafana,
+		namespace:  cfg.Namespace,
+		reader:     cfg.Reader,
+		writer:     cfg.Writer,
+		workloads:  cfg.Workloads,
+		namespaces: cfg.WorkloadNamespaces,
+		auth:       cfg.Auth,
+		history:    cfg.History,
+		broker:     cfg.Broker,
+		clock:      cfg.Clock,
+		grafana:    cfg.Grafana,
+	}
+	if h.workloads == nil {
+		h.workloads = cfg.Reader
 	}
 	if h.clock == nil {
 		h.clock = clock.RealClock{}
 	}
 	h.mux = http.NewServeMux()
+	h.mux.Handle("GET /login", h.auth.SignIn())
+	h.mux.Handle("GET /auth/callback", h.auth.Callback())
+	h.mux.Handle("POST /logout", h.auth.SignOut())
+	h.mux.HandleFunc("GET /signed-out", h.signedOut)
+	h.mux.HandleFunc("GET /api/session", h.session)
 	h.mux.HandleFunc("GET /api/triages", h.list)
 	h.mux.HandleFunc("GET /api/triages/{name}", h.detail)
 	h.mux.HandleFunc("GET /api/triages/{name}/events", h.events)
+	h.mux.HandleFunc("POST /api/triages", h.start)
+	h.mux.HandleFunc("POST /api/triages/{name}/decision", h.decide)
+	h.mux.HandleFunc("GET /api/workloads", h.workloadList)
 	h.mux.Handle("/api/", http.NotFoundHandler())
 	h.mux.Handle("/", NewSPA(cfg.Assets))
 	return h
 }
 
-// ServeHTTP routes dashboard requests.
+// ServeHTTP routes dashboard requests. Every route except the sign-in flow and
+// the signed-out page requires a session: the page redirects to sign-in and the
+// API answers 401.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Frame-Options", "DENY")
+	if publicPath(r) {
+		h.mux.ServeHTTP(w, r)
+		return
+	}
+	if h.auth.User(r) == nil {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeError(w, http.StatusUnauthorized, "sign in to use the dashboard")
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
+}
+
+// publicPath reports whether the request may proceed without a session. The
+// built assets are public because the browser fetches them before rendering
+// anything, and they contain no data.
+func publicPath(r *http.Request) bool {
+	switch r.URL.Path {
+	case "/login", "/auth/callback", "/signed-out":
+		return true
+	}
+	return strings.HasPrefix(r.URL.Path, "/assets/")
 }
 
 // TriageSummary is one row of the Triage list.

@@ -1,10 +1,15 @@
 import { ArrowLeft } from "lucide-react";
 import { Link, Route, Routes } from "react-router-dom";
 
+import { Button } from "./components/ui/button";
+import { signOut } from "./lib/api";
+import { useSession } from "./lib/use-session";
+import { StartTriagePage } from "./pages/start-triage";
 import { TriageDetailPage } from "./pages/triage-detail";
 import { TriageListPage } from "./pages/triage-list";
 
 export function App() {
+  const session = useSession();
   return (
     <div className="min-h-screen">
       <a
@@ -23,12 +28,32 @@ export function App() {
             <Link to="/" className="text-slate-300 hover:text-white">
               Triages
             </Link>
+            <Link to="/start" className="text-slate-300 hover:text-white">
+              Start Triage
+            </Link>
           </nav>
+          <div className="ml-auto flex items-center gap-3 text-xs text-slate-300">
+            <span title={session.groups.join(", ")}>{session.username}</span>
+            {session.canApprove ? (
+              <span className="rounded-sm bg-emerald-900/60 px-1.5 py-0.5 text-emerald-200">approver</span>
+            ) : (
+              <span className="rounded-sm bg-slate-800 px-1.5 py-0.5 text-slate-400">reader</span>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-slate-200 hover:bg-slate-800 hover:text-white"
+              onClick={() => void signOut()}
+            >
+              Sign out
+            </Button>
+          </div>
         </div>
       </header>
       <main id="content" className="mx-auto max-w-[1500px] px-4 py-6">
         <Routes>
           <Route path="/" element={<TriageListPage />} />
+          <Route path="/start" element={<StartTriagePage />} />
           <Route path="/triages/:name" element={<TriageDetailPage />} />
           <Route
             path="*"
