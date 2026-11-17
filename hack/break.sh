@@ -72,9 +72,9 @@ git checkout --quiet -b "$branch"
 git apply "$patch_file"
 git commit --quiet -am "Inject the $scenario Scenario into checkout
 
-The Scenario patch lowers the checkout memory request and limit below the
-memory the container allocates, so the kernel terminates it with OOMKilled.
-Pagerless remediates the change through a pull request."
+The Scenario patch lowers the memory request and limit of the container that
+holds the buffer below the memory it allocates, so the kernel terminates it
+with OOMKilled. Pagerless remediates the change through a pull request."
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	git_e2e push --quiet origin "$branch"
 	e2e_client=(uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/evals/e2e/client.py" --repository "$PAGERLESS_E2E_REPOSITORY")

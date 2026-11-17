@@ -78,7 +78,7 @@ func runServer(args []string) error {
 	writeTokenFile := flags.String("write-token-file", "/var/run/pagerless/write-token",
 		"file containing the disposable adapter write token")
 	source := flags.String("source", "https://github.com/a-hagi613/pagerless-sandbox.git", "read-only Sandbox source URL")
-	revision := flags.String("revision", "55ab7c5f78ab29a8c6560e6134304c5f53d4fa0c", "pinned known-good Sandbox commit")
+	revision := flags.String("revision", "85f60904a8eb245e0e337e4c463863cbd59404e9", "pinned known-good Sandbox commit")
 	cert := flags.String("tls-cert", "/var/run/pagerless/tls/tls.crt", "HTTPS certificate path")
 	key := flags.String("tls-key", "/var/run/pagerless/tls/tls.key", "HTTPS private key path")
 	if err := flags.Parse(args); err != nil {
