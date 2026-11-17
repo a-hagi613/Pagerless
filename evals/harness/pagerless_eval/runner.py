@@ -49,6 +49,9 @@ CHECKOUT = "checkout"
 INJECTED_CONTAINER = "memory-holder"
 ADAPTER_FIXTURES = Path("evals/e2e/fixtures")
 PROVIDERS_LIVE = ("anthropic", "bedrock")
+# LIVE_OPT_IN is the variable that only the guarded paid workflow sets, so that
+# the credential-free Replay subset can never run against a paid provider.
+LIVE_OPT_IN = "PAGERLESS_E2E_LIVE"
 
 
 class HarnessError(RuntimeError):
@@ -214,11 +217,17 @@ class Harness:
             )
         if not Path(os.environ["PAGERLESS_E2E_CA_FILE"]).is_file():
             raise HarnessError("the adapter CA certificate is not readable")
-        if provider != "replay":
+        # The adapter also fronts the guarded paid workflow, so a live provider is
+        # allowed only when that workflow opts in explicitly. `make eval-replay`
+        # never sets this, so the credential-free CI subset cannot spend money.
+        if provider != "replay" and os.environ.get(LIVE_OPT_IN) != "1":
             raise HarnessError(
                 "make eval-replay requires the agent's provider to be replay; "
-                f"the stack is configured with {provider!r}"
+                f"the stack is configured with {provider!r}. Only the guarded paid "
+                f"workflow sets {LIVE_OPT_IN}=1."
             )
+        if provider != "replay":
+            return
         for scenario in self.config.scenarios:
             if scenario.replay_recording is None:
                 raise HarnessError(

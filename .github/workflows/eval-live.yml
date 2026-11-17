@@ -107,6 +107,7 @@ jobs:
           PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
           PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
           PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && '1' || '0' }}
+          PAGERLESS_E2E_LIVE: "1"
           PAGERLESS_E2E_REQUIRE_PASS: "1"
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
           PAGERLESS_E2E_MEMORY_PEAK: ${{ github.workspace }}/memory-samples.txt

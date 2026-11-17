@@ -218,10 +218,13 @@ The job exits if `confirm_paid_run` is not `yes`, runs with
 A `measured` run sets `PAGERLESS_E2E_CAPTURE=1`. The runner then provisions the
 capture claim and the inference Secret, restarts the server with the live
 provider, and after a Recovered Verification retrieves the genuine OOMKilled
-recording, its provenance document, and the Narrative recording. A `full` run
-leaves the agent in Replay and samples the kind node container's memory every
-five seconds, so the published requirement in [README.md](../README.md) can
-equal a measured peak plus a margin instead of an estimate.
+recording, its provenance document, and the Narrative recording. Both phases set
+`PAGERLESS_E2E_LIVE=1`, the explicit opt-in that lets the harness' adapter
+preflight accept a paid provider; `make eval-replay` never sets it, so the
+credential-free CI subset cannot spend money. A `full` run leaves the agent in
+Replay and samples the kind node container's memory every five seconds, so the
+published requirement in [README.md](../README.md) can equal a measured peak plus
+a margin instead of an estimate.
 
 Exact commands, from a checkout at the commit under test:
 

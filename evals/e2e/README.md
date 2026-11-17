@@ -10,7 +10,10 @@ unless `PAGERLESS_E2E_RECORDING` names another recording in that directory, so
 model instead of Replay. `PAGERLESS_E2E_CAPTURE=1` additionally provisions the
 capture claim and writes the genuine OOMKilled recording, its provenance
 document, and the Narrative recording; the agent refuses a recording file in
-Replay, so that switch requires the live provider.
+Replay, so that switch requires the live provider. `PAGERLESS_E2E_LIVE=1` is the
+explicit opt-in that lets the harness' adapter preflight accept a live provider,
+and only the guarded paid workflow sets it, so `make eval-replay` can never spend
+money.
 `PAGERLESS_E2E_MEMORY_PEAK` names a file that the runner samples the kind node
 container's memory into every five seconds while the stack is up.
 
