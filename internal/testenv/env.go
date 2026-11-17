@@ -193,6 +193,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		filepath.Join(deployDir, "serviceaccounts.yaml"),
 		filepath.Join(deployDir, "rbac.yaml"),
 		filepath.Join(deployDir, "dry-run-policy.yaml"),
+		filepath.Join(deployDir, "agent-job-policy.yaml"),
 		filepath.Join(executorDir, "serviceaccounts.yaml"),
 		filepath.Join(executorDir, "rbac.yaml"),
 	} {

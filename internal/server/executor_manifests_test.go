@@ -81,7 +81,7 @@ func TestExecutorPodSatisfiesThePodSecurityStandardOfItsNamespace(t *testing.T) 
 func TestExecutorRunsAsItsOwnServiceAccountWithTheWriteToken(t *testing.T) {
 	t.Parallel()
 	executorSpec := readDeployment(t, executorDeployDir).Spec.Template.Spec
-	if executorSpec.ServiceAccountName != "pagerless-executor" {
+	if executorSpec.ServiceAccountName != executorServiceAccount {
 		t.Errorf("the Executor runs as %q, want its own service account", executorSpec.ServiceAccountName)
 	}
 	serverSpec := readDeployment(t, deployDir).Spec.Template.Spec
@@ -90,7 +90,7 @@ func TestExecutorRunsAsItsOwnServiceAccountWithTheWriteToken(t *testing.T) {
 	}
 	hasWriteToken := func(spec corev1.PodSpec) bool {
 		for _, volume := range spec.Volumes {
-			if volume.Secret != nil && volume.Secret.SecretName == "github-write" {
+			if volume.Secret != nil && volume.Secret.SecretName == githubWriteSecret {
 				return true
 			}
 		}

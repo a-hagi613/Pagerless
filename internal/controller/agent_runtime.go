@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 )
@@ -26,8 +25,9 @@ func (c AgentRuntimeConfig) ValidateRecording() error {
 	if c.Provider != "anthropic" && c.Provider != "bedrock" {
 		return errors.New("a server-managed recording requires a live model provider: anthropic or bedrock")
 	}
-	if errs := validation.IsDNS1123Subdomain(c.RecordingPVC); len(errs) > 0 {
-		return errors.New("PAGERLESS_RECORDING_PVC must name an existing PersistentVolumeClaim in the Job's namespace")
+	if c.RecordingPVC != "pagerless-replay-capture" {
+		return errors.New("PAGERLESS_RECORDING_PVC must name the dedicated " +
+			"pagerless-replay-capture claim permitted by agent Job admission")
 	}
 	if !path.IsAbs(c.RecordingFile) || path.Clean(c.RecordingFile) != c.RecordingFile ||
 		!strings.HasPrefix(c.RecordingFile, "/recordings/") || strings.ContainsRune(c.RecordingFile, 0) {
@@ -58,7 +58,7 @@ type AgentRuntimeConfig struct {
 	ArgoCDApplication string
 	AllowedNamespaces string
 	AWSRegion         string
-	// RecordingPVC names an existing claim in the agent Job's namespace, mounted at /recordings.
+	// RecordingPVC names the dedicated existing pagerless-replay-capture claim, mounted at /recordings.
 	RecordingPVC string
 }
 

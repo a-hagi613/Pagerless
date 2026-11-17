@@ -19,13 +19,14 @@ import (
 
 const (
 	anthropicProvider    = "anthropic"
+	bedrockProvider      = "bedrock"
 	recordingPVCVariable = "PAGERLESS_RECORDING_PVC"
 	recordingFile        = "/recordings/oom.json"
 	recordingClaimName   = "pagerless-replay-capture"
 )
 
 func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *testing.T) {
-	for _, provider := range []string{"replay", anthropicProvider, "bedrock"} {
+	for _, provider := range []string{"replay", anthropicProvider, bedrockProvider} {
 		t.Run(provider, func(t *testing.T) {
 			runtime := controller.AgentRuntimeConfig{
 				Provider: provider, KubernetesURL: "http://mcp-kubernetes:8080/mcp",
@@ -41,6 +42,7 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
+			waitForAgentJobPolicy(t, env, serverAdmissionClient(t, env), job)
 			pod := job.Spec.Template.Spec
 			for _, volume := range pod.Volumes {
 				if volume.PersistentVolumeClaim != nil {
@@ -86,7 +88,7 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 				t.Errorf("%s Jobs must not receive an Anthropic API key", provider)
 			}
 			for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
-				if provider == "bedrock" {
+				if provider == bedrockProvider {
 					requireSecretKey(t, variables[name], controller.AgentCredentialsSecret, name, true)
 				} else if _, exists := variables[name]; exists {
 					t.Errorf("%s Jobs must not receive %s", provider, name)
@@ -102,8 +104,15 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 }
 
 func TestAgentRecordingUsesOnlyTheExistingClaimAndPreservesTokenIsolation(t *testing.T) {
+	for _, provider := range []string{anthropicProvider, bedrockProvider} {
+		t.Run(provider, func(t *testing.T) { requireAgentRecordingStorage(t, provider) })
+	}
+}
+
+func requireAgentRecordingStorage(t *testing.T, provider string) {
+	t.Helper()
 	env := testenv.Start(t, testenv.WithAgentRuntime(controller.AgentRuntimeConfig{
-		Provider: anthropicProvider, RecordingPVC: recordingClaimName, RecordingFile: recordingFile,
+		Provider: provider, RecordingPVC: recordingClaimName, RecordingFile: recordingFile,
 	}))
 	claim := &corev1.PersistentVolumeClaim{
 		Name: recordingClaimName, Namespace: testenv.Namespace,
@@ -123,6 +132,7 @@ func TestAgentRecordingUsesOnlyTheExistingClaimAndPreservesTokenIsolation(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForAgentJobPolicy(t, env, serverAdmissionClient(t, env), job)
 	pod := job.Spec.Template.Spec
 	if pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 65532 {
 		t.Fatal("the recording claim must be writable by filesystem group 65532")
@@ -189,6 +199,7 @@ func TestAgentRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *te
 		{"relative path", anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
 		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
 		{"traversal", anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
+		{"unrelated claim", anthropicProvider, "private-data", recordingFile, recordingPVCVariable},
 		{"directory", anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
 	}
 	for _, tc := range cases {
