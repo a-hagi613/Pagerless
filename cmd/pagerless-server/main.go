@@ -18,6 +18,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
+	"github.com/a-hagi613/pagerless/internal/verification"
 	"github.com/a-hagi613/pagerless/internal/webhooktls"
 )
 
@@ -31,13 +32,16 @@ func main() {
 // defaultExecutorTokenFile is where the Deployment projects the token for the Executor.
 const defaultExecutorTokenFile = "/var/run/secrets/pagerless/executor/token"
 
+// defaultArgoCDTokenFile is where the Argo CD API token is mounted.
+const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
+
 // tokenFromFile returns a source that reads the token at every call, because
 // the kubelet rotates a projected token in place.
 func tokenFromFile(path string) func() (string, error) {
 	return func() (string, error) {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return "", fmt.Errorf("read the executor token: %w", err)
+			return "", fmt.Errorf("read the token file %s: %w", path, err)
 		}
 		return strings.TrimSpace(string(raw)), nil
 	}
@@ -86,6 +90,16 @@ func run() error {
 		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
 			"file that holds the projected service account token, with audience "+executorapi.Audience+
 				", that authenticates the server to the Executor")
+		argoCDURL = flag.String("argocd-url", "http://argocd-server.argocd.svc",
+			"base URL of the Argo CD API server, which Verification asks whether the merged change is synced")
+		argoCDTokenFile = flag.String("argocd-token-file", defaultArgoCDTokenFile,
+			"file that holds the bearer token that authenticates to the Argo CD API")
+		argoCDApplication = flag.String("argocd-application", verification.DefaultApplication,
+			"Argo CD application that deploys the Sandbox")
+		alertmanagerURL = flag.String("alertmanager-url", "http://alertmanager.monitoring.svc:9093",
+			"base URL of Alertmanager, which Verification asks whether the triggering alert has resolved")
+		verificationWindow = flag.Duration("verification-window", verification.DefaultWindow,
+			"how long Verification observes the Workload for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
 			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
 	)
@@ -137,6 +151,11 @@ func run() error {
 		ReportListener:       listener,
 		ExecutorURL:          *executorURL,
 		ExecutorToken:        tokenFromFile(*executorTokenFile),
+		ArgoCDURL:            *argoCDURL,
+		ArgoCDToken:          tokenFromFile(*argoCDTokenFile),
+		ArgoCDApplication:    *argoCDApplication,
+		AlertmanagerURL:      *alertmanagerURL,
+		VerificationWindow:   *verificationWindow,
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,

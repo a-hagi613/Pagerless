@@ -92,6 +92,7 @@ spec:
                     - Alertmanager
                     - CLI
                     - Dashboard
+                    - FollowUp
                     type: string
                 required:
                 - source
@@ -523,6 +524,12 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: atomic
+              verificationStartedAt:
+                description: |-
+                  VerificationStartedAt is when the five-minute observation window began: the moment Pagerless saw Argo CD
+                  report the application Synced and Healthy at the merge commit.
+                format: date-time
+                type: string
             type: object
         required:
         - spec

@@ -144,7 +144,7 @@ type WorkloadReference struct {
 }
 
 // TriggerSource identifies what started a Triage.
-// +kubebuilder:validation:Enum=Alertmanager;CLI;Dashboard
+// +kubebuilder:validation:Enum=Alertmanager;CLI;Dashboard;FollowUp
 type TriggerSource string
 
 const (
@@ -154,6 +154,8 @@ const (
 	TriggerSourceCLI TriggerSource = "CLI"
 	// TriggerSourceDashboard is a human request through the dashboard.
 	TriggerSourceDashboard TriggerSource = "Dashboard"
+	// TriggerSourceFollowUp is Verification: a NotRecovered outcome started a Follow-up Triage.
+	TriggerSourceFollowUp TriggerSource = "FollowUp"
 )
 
 // Trigger records the event that started a Triage.
@@ -406,6 +408,11 @@ type TriageStatus struct {
 	// Execution is the result of executing the Proposal.
 	// +optional
 	Execution *Execution `json:"execution,omitempty"`
+
+	// VerificationStartedAt is when the five-minute observation window began: the moment Pagerless saw Argo CD
+	// report the application Synced and Healthy at the merge commit.
+	// +optional
+	VerificationStartedAt *metav1.Time `json:"verificationStartedAt,omitempty"`
 
 	// VerificationChecks are the results of the deterministic Verification checks.
 	// +optional
