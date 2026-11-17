@@ -158,9 +158,9 @@ data "aws_iam_policy_document" "destroy_trust" {
   }
 }
 
-# Destroying the stack deletes the roles and policies the cluster created, which
-# PowerUserAccess deliberately excludes from its IAM allowance. Those writes are
-# scoped to this project's names, which every resource the stack creates uses.
+# Destroying the stack deletes the roles and policies the cluster created. Those
+# writes are scoped to this project's names, which every resource the stack
+# creates uses.
 data "aws_iam_policy_document" "destroy_identities" {
   statement {
     sid    = "ManageThisProjectsIdentities"
@@ -202,11 +202,119 @@ data "aws_iam_policy_document" "destroy_identities" {
       "iam:UpdateAssumeRolePolicy",
     ]
 
+    # Karpenter names the instance profiles it creates after the cluster with an
+    # underscore, so this pattern carries no separator.
     resources = [
       "arn:aws:iam::${var.aws_account_id}:instance-profile/${local.name_prefix}*",
       "arn:aws:iam::${var.aws_account_id}:policy/${local.name_prefix}*",
       "arn:aws:iam::${var.aws_account_id}:role/${local.name_prefix}*",
     ]
+  }
+}
+
+# Everything a teardown reads and deletes, and nothing that creates or starts
+# anything. PowerUserAccess would have been simpler to write but would also have
+# allowed this role to run instances and create clusters, which is more than a
+# destroy needs (spec #33, ticket #36).
+data "aws_iam_policy_document" "destroy" {
+  statement {
+    sid    = "ReadTheStackDuringDestroy"
+    effect = "Allow"
+
+    actions = [
+      "autoscaling:Describe*",
+      "ec2:Describe*",
+      "eks:Describe*",
+      "eks:List*",
+      "events:DescribeRule",
+      "events:ListRules",
+      "events:ListTagsForResource",
+      "events:ListTargetsByRule",
+      "iam:Get*",
+      "iam:List*",
+      "kms:DescribeKey",
+      "kms:GetKeyPolicy",
+      "kms:ListAliases",
+      "kms:ListKeys",
+      "kms:ListResourceTags",
+      "logs:Describe*",
+      "logs:ListTags*",
+      "sqs:GetQueueAttributes",
+      "sqs:GetQueueUrl",
+      "sqs:ListQueues",
+      "sqs:ListQueueTags",
+      "sts:GetCallerIdentity",
+      "tag:GetResources",
+    ]
+
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "DeleteTheStack"
+    effect = "Allow"
+
+    actions = [
+      "autoscaling:DeleteAutoScalingGroup",
+      "autoscaling:DeleteLaunchConfiguration",
+      "autoscaling:ResumeProcesses",
+      "autoscaling:SuspendProcesses",
+      "autoscaling:TerminateInstanceInAutoScalingGroup",
+      "autoscaling:UpdateAutoScalingGroup",
+      "ec2:DeleteInternetGateway",
+      "ec2:DeleteLaunchTemplate",
+      "ec2:DeleteLaunchTemplateVersions",
+      "ec2:DeleteRouteTable",
+      "ec2:DeleteSecurityGroup",
+      "ec2:DeleteSubnet",
+      "ec2:DeleteTags",
+      "ec2:DeleteVolume",
+      "ec2:DeleteVpc",
+      "ec2:DetachInternetGateway",
+      "ec2:DetachVolume",
+      "ec2:DisassociateRouteTable",
+      "ec2:ModifyInstanceAttribute",
+      "ec2:RevokeSecurityGroupEgress",
+      "ec2:RevokeSecurityGroupIngress",
+      "ec2:TerminateInstances",
+      "eks:DeleteAccessEntry",
+      "eks:DeleteAddon",
+      "eks:DeleteCluster",
+      "eks:DeleteFargateProfile",
+      "eks:DeleteNodegroup",
+      "eks:DeletePodIdentityAssociation",
+      "events:DeleteRule",
+      "events:RemoveTargets",
+      "kms:DeleteAlias",
+      "kms:DisableKey",
+      "kms:ScheduleKeyDeletion",
+      "logs:DeleteLogGroup",
+      "logs:DeleteResourcePolicy",
+      "sqs:DeleteQueue",
+    ]
+
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "ReadAndWriteStackState"
+    effect = "Allow"
+
+    actions = ["s3:GetObject", "s3:ListBucket", "s3:PutObject", "s3:DeleteObject"]
+
+    resources = [
+      local.state_bucket_arn,
+      "${local.state_bucket_arn}/phase-3/*",
+    ]
+  }
+
+  statement {
+    sid    = "ReadEksAmiParameters"
+    effect = "Allow"
+
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
+
+    resources = ["arn:aws:ssm:${var.aws_region}::parameter/aws/service/eks/optimized-ami/*"]
   }
 }
 
@@ -220,9 +328,10 @@ resource "aws_iam_role" "destroy" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "destroy_power_user" {
-  role       = aws_iam_role.destroy.name
-  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+resource "aws_iam_role_policy" "destroy" {
+  name   = "destroy"
+  role   = aws_iam_role.destroy.id
+  policy = data.aws_iam_policy_document.destroy.json
 }
 
 resource "aws_iam_role_policy" "destroy_identities" {

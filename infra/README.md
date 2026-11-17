@@ -82,7 +82,7 @@ It creates the GitHub Actions OIDC provider (`https://token.actions.githubuserco
 | Role | Assumed by | Permissions |
 | --- | --- | --- |
 | `pagerless-github-plan` | a `pull_request` workflow in `a-hagi613/pagerless` | read the state bucket and describe the infrastructure; no writes |
-| `pagerless-github-destroy` | a `main` branch workflow, which is the only place the nightly run executes | `PowerUserAccess` plus IAM writes scoped to `pagerless-*` identities |
+| `pagerless-github-destroy` | a `main` branch workflow, which is the only place the nightly run executes | describe and delete for the stack's services, the state bucket it must write, and IAM writes scoped to `pagerless*` identities; no action that creates or starts anything |
 
 Both trust policies match the repository's immutable subject claim, which includes the owner ID `92589940` and repository ID `1460399228` because the repository was created after 2026-07-15. A recycled repository name cannot inherit either role. Neither role can be assumed by a fork: the plan job also refuses a pull request whose head repository is not this one.
 
