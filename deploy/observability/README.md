@@ -22,6 +22,27 @@ The OpenTelemetry Collector reads `/var/log/pods` on every node, attaches Kubern
 
 The Alertmanager route in [`kube-prometheus-stack/values.yaml`](kube-prometheus-stack/values.yaml) sends opted-in alerts to the `pagerless-server` webhook receiver at `http://pagerless-server.pagerless.svc:8080/v1/alerts/alertmanager`. The receiver has an empty `http_config`, where a bearer token is configured when receiver authentication is added.
 
+## Pagerless metrics
+
+`pagerless-server` serves its own metrics on port 9090. [`monitors/pagerless-server.yaml`](monitors/pagerless-server.yaml) is a `ServiceMonitor` that selects the server's Service in the `pagerless` namespace, so Prometheus scrapes it every 30 seconds.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `pagerless_triages` | gauge | `phase` | Triages currently in each Phase, collected from the Triage cache at scrape time. |
+| `pagerless_proposals_total` | counter | `action` | Validated Proposals, including a Proposal re-validated under a new hash. |
+| `pagerless_decisions_total` | counter | `decision` | Human decisions: `Approved` or `Rejected`. |
+| `pagerless_verifications_total` | counter | `outcome` | Verification outcomes: `Recovered` or `NotRecovered`. |
+| `pagerless_time_to_recovered_seconds` | histogram | — | Seconds from Triage creation to Recovered. |
+| `pagerless_triage_input_tokens` | gauge | `triage` | Input tokens the Triage's investigation read, including cached tokens. |
+| `pagerless_triage_output_tokens` | gauge | `triage` | Output tokens the Triage's investigation wrote. |
+| `pagerless_triage_cost_usd` | gauge | `triage` | Estimated model cost of the Triage in United States dollars. |
+
+The per-Triage series exist only while the Triage resource does, which retention bounds to seven days after a terminal Phase.
+
+## Grafana dashboards
+
+[`dashboards/kustomization.yaml`](dashboards/kustomization.yaml) generates the `pagerless-dashboard` ConfigMap from [`dashboards/pagerless.json`](dashboards/pagerless.json) and labels it `grafana_dashboard: "1"`. The kube-prometheus-stack Grafana sidecar discovers that label in every namespace and provisions the **Pagerless** dashboard, which charts every metric above.
+
 ## Local credentials
 
 The Grafana administrator password is generated into the `kube-prometheus-stack-grafana` Secret in the `monitoring` namespace. It exists only in the local cluster, and `make down` deletes it.

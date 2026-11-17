@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: pagerless-server
   namespace: pagerless
+  labels:
+    app.kubernetes.io/name: pagerless-server
 spec:
   selector:
     app.kubernetes.io/name: pagerless-server
@@ -13,3 +15,6 @@ spec:
     - name: webhook
       port: 443
       targetPort: webhook
+    - name: metrics
+      port: 9090
+      targetPort: metrics

@@ -88,7 +88,8 @@ type StepEvent struct {
 	Finding *v1alpha1.Finding `json:"finding,omitempty"`
 }
 
-// Report is the agent's final output: a Diagnosis, its Findings, and one Proposal.
+// Report is the agent's final output: a Diagnosis, its Findings, one Proposal, and the model usage of the
+// investigation.
 type Report struct {
 	// Diagnosis is the root-cause conclusion.
 	Diagnosis string `json:"diagnosis"`
@@ -96,6 +97,9 @@ type Report struct {
 	Findings []v1alpha1.Finding `json:"findings"`
 	// Proposal is the single remediation the agent recommends.
 	Proposal v1alpha1.ProposedAction `json:"proposal"`
+	// Usage is the model usage of the investigation. It is optional so that a report from an agent that predates
+	// usage accounting remains valid.
+	Usage *v1alpha1.Usage `json:"usage,omitempty"`
 }
 
 // ValidationError describes one reason a report was refused.

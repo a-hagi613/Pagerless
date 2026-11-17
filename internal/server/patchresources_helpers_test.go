@@ -183,6 +183,16 @@ func patchReport(container string, requests, limits corev1.ResourceList) agentap
 	}
 }
 
+// reportUsage is the model usage that the tests' agents report. Its cost is the sum of the published Haiku 5.5
+// rates for 1,200 input and 300 output tokens.
+var reportUsage = v1alpha1.Usage{InputTokens: 1_200, OutputTokens: 300, CostUSD: 0.00027}
+
+// withUsage attaches model usage to a report.
+func withUsage(report agentapi.Report, usage v1alpha1.Usage) agentapi.Report {
+	report.Usage = &usage
+	return report
+}
+
 // startTriage creates a Triage for the Workload and returns its stand-in agent.
 func startTriage(t *testing.T, env *testenv.Env, name string) (string, *testenv.StandInAgent) {
 	t.Helper()

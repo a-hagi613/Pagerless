@@ -138,12 +138,13 @@ func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Rea
 	}
 	event = event.Bounded()
 	now := metav1.NewTime(h.Clock.Now())
-	_, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	step := v1alpha1.Step{Time: now, Kind: event.Kind, Tool: event.Tool, Summary: event.Summary}
+	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
 			return errNotInvestigating
 		}
 		status := &latest.Status
-		status.Steps = append(status.Steps, v1alpha1.Step{Time: now, Kind: event.Kind, Tool: event.Tool, Summary: event.Summary})
+		status.Steps = append(status.Steps, step)
 		if excess := len(status.Steps) - v1alpha1.MaxSteps; excess > 0 {
 			status.Steps = slices.Clone(status.Steps[excess:])
 		}
@@ -160,6 +161,8 @@ func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Rea
 		h.writeUpdateError(ctx, w, err)
 		return
 	}
+	// The step is history as it arrives, even though status keeps only the most recent MaxSteps of them.
+	h.Status.RecordStep(ctx, updated, step, event.Finding)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -207,6 +210,9 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		latest.Status.Findings = findings
 		latest.Status.Diagnosis = report.Diagnosis
 		latest.Status.Proposal = built
+		if report.Usage != nil {
+			latest.Status.Usage = report.Usage
+		}
 		latest.Status.Phase = v1alpha1.PhaseProposed
 		return nil
 	})

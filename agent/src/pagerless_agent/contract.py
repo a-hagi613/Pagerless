@@ -28,6 +28,10 @@ MAX_STEP_SUMMARY_LENGTH = 300
 MAX_TOOL_NAME_LENGTH = 128
 # The number of Findings a Triage keeps (`v1alpha1.MaxFindings`).
 MAX_FINDINGS = 20
+# Bounds on the model usage one report may carry, matching `internal/agentapi/check.go`.
+MAX_INPUT_TOKENS = 10_000_000
+MAX_OUTPUT_TOKENS = 1_000_000
+MAX_COST_USD = 100.0
 
 FindingKind = Literal["Log", "Metric", "Trace", "Event", "Commit"]
 StepKind = Literal["ToolCall", "Finding", "Progress"]
@@ -238,12 +242,21 @@ class DiagnosisOutput(_Strict):
     _diagnosis_given = field_validator("diagnosis")(_not_blank)
 
 
+class Usage(_Strict):
+    """The model usage of one investigation, bounded like the Triage status."""
+
+    inputTokens: Annotated[int, Field(ge=0, le=MAX_INPUT_TOKENS)]  # noqa: N815
+    outputTokens: Annotated[int, Field(ge=0, le=MAX_OUTPUT_TOKENS)]  # noqa: N815
+    costUSD: Annotated[float, Field(ge=0, le=MAX_COST_USD)]  # noqa: N815
+
+
 class Report(_Strict):
-    """The agent's final output: a Diagnosis, its Findings, and one Proposal."""
+    """The agent's final output: a Diagnosis, its Findings, one Proposal, and its model usage."""
 
     diagnosis: str
     findings: list[Finding]
     proposal: ProposedAction
+    usage: Usage | None = None
 
 
 class ReportError(_Strict):
