@@ -75,6 +75,17 @@ data "aws_iam_policy_document" "plan" {
   }
 
   statement {
+    sid    = "ReadEksAmiParametersForAPlan"
+    effect = "Allow"
+
+    actions = ["ssm:GetParameter", "ssm:GetParameters"]
+
+    # The EKS node group module resolves its Amazon Linux 2023 AMI from the
+    # public EKS parameter namespace; the plan reads it before anything exists.
+    resources = ["arn:aws:ssm:${var.aws_region}::parameter/aws/service/eks/optimized-ami/*"]
+  }
+
+  statement {
     sid    = "ReadInfrastructureForAPlan"
     effect = "Allow"
 
