@@ -59,11 +59,11 @@ tflint --init && tflint --recursive
 
 - Public subnets only, one per Availability Zone, each with a public IPv4 address on launch. Nodes reach Amazon ECR, Bedrock and the cluster endpoint through the internet gateway; there is no NAT gateway.
 - No load balancer, no public ingress, and no endpoint other than the EKS API. The dashboard and Grafana are reached with `kubectl port-forward`.
-- The node security group has no ingress rule. The control plane reaches the kubelet and webhook ports through the cluster security group that Amazon EKS attaches to every node, which permits traffic only between its own members.
+- Nothing in this layer accepts a connection: it creates no security group and no listener. The node security group arrives with the cluster, which permits traffic only from the cluster security group that Amazon EKS creates, never from a CIDR block or the internet.
 
 ## Cost
 
-Everything in this directory is free to create: a VPC, subnets, an internet gateway, a route table and a security group incur no hourly charge. The first billable resource appears when the cluster is created, which is why the network is applied by `make cloud-up` rather than on its own.
+Everything in this directory is free to create: a VPC, three subnets, an internet gateway and a route table incur no hourly charge. The first billable resource appears when the cluster is created, which is why the network is applied by `make cloud-up` rather than on its own.
 
 Every resource carries `project=pagerless` through the provider's default tags. The tag is activated as a cost-allocation tag outside Terraform, so the tag value is what Cost Explorer reports per session.
 

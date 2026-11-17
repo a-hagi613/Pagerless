@@ -73,29 +73,3 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
-
-resource "aws_security_group" "nodes" {
-  name_prefix = "${var.name}-nodes-"
-  description = "Cluster nodes: no inbound traffic, unrestricted outbound traffic."
-  vpc_id      = aws_vpc.this.id
-
-  # The control plane reaches the kubelet and the webhook ports through the
-  # cluster security group, which Amazon EKS attaches to every node group member
-  # and which permits traffic only between its own members. This group adds no
-  # ingress rule, so no traffic from a CIDR block or the internet is accepted.
-  egress {
-    description = "Allow the nodes to pull images, call AWS APIs, and reach the cluster endpoint."
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.name}-nodes"
-  }
-
-  lifecycle {
-    create_before_destroy = true
-  }
-}

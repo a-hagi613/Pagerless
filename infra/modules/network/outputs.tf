@@ -17,8 +17,3 @@ output "availability_zones" {
   description = "Availability Zones the public subnets occupy, in the same order."
   value       = aws_subnet.public[*].availability_zone
 }
-
-output "node_security_group_id" {
-  description = "Security group with no inbound rule, for partial use by the cluster's nodes."
-  value       = aws_security_group.nodes.id
-}

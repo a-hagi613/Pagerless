@@ -17,8 +17,3 @@ output "availability_zones" {
   description = "Availability Zones the public subnets occupy."
   value       = module.network.availability_zones
 }
-
-output "node_security_group_id" {
-  description = "Security group for cluster nodes. It has no inbound rule; the cluster security group carries the control plane traffic."
-  value       = module.network.node_security_group_id
-}
