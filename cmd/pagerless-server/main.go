@@ -3,8 +3,10 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
+	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/verification"
 	"github.com/a-hagi613/pagerless/internal/webhooktls"
@@ -69,6 +72,7 @@ func splitList(s string) []string {
 func run() error {
 	defaults := patchresources.DefaultBounds()
 	defaultCPU, defaultMemory := defaults[corev1.ResourceCPU], defaults[corev1.ResourceMemory]
+	defaultScale := scale.DefaultBounds()
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
 			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
@@ -119,6 +123,10 @@ func run() error {
 			"minimum memory request or limit in PatchResources")
 		patchMaxMemory = flag.String("patch-max-memory", defaultMemory.Max.String(),
 			"maximum memory request or limit in PatchResources")
+		scaleMin = flag.Int("scale-min-replicas", int(defaultScale.Min),
+			"minimum replica count in Scale")
+		scaleMax = flag.Int("scale-max-replicas", int(defaultScale.Max),
+			"maximum replica count in Scale")
 		executorURL = flag.String("executor-url", "",
 			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
 		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
@@ -144,6 +152,10 @@ func run() error {
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 	bounds, err := parsePatchBounds(*patchMinCPU, *patchMaxCPU, *patchMinMemory, *patchMaxMemory)
+	if err != nil {
+		return err
+	}
+	scaleBounds, err := parseScaleBounds(*scaleMin, *scaleMax)
 	if err != nil {
 		return err
 	}
@@ -225,6 +237,7 @@ func run() error {
 		},
 		AllowedNamespaces:  splitList(*patchable),
 		PatchBounds:        bounds,
+		ScaleBounds:        scaleBounds,
 		AlertNamespaces:    allowed,
 		WebhookPort:        *webhookPort,
 		WebhookCertDir:     *webhookCertDir,
@@ -266,6 +279,17 @@ func parsePatchBounds(
 		bounds[setting.name] = patchresources.Bounds{Min: minimum, Max: maximum}
 	}
 	return bounds, nil
+}
+
+// parseScaleBounds validates the replica bounds supplied through the server's flags.
+func parseScaleBounds(minimum, maximum int) (scale.Bounds, error) {
+	if minimum < 0 || maximum < minimum {
+		return scale.Bounds{}, errors.New("scale bounds must be non-negative and the minimum must not exceed the maximum")
+	}
+	if maximum > math.MaxInt32 {
+		return scale.Bounds{}, errors.New("scale bounds must fit in a replica count")
+	}
+	return scale.Bounds{Min: int32(minimum), Max: int32(maximum)}, nil
 }
 
 // agentRuntimeFromEnvironment copies the non-secret configuration supplied by the bootstrap.

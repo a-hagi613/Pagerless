@@ -35,9 +35,11 @@ import (
 	"github.com/a-hagi613/pagerless/internal/metrics"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
+	"github.com/a-hagi613/pagerless/internal/remediation"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
 	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
+	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/triage"
 	"github.com/a-hagi613/pagerless/internal/verification"
 )
@@ -117,16 +119,19 @@ type Config struct {
 	// Clock defaults to the real clock.
 	Clock clock.Clock
 	// Validators are the Actions that Validation accepts, which replaces the
-	// defaults below. When it is nil, Validation accepts NoAction, and also
-	// PatchResources and Rollback if Sandbox is set.
+	// defaults below. When it is nil, Validation accepts NoAction and
+	// RestartWorkload, and also Scale, PatchResources, and Rollback if Sandbox is set.
 	Validators map[v1alpha1.Action]proposal.ActionValidator
 	// Sandbox is the repository that the pull request Actions are rendered against.
 	Sandbox sandbox.Repository
-	// AllowedNamespaces are the namespaces whose Workloads the pull request Actions may change.
+	// AllowedNamespaces are the namespaces whose Workloads the executable Actions may change.
 	AllowedNamespaces []string
 	// PatchBounds are the permitted ranges of PatchResources requests and limits.
 	// It defaults to patchresources.DefaultBounds.
 	PatchBounds map[corev1.ResourceName]patchresources.Bounds
+	// ScaleBounds are the permitted replica counts of the Scale Action.
+	// It defaults to scale.DefaultBounds.
+	ScaleBounds scale.Bounds
 	// ProposalPollInterval is how often a Proposed Triage is checked for a Stale Proposal.
 	// It defaults to controller.DefaultProposalPollInterval.
 	ProposalPollInterval time.Duration
@@ -230,6 +235,9 @@ func (c Config) withDefaults() Config {
 	if c.PatchBounds == nil {
 		c.PatchBounds = patchresources.DefaultBounds()
 	}
+	if c.ScaleBounds == (scale.Bounds{}) {
+		c.ScaleBounds = scale.DefaultBounds()
+	}
 	if c.ProposalPollInterval == 0 {
 		c.ProposalPollInterval = controller.DefaultProposalPollInterval
 	}
@@ -296,7 +304,20 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	validators := cfg.Validators
 	if validators == nil {
 		validators = proposal.DefaultValidators()
+		shared := remediation.Config{
+			Reader:            mgr.GetAPIReader(),
+			Sandbox:           cfg.Sandbox,
+			AllowedNamespaces: cfg.AllowedNamespaces,
+		}
+		validators[v1alpha1.ActionRestartWorkload] = remediation.NewRestart(shared)
 		if cfg.Sandbox.URL != "" {
+			validators[v1alpha1.ActionScale] = scale.New(scale.Config{
+				Reader:            mgr.GetAPIReader(),
+				Writer:            mgr.GetClient(),
+				Sandbox:           cfg.Sandbox,
+				AllowedNamespaces: cfg.AllowedNamespaces,
+				Bounds:            cfg.ScaleBounds,
+			})
 			validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
 				Reader:            mgr.GetAPIReader(),
 				Writer:            mgr.GetClient(),

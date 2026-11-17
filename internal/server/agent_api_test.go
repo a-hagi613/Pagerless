@@ -125,7 +125,7 @@ func TestAgentAPIRefusesMalformedAndOversizedBodies(t *testing.T) {
 }
 
 // TestReportsThatFailValidationAreAnsweredSynchronously covers the report
-// contract's refusals. Only NoAction is accepted in this phase.
+// contract's refusals. The harness accepts only NoAction here.
 func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
@@ -149,7 +149,7 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 		{"finding without a source", with(func(r *agentapi.Report) { r.Findings[0].Source = "" }), "findings[0].source"},
 		{"finding of unknown kind", with(func(r *agentapi.Report) { r.Findings[0].Kind = "Rumour" }), "findings[0].kind"},
 		{"unknown action", with(func(r *agentapi.Report) { r.Proposal.Action = "DeleteNamespace" }), "proposal.action"},
-		{"action not yet accepted", with(func(r *agentapi.Report) {
+		{"an action with no validator", with(func(r *agentapi.Report) {
 			r.Proposal = v1alpha1.ProposedAction{
 				Action:     v1alpha1.ActionScale,
 				Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 3}},

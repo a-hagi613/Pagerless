@@ -8,6 +8,21 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
+func TestScaleBoundsConfiguration(t *testing.T) {
+	bounds, err := parseScaleBounds(2, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bounds.Min != 2 || bounds.Max != 5 {
+		t.Errorf("bounds = %+v, want 2..5", bounds)
+	}
+	for _, inputs := range [][2]int{{-1, 5}, {5, 2}} {
+		if _, err := parseScaleBounds(inputs[0], inputs[1]); err == nil || !strings.Contains(err.Error(), "bounds") {
+			t.Errorf("bounds %v: error = %v, want invalid bounds", inputs, err)
+		}
+	}
+}
+
 func TestPatchBoundsConfiguration(t *testing.T) {
 	const cpuMinimum, memoryMinimum, memoryMaximum = "250m", "32Mi", "1Gi"
 	bounds, err := parsePatchBounds(cpuMinimum, "2", memoryMinimum, memoryMaximum)

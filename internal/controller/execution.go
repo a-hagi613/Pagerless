@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -81,7 +82,8 @@ func (r *ExecutionReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	proposal := tr.Status.Proposal
-	if !tr.DeletionTimestamp.IsZero() || proposal == nil || !proposal.Action.DeliveredByPullRequest() {
+	if !tr.DeletionTimestamp.IsZero() || proposal == nil ||
+		(!proposal.Action.DeliveredByPullRequest() && !proposal.Action.ExecutesLive()) {
 		return ctrl.Result{}, nil
 	}
 	switch tr.Status.Phase {
@@ -114,7 +116,12 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 	if tr.Status.Phase != v1alpha1.PhaseExecuting || tr.Status.Proposal == nil {
 		return ctrl.Result{}, nil
 	}
-	if tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != "" {
+	if tr.Status.Proposal.Action.DeliveredByPullRequest() {
+		if tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != "" {
+			return ctrl.Result{}, nil
+		}
+	} else if tr.Status.Execution != nil && tr.Status.Execution.ExecutedAt != nil {
+		// A live Action is complete as soon as its result is recorded; Verification takes over.
 		return ctrl.Result{}, nil
 	}
 	winner, _, err := triage.CanonicalActive(ctx, r.Status.Reader, tr.Namespace, tr.Spec.Workload)
@@ -143,6 +150,10 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 	if err := r.record(ctx, key, response); err != nil {
 		return ctrl.Result{}, err
 	}
+	if response.Live {
+		log.Info("executed the Proposal live", "restartedPods", response.RestartedPods)
+		return ctrl.Result{}, nil
+	}
 	if response.State == executorapi.PullRequestMerged {
 		log.Info("the pull request merged", "pullRequest", response.PullRequestURL, "mergeCommit", response.MergeCommit)
 		return ctrl.Result{}, nil
@@ -163,6 +174,10 @@ func (r *ExecutionReconciler) record(ctx context.Context, key client.ObjectKey, 
 		if latest.Status.Execution == nil {
 			now := metav1.NewTime(r.Clock.Now())
 			latest.Status.Execution = &v1alpha1.Execution{ExecutedAt: &now}
+		}
+		if response.Live {
+			latest.Status.Execution.RestartedPods = slices.Clone(response.RestartedPods)
+			return nil
 		}
 		latest.Status.Execution.PullRequestURL = response.PullRequestURL
 		if response.State == executorapi.PullRequestMerged {
