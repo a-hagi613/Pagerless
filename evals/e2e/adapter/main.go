@@ -78,7 +78,7 @@ func runServer(args []string) error {
 	writeTokenFile := flags.String("write-token-file", "/var/run/pagerless/write-token",
 		"file containing the disposable adapter write token")
 	source := flags.String("source", "https://github.com/a-hagi613/pagerless-sandbox.git", "read-only Sandbox source URL")
-	revision := flags.String("revision", "f865713644857f6717ca138056eb164c57be6e49", "pinned known-good Sandbox commit")
+	revision := flags.String("revision", "55ab7c5f78ab29a8c6560e6134304c5f53d4fa0c", "pinned known-good Sandbox commit")
 	cert := flags.String("tls-cert", "/var/run/pagerless/tls/tls.crt", "HTTPS certificate path")
 	key := flags.String("tls-key", "/var/run/pagerless/tls/tls.key", "HTTPS private key path")
 	if err := flags.Parse(args); err != nil {
@@ -88,14 +88,11 @@ func runServer(args []string) error {
 		return errors.New("-repository must be <owner>/<name>")
 	}
 	repoRoot := filepath.Join(*root, filepath.FromSlash(*repository+".git"))
-	if _, err := os.Stat(filepath.Join(repoRoot, "HEAD")); errors.Is(err, os.ErrNotExist) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if err := initializeRepository(ctx, repoRoot, *source, *revision); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return fmt.Errorf("inspect the Sandbox bare repository: %w", err)
+	initialization, cancelInitialization := context.WithTimeout(context.Background(), 2*time.Minute)
+	baseCommit, err := ensureRepository(initialization, repoRoot, *source, *revision)
+	cancelInitialization()
+	if err != nil {
+		return err
 	}
 	readToken, err := os.ReadFile(*readTokenFile)
 	if err != nil {
@@ -108,7 +105,7 @@ func runServer(args []string) error {
 	sandbox, err := newServer(configuration{
 		repository: *repository,
 		repoRoot:   repoRoot,
-		baseCommit: *revision,
+		baseCommit: baseCommit,
 		readToken:  stringTrimSpace(readToken),
 		writeToken: stringTrimSpace(writeToken),
 	})

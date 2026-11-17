@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,29 +16,90 @@ import (
 	"strings"
 )
 
-func initializeRepository(ctx context.Context, directory, source, revision string) error {
+// ensureRepository returns the commit at refs/heads/main, initializing the bare
+// repository from the pinned revision when it is absent or incomplete. The clone
+// is staged beside the final path so a failed start cannot leave a partial
+// repository that a later start would accept as valid.
+func ensureRepository(ctx context.Context, directory, source, revision string) (string, error) {
+	if commit, err := repositoryCommit(ctx, directory); err == nil {
+		return commit, nil
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		return "", fmt.Errorf("remove the incomplete Sandbox repository: %w", err)
+	}
+	staging := directory + ".init"
+	if err := os.RemoveAll(staging); err != nil {
+		return "", fmt.Errorf("remove the staged Sandbox repository: %w", err)
+	}
+	commit, err := initializeRepository(ctx, staging, source, revision)
+	if err != nil {
+		_ = os.RemoveAll(staging)
+		return "", err
+	}
+	if err := os.Rename(staging, directory); err != nil {
+		_ = os.RemoveAll(staging)
+		return "", fmt.Errorf("install the Sandbox repository: %w", err)
+	}
+	return commit, nil
+}
+
+func repositoryCommit(ctx context.Context, directory string) (string, error) {
+	output, err := gitOutput(ctx, directory, "rev-parse", "--verify", "refs/heads/main^{commit}")
+	if err != nil {
+		return "", err
+	}
+	commit := strings.TrimSpace(output)
+	if !validCommit(commit) {
+		return "", errors.New("the Sandbox repository has no commit at refs/heads/main")
+	}
+	return commit, nil
+}
+
+func initializeRepository(ctx context.Context, directory, source, revision string) (string, error) {
 	if source == "" || revision == "" {
-		return fmt.Errorf("the source URL and base revision are required")
+		return "", fmt.Errorf("the source URL and base revision are required")
 	}
 	if err := os.MkdirAll(path.Dir(directory), 0o750); err != nil {
-		return fmt.Errorf("create the repository directory: %w", err)
+		return "", fmt.Errorf("create the repository directory: %w", err)
 	}
 	if err := runGit(ctx, "", "init", "--bare", "--initial-branch=main", directory); err != nil {
-		return err
+		return "", err
 	}
 	if err := runGit(ctx, "", "--git-dir", directory, "fetch", "--depth=1", source, revision); err != nil {
-		return fmt.Errorf("fetch the pinned Sandbox base revision: %w", err)
+		return "", fmt.Errorf("fetch the pinned Sandbox base revision: %w", err)
 	}
-	if err := runGit(ctx, "", "--git-dir", directory, "update-ref", "refs/heads/main", "FETCH_HEAD"); err != nil {
-		return err
+	// The pinned revision may be an annotated tag. A branch tip must be a
+	// commit, so peel it before updating the reference.
+	output, err := gitOutput(ctx, directory, "rev-parse", "--verify", "FETCH_HEAD^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve the pinned Sandbox revision to a commit: %w", err)
+	}
+	commit := strings.TrimSpace(output)
+	if !validCommit(commit) {
+		return "", errors.New("the pinned Sandbox revision does not resolve to a commit")
+	}
+	if err := runGit(ctx, "", "--git-dir", directory, "update-ref", "refs/heads/main", commit); err != nil {
+		return "", err
 	}
 	if err := runGit(ctx, "", "--git-dir", directory, "symbolic-ref", "HEAD", "refs/heads/main"); err != nil {
-		return err
+		return "", err
 	}
 	if err := runGit(ctx, "", "--git-dir", directory, "config", "http.receivepack", "true"); err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return commit, nil
+}
+
+func validCommit(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func runGit(ctx context.Context, directory string, args ...string) error {
