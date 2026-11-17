@@ -144,7 +144,7 @@ helm template pagerless-root "$REPO_ROOT/deploy/root" \
 # The MCP pods need the accounts provisioned after Grafana and Argo CD are ready.
 wait_for_application root "" 300 synced
 wait_for_application sandbox "" 300
-for app in kube-prometheus-stack loki tempo opentelemetry-collector observability-alerts; do
+for app in chaos-mesh kube-prometheus-stack loki tempo opentelemetry-collector observability-alerts; do
 	wait_for_application "$app" "" 900
 done
 kc -n sandbox rollout status deployment/checkout --timeout=180s

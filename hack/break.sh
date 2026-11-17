@@ -17,6 +17,14 @@ available_scenarios() {
 
 scenario="${1:-}"
 [ -n "$scenario" ] || die "usage: make break SCENARIO=<name>. Scenarios: $(available_scenarios)"
+
+# Scenario 9 is applied outside Git by design (ADR-0019): a Chaos Mesh
+# experiment is a cluster object, so the Sandbox repository keeps its
+# known-good manifests and no Action on the menu can fix the failure.
+if [ "$scenario" = cpu ]; then
+	bash "$REPO_ROOT/hack/cpu-stress.sh" apply
+	exit 0
+fi
 patch_file="$REPO_ROOT/scenarios/$scenario/inject.patch"
 [ -f "$patch_file" ] || die "unknown Scenario '$scenario': $patch_file does not exist. Scenarios: $(available_scenarios)"
 

@@ -82,9 +82,11 @@ kubectl triage --context kind-pagerless list
 
 `make break` opens an auto-merging Scenario pull request in your Sandbox and waits for the checkout Workload to become OOMKilled and for `ContainerOOMKilled` to fire in Alertmanager. The alert carries `pagerless_triage="true"`, `namespace`, `deployment` and `pod` labels. Use the printed Triage name with `kubectl triage --context kind-pagerless show <name> --watch`, review its rendered change, and approve it with `kubectl triage --context kind-pagerless approve <name>`. Approval prompts for confirmation; `--yes` is available for an explicitly reviewed noninteractive invocation.
 
+`make break SCENARIO=cpu` injects the CPU-stress Scenario instead. It applies a Chaos Mesh `StressChaos` experiment to the `payment` Workload outside Git, so the Sandbox manifests stay at known-good, and waits for Chaos Mesh to inject it. The expected outcome is `NoAction` with a Diagnosis that names the experiment, because no change to the Workload fixes a cause that lives outside it. [docs/scenarios.md](docs/scenarios.md) records the Scenario list, the answer key, and both injection paths.
+
 To start a Triage manually, use `kubectl triage --context kind-pagerless --namespace sandbox deploy/checkout`. The CLI also accepts `pod/<name>` and `sts/<name>`, resolves pods to their owning Workload, and returns the existing Active Triage when one already exists.
 
-`make reset` force-resets your Sandbox's `main` to its `known-good` tag and waits for a healthy Argo CD rollout. `make down` deletes the local kind stack and keeps `.env`.
+`make reset` removes any Chaos Mesh experiment from the sandbox namespace, force-resets your Sandbox's `main` to its `known-good` tag, and waits for a healthy Argo CD rollout. `make down` deletes the local kind stack and keeps `.env`.
 
 ### Run the isolated end-to-end harness
 
@@ -139,9 +141,11 @@ Stack values and component pins are documented in [deploy/observability](deploy/
 ## Documentation
 
 - [Glossary](GLOSSARY.md): the project's domain vocabulary.
+- [Scenarios and the answer key](docs/scenarios.md): the failure injections, both injection paths, and the expected Proposal for each Scenario.
 - [Architecture Decision Records](docs/adr/README.md): significant decisions and their rationale.
 - [Server manifests and admission boundaries](deploy/pagerless-server/README.md).
 - [Read-only MCP services](deploy/mcp/README.md).
+- [Chaos Mesh](deploy/chaos-mesh/README.md).
 - [Agent runtime and Replay](agent/README.md).
 
 ## License
