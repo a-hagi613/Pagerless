@@ -1,0 +1,69 @@
+{
+  "format": "pagerless.dev/replay",
+  "version": 1,
+  "scenario": "cart-flag",
+  "model": "synthetic",
+  "workload": "cart",
+  "turns": [
+    {
+      "stage": "investigate",
+      "response": {
+        "text": "The Context Bundle shows the cart service healthy but failing every empty-cart call, and the newest Sandbox commit changes the shared flagd configuration. I have the cause already.",
+        "tool_calls": [],
+        "structured": null,
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 100
+        }
+      }
+    },
+    {
+      "stage": "diagnose",
+      "response": {
+        "text": "",
+        "tool_calls": [],
+        "structured": {
+          "diagnosis": "The cart Deployment is healthy and has not restarted, but every EmptyCart call fails with FailedPrecondition because the store it writes to is unreachable. The newest Sandbox commit, {{commit:0:10}}, set the cartFailure flag to 100% in the shared flagd configuration at workloads/configmaps/flagd-config.yaml, which the cart Workload declares as a dependency path, so the flagd feature flag sends every empty-cart write to an unreachable host. Checkout cannot complete while the flag stays on.",
+          "findings": [
+            {
+              "kind": "Commit",
+              "source": "Context Bundle: Recent Sandbox commits, {{commit:0:10}} at workloads/configmaps/flagd-config.yaml",
+              "summary": "The newest commit {{commit:0:10}} \"Inject the cart-flag Scenario into cart\" sets the cartFailure flag to 100% in the shared flagd configuration."
+            },
+            {
+              "kind": "Log",
+              "source": "Context Bundle: Recent logs of the cart container",
+              "summary": "Every EmptyCart call logs FailedPrecondition from the cart store, and the process keeps serving other calls."
+            },
+            {
+              "kind": "Metric",
+              "source": "ServiceErrorRateHigh alert raised by the cart Workload",
+              "summary": "The cart Workload's server spans are failing while its pods stay ready and restart-free."
+            }
+          ]
+        },
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 100
+        }
+      }
+    },
+    {
+      "stage": "propose",
+      "response": {
+        "text": "",
+        "tool_calls": [],
+        "structured": {
+          "action": "Rollback",
+          "parameters": {
+            "commit": "{{commit:0}}"
+          }
+        },
+        "usage": {
+          "input_tokens": 1000,
+          "output_tokens": 100
+        }
+      }
+    }
+  ]
+}
