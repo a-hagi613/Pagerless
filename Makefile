@@ -2,7 +2,7 @@
 
 include hack/versions.env
 
-.PHONY: help generate manifests build-cli test test-go test-agent lint lint-go lint-agent up down break reset
+.PHONY: help generate manifests build-cli build-images test test-go test-agent lint lint-go lint-agent up dev e2e down break reset
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -18,6 +18,11 @@ manifests: ## Generate the CustomResourceDefinitions.
 
 build-cli: ## Build the kubectl-triage plugin into bin/.
 	go build -o bin/kubectl-triage ./cmd/kubectl-triage
+
+build-images: ## Build the server, Executor, and agent container images locally.
+	docker build --file Dockerfile.pagerless-server --tag $(PAGERLESS_SERVER_IMAGE) .
+	docker build --file Dockerfile.pagerless-executor --tag $(PAGERLESS_EXECUTOR_IMAGE) .
+	docker build --file Dockerfile.pagerless-agent --tag $(PAGERLESS_AGENT_IMAGE) .
 
 test: test-go test-agent ## Run the Go and Python test suites.
 
@@ -41,6 +46,12 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 
 up: ## Create the kind cluster, install Argo CD, and deploy the Sandbox.
 	bash hack/up.sh
+
+dev: ## Build local images, load them into kind, and create the development stack.
+	bash hack/dev.sh
+
+e2e: ## Run the credential-free synthetic Replay end-to-end scenario in kind.
+	bash evals/e2e/run.sh
 
 down: ## Delete the kind cluster and the local Helm repository entry.
 	bash hack/down.sh
