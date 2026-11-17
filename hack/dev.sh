@@ -19,6 +19,7 @@ make -C "$repo_root" build-images
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 	. "$script_dir/versions.env"
 	docker build --file "$repo_root/Dockerfile.pagerless-e2e-adapter" \
+		--build-arg "VCS_REF=${PAGERLESS_BUILD_REVISION:-local}" \
 		--tag "$PAGERLESS_E2E_ADAPTER_IMAGE" "$repo_root"
 	docker build --file "$repo_root/Dockerfile.pagerless-agent-e2e" \
 		--build-arg "BASE_IMAGE=$PAGERLESS_AGENT_IMAGE" \

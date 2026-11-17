@@ -10,11 +10,16 @@ import sys
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener, HTTPSHandler
+from urllib.request import HTTPSHandler, Request, build_opener
 
 
 def request(
-    base: str, token: str, method: str, route: str, payload: dict[str, object] | None = None, *,
+    base: str,
+    token: str,
+    method: str,
+    route: str,
+    payload: dict[str, object] | None = None,
+    *,
     ca_file: str | None = None,
 ) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -49,6 +54,7 @@ def main() -> int:
     parser.add_argument("--title", default="")
     parser.add_argument("--body", default="")
     parser.add_argument("--number", type=int, default=0)
+    parser.add_argument("--sha", default="")
     parser.add_argument("--timeout", type=int, default=180)
     args = parser.parse_args()
     base = os.environ["PAGERLESS_E2E_API_URL"].rstrip("/")
@@ -58,24 +64,59 @@ def main() -> int:
     repo = args.repository
 
     if args.command == "open":
-        pr = request(base, token, "POST", f"/repos/{repo}/pulls", {
-            "title": args.title, "body": args.body, "head": args.branch, "base": "main",
-        }, ca_file=ca_file)
+        pr = request(
+            base,
+            token,
+            "POST",
+            f"/repos/{repo}/pulls",
+            {
+                "title": args.title,
+                "body": args.body,
+                "head": args.branch,
+                "base": "main",
+            },
+            ca_file=ca_file,
+        )
         print(pr["number"])
     elif args.command == "enable":
         pr = request(base, token, "GET", f"/repos/{repo}/pulls/{args.number}", ca_file=ca_file)
-        request(base, token, "POST", "/graphql", {
-            "query": "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method}) { pullRequest { number } } }",
-            "variables": {"id": pr["node_id"], "method": "SQUASH"},
-        }, ca_file=ca_file)
+        request(
+            base,
+            token,
+            "POST",
+            "/graphql",
+            {
+                "query": (
+                    "mutation($id: ID!, $method: PullRequestMergeMethod!) { "
+                    "enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method}) "
+                    "{ pullRequest { number } } }"
+                ),
+                "variables": {"id": pr["node_id"], "method": "SQUASH"},
+            },
+            ca_file=ca_file,
+        )
     elif args.command == "pass-check":
-        request(control, token, "POST", f"/__e2e/checks/{args.number}", {"status": "success"})
+        if len(args.sha) != 40 or any(character not in "0123456789abcdef" for character in args.sha):
+            raise RuntimeError("a required check must identify the exact validated head SHA")
+        request(
+            control,
+            token,
+            "POST",
+            f"/__e2e/checks/{args.number}",
+            {"status": "success", "sha": args.sha},
+        )
     elif args.command == "reset":
         request(control, token, "POST", "/__e2e/reset", {})
     else:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
-            pr = request(base, token, "GET", f"/repos/{repo}/pulls/{args.number}", ca_file=ca_file)
+            pr = request(
+                base,
+                token,
+                "GET",
+                f"/repos/{repo}/pulls/{args.number}",
+                ca_file=ca_file,
+            )
             if pr.get("merged") is True and isinstance(pr.get("merge_commit_sha"), str):
                 print(pr["merge_commit_sha"])
                 return 0

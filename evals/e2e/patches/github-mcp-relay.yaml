@@ -19,11 +19,11 @@ spec:
             - name: adapter-relay
               containerPort: 8083
           readinessProbe:
-            tcpSocket:
-              port: adapter-relay
+            exec:
+              command: [/usr/local/bin/pagerless-e2e-adapter, healthcheck, --url=http://127.0.0.1:8083/healthz]
           livenessProbe:
-            tcpSocket:
-              port: adapter-relay
+            exec:
+              command: [/usr/local/bin/pagerless-e2e-adapter, healthcheck, --url=http://127.0.0.1:8083/healthz]
           resources:
             requests:
               cpu: 10m

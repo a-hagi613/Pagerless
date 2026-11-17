@@ -23,7 +23,10 @@ token; the Executor and the host-side Scenario client use the write token.
 
 The adapter records an open pull request, accepts the same squash auto-merge
 mutation used by production, and performs a real squash merge in Git only after
-the host harness has run the pinned strict manifest check. A separate,
+the host harness has run the pinned strict manifest check on the exact head
+commit. Both the Scenario and remediation pull requests require that check;
+the completion request binds its result to the head SHA, and a changed head is
+refused. A separate,
 loopback-only control listener exposes the check and reset operations. The
 original GitHub MCP binary is retained; an E2E-only relay in its Pod forwards
 its loopback GitHub Enterprise API requests to the adapter over HTTPS and

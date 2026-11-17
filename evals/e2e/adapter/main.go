@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"time"
 )
+
+const healthcheckCommand = "healthcheck"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -23,16 +26,45 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("expected serve or relay subcommand")
+		return errors.New("expected serve, relay, or healthcheck subcommand")
 	}
 	switch args[0] {
 	case "serve":
 		return runServer(args[1:])
 	case "relay":
 		return runRelay(args[1:])
+	case healthcheckCommand:
+		return runHealthcheck(args[1:])
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func runHealthcheck(args []string) error {
+	flags := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	address := flags.String("url", "http://127.0.0.1:8083/healthz", "loopback relay health URL")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	endpoint, err := url.Parse(*address)
+	if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" || endpoint.Path != "/healthz" {
+		return errors.New("healthcheck must use loopback HTTP /healthz")
+	}
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	response, err := client.Get(*address)
+	if err != nil {
+		return errors.New("the adapter relay is not healthy")
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("the adapter relay returned health status %d", response.StatusCode)
+	}
+	return nil
 }
 
 func runServer(args []string) error {
@@ -41,8 +73,10 @@ func runServer(args []string) error {
 	tlsListen := flags.String("tls-listen", ":8443", "HTTPS Git and GitHub API address")
 	repository := flags.String("repository", "", "Sandbox owner/name")
 	root := flags.String("repository-root", "/var/lib/pagerless", "directory that contains the bare repository")
-	readTokenFile := flags.String("read-token-file", "/var/run/pagerless/read-token", "file containing the read-only adapter token")
-	writeTokenFile := flags.String("write-token-file", "/var/run/pagerless/write-token", "file containing the disposable adapter write token")
+	readTokenFile := flags.String("read-token-file", "/var/run/pagerless/read-token",
+		"file containing the read-only adapter token")
+	writeTokenFile := flags.String("write-token-file", "/var/run/pagerless/write-token",
+		"file containing the disposable adapter write token")
 	source := flags.String("source", "https://github.com/a-hagi613/pagerless-sandbox.git", "read-only Sandbox source URL")
 	revision := flags.String("revision", "f865713644857f6717ca138056eb164c57be6e49", "pinned known-good Sandbox commit")
 	cert := flags.String("tls-cert", "/var/run/pagerless/tls/tls.crt", "HTTPS certificate path")

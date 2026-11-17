@@ -13,10 +13,23 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	messageKey    = "message"
+	errorsKey     = "errors"
+	shaKey        = "sha"
+	dateKey       = "date"
+	pullsResource = "pulls"
+	openState     = "open"
+	mergedState   = "merged"
+	mainBranch    = "main"
+	notFound      = "Not Found"
 )
 
 type configuration struct {
@@ -45,7 +58,8 @@ type pullRequest struct {
 }
 
 func newServer(cfg configuration) (*server, error) {
-	if !validRepository(cfg.repository) || cfg.repoRoot == "" || cfg.baseCommit == "" || cfg.readToken == "" || cfg.writeToken == "" {
+	if !validRepository(cfg.repository) || cfg.repoRoot == "" || cfg.baseCommit == "" ||
+		cfg.readToken == "" || cfg.writeToken == "" {
 		return nil, errors.New("repository, bare repository, base commit, read token, and write token are required")
 	}
 	return &server{configuration: cfg}, nil
@@ -95,7 +109,7 @@ func (s *server) authorizeBearer(w http.ResponseWriter, r *http.Request, write b
 		return true
 	}
 	w.Header().Set("WWW-Authenticate", "Bearer")
-	writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "Bad credentials"})
+	writeJSON(w, http.StatusUnauthorized, map[string]string{messageKey: "Bad credentials"})
 	return false
 }
 
@@ -114,7 +128,7 @@ func (s *server) repositoryPath(w http.ResponseWriter, r *http.Request) string {
 	requestPath := strings.TrimPrefix(r.URL.Path, "/api/v3")
 	parts := strings.Split(strings.Trim(requestPath, "/"), "/")
 	if len(parts) < 4 || parts[0] != "repos" || parts[1]+"/"+parts[2] != s.repository {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return ""
 	}
 	return strings.Join(parts[3:], "/")
@@ -131,11 +145,11 @@ func (s *server) rest(w http.ResponseWriter, r *http.Request) {
 	}
 	segments := strings.Split(resource, "/")
 	switch {
-	case r.Method == http.MethodGet && len(segments) == 1 && segments[0] == "pulls":
+	case r.Method == http.MethodGet && len(segments) == 1 && segments[0] == pullsResource:
 		s.listPullRequests(w, r)
-	case r.Method == http.MethodPost && len(segments) == 1 && segments[0] == "pulls":
+	case r.Method == http.MethodPost && len(segments) == 1 && segments[0] == pullsResource:
 		s.openPullRequest(w, r)
-	case r.Method == http.MethodGet && len(segments) == 2 && segments[0] == "pulls":
+	case r.Method == http.MethodGet && len(segments) == 2 && segments[0] == pullsResource:
 		s.getPullRequest(w, r, segments[1])
 	case r.Method == http.MethodGet && len(segments) == 1 && segments[0] == "commits":
 		s.listCommits(w, r)
@@ -144,7 +158,7 @@ func (s *server) rest(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && len(segments) >= 2 && segments[0] == "contents":
 		s.getContent(w, r, strings.Join(segments[1:], "/"))
 	default:
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 	}
 }
 
@@ -153,12 +167,11 @@ func (s *server) listPullRequests(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := make([]map[string]any, 0)
-	for i := len(s.prs) - 1; i >= 0; i-- {
-		pr := s.prs[i]
+	for _, pr := range slices.Backward(s.prs) {
 		if head != "" && head != repositoryOwner(s.repository)+":"+pr.head {
 			continue
 		}
-		result = append(result, s.pullRequestJSON(pr))
+		result = append(result, s.pullRequestJSON(r.Context(), pr))
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -172,44 +185,45 @@ func (s *server) openPullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil ||
 		!validRef(request.Head) || !validRef(request.Base) || request.Title == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid pull request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "Invalid pull request"})
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, current := range s.prs {
-		if current.head == request.Head && current.state == "open" {
+		if current.head == request.Head && current.state == openState {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-				"message": "Validation Failed", "errors": []map[string]string{{"message": "A pull request already exists for this branch"}},
+				messageKey: "Validation Failed",
+				errorsKey:  []map[string]string{{messageKey: "A pull request already exists for this branch"}},
 			})
 			return
 		}
 	}
 	if !s.branchExists(r.Context(), request.Head) || !s.branchExists(r.Context(), request.Base) {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"message": "head or base is not a repository branch"})
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{messageKey: "head or base is not a repository branch"})
 		return
 	}
 	pr := &pullRequest{number: len(s.prs) + 1, title: request.Title, body: request.Body,
-		head: request.Head, base: request.Base, state: "open"}
+		head: request.Head, base: request.Base, state: openState}
 	s.prs = append(s.prs, pr)
 	w.Header().Set("Location", fmt.Sprintf("/repos/%s/pulls/%d", s.repository, pr.number))
-	writeJSON(w, http.StatusCreated, s.pullRequestJSON(pr))
+	writeJSON(w, http.StatusCreated, s.pullRequestJSON(r.Context(), pr))
 }
 
 func (s *server) getPullRequest(w http.ResponseWriter, r *http.Request, rawNumber string) {
 	number, err := strconv.Atoi(rawNumber)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.findPullRequest(number)
 	if pr == nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.pullRequestJSON(pr))
+	writeJSON(w, http.StatusOK, s.pullRequestJSON(r.Context(), pr))
 }
 
 func (s *server) graphql(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +239,7 @@ func (s *server) graphql(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&request); err != nil ||
 		!strings.Contains(request.Query, "enablePullRequestAutoMerge") || request.Variables.Method != "SQUASH" {
-		writeJSON(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "unsupported query"}}})
+		writeJSON(w, http.StatusOK, map[string]any{errorsKey: []map[string]string{{messageKey: "unsupported query"}}})
 		return
 	}
 	s.mu.Lock()
@@ -234,8 +248,8 @@ func (s *server) graphql(w http.ResponseWriter, r *http.Request) {
 		if request.Variables.ID != fmt.Sprintf("PR_node_%d", pr.number) {
 			continue
 		}
-		if pr.state != "open" {
-			writeJSON(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "Pull request is not open"}}})
+		if pr.state != openState {
+			writeJSON(w, http.StatusOK, map[string]any{errorsKey: []map[string]string{{messageKey: "Pull request is not open"}}})
 			return
 		}
 		pr.autoMerge = true
@@ -244,7 +258,9 @@ func (s *server) graphql(w http.ResponseWriter, r *http.Request) {
 		}})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"errors": []map[string]string{{"message": "Could not resolve to a node"}}})
+	writeJSON(w, http.StatusOK, map[string]any{
+		errorsKey: []map[string]string{{messageKey: "Could not resolve to a node"}},
+	})
 }
 
 func (s *server) completeCheck(w http.ResponseWriter, r *http.Request) {
@@ -253,29 +269,38 @@ func (s *server) completeCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	var request struct {
 		Status string `json:"status"`
+		SHA    string `json:"sha"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&request); err != nil || request.Status != "success" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "the required manifest check must pass"})
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&request); err != nil ||
+		request.Status != "success" || !validSHA(request.SHA) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "the required manifest check must pass"})
 		return
 	}
 	number, err := strconv.Atoi(r.PathValue("number"))
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	pr := s.findPullRequest(number)
-	if pr == nil || pr.state != "open" || !pr.autoMerge {
-		writeJSON(w, http.StatusConflict, map[string]string{"message": "pull request is not eligible for auto-merge"})
+	if pr == nil || pr.state != openState || !pr.autoMerge {
+		writeJSON(w, http.StatusConflict, map[string]string{messageKey: "pull request is not eligible for auto-merge"})
 		return
 	}
-	commit, err := s.squashMerge(r.Context(), pr)
+	head, err := gitOutput(r.Context(), s.repoRoot, "rev-parse", "--verify", "refs/heads/"+pr.head)
+	if err != nil || strings.TrimSpace(head) != request.SHA {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			messageKey: "the checked head no longer matches the pull request",
+		})
+		return
+	}
+	commit, err := s.squashMerge(r.Context(), pr, request.SHA)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"message": "pull request did not merge"})
+		writeJSON(w, http.StatusConflict, map[string]string{messageKey: "pull request did not merge"})
 		return
 	}
-	pr.state, pr.mergeCommit = "merged", commit
+	pr.state, pr.mergeCommit = mergedState, commit
 	writeJSON(w, http.StatusOK, map[string]string{"merge_commit_sha": commit})
 }
 
@@ -287,46 +312,47 @@ func (s *server) reset(w http.ResponseWriter, r *http.Request) {
 	defer s.mu.Unlock()
 	refs, err := gitOutput(r.Context(), s.repoRoot, "for-each-ref", "--format=%(refname)", "refs/heads")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cannot list Sandbox branches"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{messageKey: "cannot list Sandbox branches"})
 		return
 	}
-	for _, ref := range strings.Fields(refs) {
+	for ref := range strings.FieldsSeq(refs) {
 		if ref == "refs/heads/main" {
 			continue
 		}
 		if err := runGit(r.Context(), "", "--git-dir", s.repoRoot, "update-ref", "-d", ref); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cannot remove Scenario branches"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{messageKey: "cannot remove Scenario branches"})
 			return
 		}
 	}
 	if err := runGit(r.Context(), "", "--git-dir", s.repoRoot, "update-ref", "refs/heads/main", s.baseCommit); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cannot reset Sandbox main"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{messageKey: "cannot reset Sandbox main"})
 		return
 	}
 	s.prs = nil
-	writeJSON(w, http.StatusOK, map[string]string{"main": s.baseCommit})
+	writeJSON(w, http.StatusOK, map[string]string{mainBranch: s.baseCommit})
 }
 
-func (s *server) pullRequestJSON(pr *pullRequest) map[string]any {
+func (s *server) pullRequestJSON(ctx context.Context, pr *pullRequest) map[string]any {
 	var mergedAt any
 	var mergeCommit any
-	if pr.state == "merged" {
+	if pr.state == mergedState {
 		mergedAt = time.Now().UTC().Format(time.RFC3339)
 		mergeCommit = pr.mergeCommit
 	}
 	var autoMerge any
-	if pr.autoMerge && pr.state == "open" {
+	if pr.autoMerge && pr.state == openState {
 		autoMerge = map[string]string{"merge_method": "SQUASH"}
 	}
-	state := "open"
-	if pr.state == "merged" {
+	state := openState
+	if pr.state == mergedState {
 		state = "closed"
 	}
+	head, _ := gitOutput(ctx, s.repoRoot, "rev-parse", "--verify", "refs/heads/"+pr.head)
 	return map[string]any{
 		"number": pr.number, "node_id": fmt.Sprintf("PR_node_%d", pr.number),
 		"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", s.repository, pr.number),
-		"title":    pr.title, "body": pr.body, "head": map[string]any{"ref": pr.head},
-		"base": map[string]any{"ref": pr.base}, "state": state, "merged": pr.state == "merged",
+		"title":    pr.title, "body": pr.body, "head": map[string]any{"ref": pr.head, shaKey: strings.TrimSpace(head)},
+		"base": map[string]any{"ref": pr.base}, "state": state, mergedState: pr.state == mergedState,
 		"merged_at": mergedAt, "merge_commit_sha": mergeCommit, "auto_merge": autoMerge,
 	}
 }
@@ -345,7 +371,7 @@ func (s *server) branchExists(ctx context.Context, name string) bool {
 	return err == nil
 }
 
-func (s *server) squashMerge(ctx context.Context, pr *pullRequest) (string, error) {
+func (s *server) squashMerge(ctx context.Context, pr *pullRequest, checkedSHA string) (string, error) {
 	directory, err := os.MkdirTemp("", "pagerless-e2e-merge-")
 	if err != nil {
 		return "", err
@@ -361,10 +387,10 @@ func (s *server) squashMerge(ctx context.Context, pr *pullRequest) (string, erro
 	if err := runGit(ctx, work, "config", "user.email", "e2e@pagerless.dev"); err != nil {
 		return "", err
 	}
-	if err := runGit(ctx, work, "checkout", "--quiet", "main"); err != nil {
+	if err := runGit(ctx, work, "checkout", "--quiet", mainBranch); err != nil {
 		return "", err
 	}
-	if err := runGit(ctx, work, "merge", "--squash", "origin/"+pr.head); err != nil {
+	if err := runGit(ctx, work, "merge", "--squash", checkedSHA); err != nil {
 		return "", err
 	}
 	if err := runGit(ctx, work, "commit", "--quiet", "--message", pr.title); err != nil {
@@ -377,30 +403,34 @@ func (s *server) squashMerge(ctx context.Context, pr *pullRequest) (string, erro
 	return strings.TrimSpace(commit), err
 }
 
+func validSHA(value string) bool {
+	return len(value) == 40 && strings.Trim(value, "0123456789abcdef") == ""
+}
+
 func (s *server) listCommits(w http.ResponseWriter, r *http.Request) {
-	args := []string{"log", "--format=%H%x00%s%x00%aI", "-20", "main"}
+	args := []string{"log", "--format=%H%x00%s%x00%aI", "-20", mainBranch}
 	if pathQuery := r.URL.Query().Get("path"); pathQuery != "" {
 		if !validTreePath(pathQuery) {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid path"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "Invalid path"})
 			return
 		}
 		args = append(args, "--", pathQuery)
 	}
 	out, err := gitOutput(r.Context(), s.repoRoot, args...)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cannot read commits"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{messageKey: "cannot read commits"})
 		return
 	}
 	commits := make([]map[string]any, 0)
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
 		fields := strings.Split(line, "\x00")
 		if len(fields) != 3 {
 			continue
 		}
 		commits = append(commits, map[string]any{
-			"sha": fields[0], "commit": map[string]any{
-				"message": fields[1], "author": map[string]string{"date": fields[2]},
-				"committer": map[string]string{"date": fields[2]},
+			shaKey: fields[0], "commit": map[string]any{
+				messageKey: fields[1], "author": map[string]string{dateKey: fields[2]},
+				"committer": map[string]string{dateKey: fields[2]},
 			},
 		})
 	}
@@ -409,57 +439,57 @@ func (s *server) listCommits(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) getCommit(w http.ResponseWriter, r *http.Request, revision string) {
 	if strings.Contains(revision, "..") || strings.ContainsAny(revision, "\\\x00") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid commit"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "Invalid commit"})
 		return
 	}
 	out, err := gitOutput(r.Context(), s.repoRoot, "show", "--no-patch", "--format=%H%x00%P%x00%s%x00%aI", revision)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
 	fields := strings.Split(strings.TrimSpace(out), "\x00")
 	if len(fields) != 4 {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "cannot read commit"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{messageKey: "cannot read commit"})
 		return
 	}
 	parents := make([]map[string]string, 0)
-	for _, parent := range strings.Fields(fields[1]) {
-		parents = append(parents, map[string]string{"sha": parent})
+	for parent := range strings.FieldsSeq(fields[1]) {
+		parents = append(parents, map[string]string{shaKey: parent})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sha": fields[0], "commit": map[string]any{
-			"message": fields[2], "author": map[string]string{"date": fields[3]},
-			"committer": map[string]string{"date": fields[3]},
+		shaKey: fields[0], "commit": map[string]any{
+			messageKey: fields[2], "author": map[string]string{dateKey: fields[3]},
+			"committer": map[string]string{dateKey: fields[3]},
 		}, "parents": parents,
 	})
 }
 
 func (s *server) getContent(w http.ResponseWriter, r *http.Request, file string) {
 	if !validTreePath(file) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid path"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "Invalid path"})
 		return
 	}
 	ref := r.URL.Query().Get("ref")
 	if ref == "" {
-		ref = "main"
+		ref = mainBranch
 	}
 	if strings.Contains(ref, "..") || strings.ContainsAny(ref, "\\\x00") {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "Invalid ref"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{messageKey: "Invalid ref"})
 		return
 	}
 	content, err := gitOutputBytes(r.Context(), s.repoRoot, "show", ref+":"+file)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
 	shaRaw, err := gitOutput(r.Context(), s.repoRoot, "rev-parse", ref+":"+file)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(w, http.StatusNotFound, map[string]string{messageKey: notFound})
 		return
 	}
 	sha := strings.TrimSpace(shaRaw)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name": path.Base(file), "path": file, "sha": sha, "size": len(content), "type": "file",
+		"name": path.Base(file), "path": file, shaKey: sha, "size": len(content), "type": "file",
 		"content": base64.StdEncoding.EncodeToString(content), "encoding": "base64",
 	})
 }
@@ -497,11 +527,13 @@ func validRepository(value string) bool {
 }
 
 func validRef(value string) bool {
-	return value != "" && !strings.HasPrefix(value, "-") && !strings.ContainsAny(value, "..~^:?*[\\\x00") && !strings.Contains(value, " ")
+	return value != "" && !strings.HasPrefix(value, "-") &&
+		!strings.ContainsAny(value, "..~^:?*[\\\x00") && !strings.Contains(value, " ")
 }
 
 func validTreePath(value string) bool {
-	return value != "" && !strings.HasPrefix(value, "/") && path.Clean(value) == value && value != ".." && !strings.HasPrefix(value, "../") && !strings.Contains(value, "\x00")
+	return value != "" && !strings.HasPrefix(value, "/") && path.Clean(value) == value &&
+		value != ".." && !strings.HasPrefix(value, "../") && !strings.Contains(value, "\x00")
 }
 
 func repositoryOwner(value string) string {

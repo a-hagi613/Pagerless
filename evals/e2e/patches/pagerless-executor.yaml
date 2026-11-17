@@ -11,6 +11,7 @@ spec:
           args:
             - --github-token-file=/var/run/pagerless/github/token
             - --github-api-url=https://sandbox-adapter.pagerless-e2e.svc:8443
+            - --github-repository=pagerless-test/sandbox
           env:
             - name: SSL_CERT_FILE
               value: /var/run/pagerless/e2e-ca/ca.crt

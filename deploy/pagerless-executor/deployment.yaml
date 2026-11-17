@@ -43,6 +43,12 @@ spec:
                 configMapKeyRef:
                   name: pagerless-sandbox
                   key: url
+            - name: PAGERLESS_GITHUB_REPOSITORY
+              valueFrom:
+                configMapKeyRef:
+                  name: pagerless-sandbox
+                  key: githubRepository
+                  optional: true
           ports:
             - name: http
               containerPort: 8080

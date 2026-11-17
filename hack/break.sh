@@ -82,7 +82,7 @@ if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
 		--body "Injects the $scenario Scenario through make break. The Sandbox manifest check runs before the adapter records success.")"
 	"${e2e_client[@]}" enable --number "$pr_number"
 	"$PAGERLESS_E2E_KUBECONFORM_BIN" -strict -summary -kubernetes-version 1.37.0 workloads
-	"${e2e_client[@]}" pass-check --number "$pr_number"
+	"${e2e_client[@]}" pass-check --number "$pr_number" --sha "$(git rev-parse HEAD)"
 	merge_sha="$("${e2e_client[@]}" wait --number "$pr_number" --timeout 180)"
 	echo "The pinned kubeconform check passed and the adapter merged pull request $pr_number as $merge_sha."
 else

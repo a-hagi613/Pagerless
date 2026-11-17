@@ -1,6 +1,7 @@
 .DEFAULT_GOAL := help
 
 include hack/versions.env
+PAGERLESS_BUILD_REVISION ?= local
 
 .PHONY: help generate manifests build-cli build-images test test-go test-agent lint lint-go lint-agent up dev e2e down break reset
 
@@ -20,9 +21,9 @@ build-cli: ## Build the kubectl-triage plugin into bin/.
 	go build -o bin/kubectl-triage ./cmd/kubectl-triage
 
 build-images: ## Build the server, Executor, and agent container images locally.
-	docker build --file Dockerfile.pagerless-server --tag $(PAGERLESS_SERVER_IMAGE) .
-	docker build --file Dockerfile.pagerless-executor --tag $(PAGERLESS_EXECUTOR_IMAGE) .
-	docker build --file Dockerfile.pagerless-agent --tag $(PAGERLESS_AGENT_IMAGE) .
+	docker build --file Dockerfile.pagerless-server --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_SERVER_IMAGE) .
+	docker build --file Dockerfile.pagerless-executor --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_EXECUTOR_IMAGE) .
+	docker build --file Dockerfile.pagerless-agent --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_AGENT_IMAGE) .
 
 test: test-go test-agent ## Run the Go and Python test suites.
 

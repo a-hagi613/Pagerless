@@ -20,8 +20,13 @@ bash "$REPO_ROOT/hack/configure.sh"
 load_env
 require_env SANDBOX_URL GITHUB_READ_TOKEN GITHUB_WRITE_TOKEN MODEL_PROVIDER
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
-	require_env PAGERLESS_E2E_TOKEN PAGERLESS_E2E_CA_FILE PAGERLESS_E2E_GIT_HOST PAGERLESS_E2E_REPOSITORY
+	require_env PAGERLESS_E2E_TOKEN PAGERLESS_E2E_CA_FILE PAGERLESS_E2E_GIT_HOST PAGERLESS_E2E_REPOSITORY \
+		PAGERLESS_E2E_TLS_CERT_FILE PAGERLESS_E2E_TLS_KEY_FILE PAGERLESS_GITHUB_REPOSITORY
 	[ -r "$PAGERLESS_E2E_CA_FILE" ] || die "the E2E adapter CA certificate is not readable."
+	[ -r "$PAGERLESS_E2E_TLS_CERT_FILE" ] && [ -r "$PAGERLESS_E2E_TLS_KEY_FILE" ] ||
+		die "the E2E adapter TLS certificate and key must be readable."
+	[ "$PAGERLESS_GITHUB_REPOSITORY" = "$PAGERLESS_E2E_REPOSITORY" ] ||
+		die "the Executor repository must match the isolated adapter repository."
 	[[ "$PAGERLESS_E2E_TOKEN" == e2e-write-* && "$PAGERLESS_E2E_TOKEN" = "$GITHUB_WRITE_TOKEN" &&
 		"$GITHUB_READ_TOKEN" == e2e-read-* && "$GITHUB_READ_TOKEN" != "$GITHUB_WRITE_TOKEN" ]] ||
 		die "E2E bootstrap requires distinct disposable adapter tokens from its isolated configuration."
@@ -85,6 +90,7 @@ kc -n pagerless create secret generic github-write \
 	--dry-run=client -o yaml | kc apply -f -
 kc -n pagerless create configmap pagerless-sandbox \
 	--from-literal=url="$SANDBOX_URL" \
+	--from-literal=githubRepository="${PAGERLESS_GITHUB_REPOSITORY:-}" \
 	--dry-run=client -o yaml | kc apply -f -
 kc -n argocd create secret generic sandbox-repository \
 	--from-literal=type=git \
@@ -96,6 +102,9 @@ kc -n argocd create secret generic sandbox-repository \
 	kc apply -f -
 
 if [ "${PAGERLESS_E2E:-0}" = "1" ]; then
+	kc -n pagerless-e2e create secret tls sandbox-adapter-tls \
+		--cert="$PAGERLESS_E2E_TLS_CERT_FILE" --key="$PAGERLESS_E2E_TLS_KEY_FILE" \
+		--dry-run=client -o yaml | kc apply -f -
 	kc -n pagerless-e2e create secret generic sandbox-adapter-token \
 		--from-file=read-token=<(printf '%s' "$GITHUB_READ_TOKEN") \
 		--from-file=write-token=<(printf '%s' "$GITHUB_WRITE_TOKEN") \

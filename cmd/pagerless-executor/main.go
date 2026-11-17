@@ -42,8 +42,8 @@ func run() error {
 		sandboxURL = flag.String("sandbox-url", os.Getenv("SANDBOX_URL"),
 			"git URL of the Sandbox, which the Executor pushes to (default: $SANDBOX_URL)")
 		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that pull requests target")
-		repository    = flag.String("github-repository", "",
-			"owner/name of the Sandbox on GitHub (default: derived from --sandbox-url)")
+		repository    = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
+			"Sandbox owner/name (default: $PAGERLESS_GITHUB_REPOSITORY, otherwise derived from --sandbox-url)")
 		apiURL    = flag.String("github-api-url", executor.DefaultGitHubAPI, "base URL of GitHub's API")
 		tokenFile = flag.String("github-token-file", "/var/run/pagerless/github/token",
 			"file that holds the write-scoped GitHub token")

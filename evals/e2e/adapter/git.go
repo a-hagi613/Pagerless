@@ -64,15 +64,14 @@ func (s *server) serveGit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pathInfo := strings.TrimPrefix(r.URL.EscapedPath(), "/git")
-	if !strings.HasPrefix(pathInfo, "/") || strings.Contains(pathInfo, "..") || !strings.HasPrefix(pathInfo, "/"+s.repository+".git/") && pathInfo != "/"+s.repository+".git" {
+	repositoryPath := "/" + s.repository + ".git"
+	outsideRepository := !strings.HasPrefix(pathInfo, repositoryPath+"/") && pathInfo != repositoryPath
+	if !strings.HasPrefix(pathInfo, "/") || strings.Contains(pathInfo, "..") || outsideRepository {
 		http.NotFound(w, r)
 		return
 	}
 	command := exec.CommandContext(r.Context(), "git", "http-backend")
-	contentLength := r.ContentLength
-	if contentLength < 0 {
-		contentLength = 0
-	}
+	contentLength := max(r.ContentLength, 0)
 	command.Env = append(os.Environ(),
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_PROJECT_ROOT="+path.Dir(path.Dir(s.repoRoot)),
 		"GIT_HTTP_EXPORT_ALL=1", "PATH_INFO="+pathInfo, "QUERY_STRING="+r.URL.RawQuery,

@@ -6,18 +6,28 @@ import argparse
 import json
 import os
 import selectors
+import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 
 def triage_snapshot() -> dict[str, Any] | None:
     result = subprocess.run(
-        ["kubectl", "--context", "kind-pagerless", "-n", "pagerless", "get", "triages", "-o", "json"],
+        [
+            "kubectl",
+            "--context",
+            "kind-pagerless",
+            "-n",
+            "pagerless",
+            "get",
+            "triages",
+            "-o",
+            "json",
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -25,7 +35,11 @@ def triage_snapshot() -> dict[str, Any] | None:
     if result.returncode:
         raise RuntimeError("kubectl could not read Triages")
     payload = json.loads(result.stdout)
-    items = [item for item in payload.get("items", []) if item.get("spec", {}).get("workload", {}).get("name") == "checkout"]
+    items = [
+        item
+        for item in payload.get("items", [])
+        if item.get("spec", {}).get("workload", {}).get("name") == "checkout"
+    ]
     if not items:
         return None
     return max(items, key=lambda item: item.get("metadata", {}).get("creationTimestamp", ""))
@@ -41,14 +55,27 @@ def complete_lines(buffer: bytearray) -> list[bytes]:
 
 def collect(history: Path, snapshot: Path, timeout: int) -> None:
     command = [
-        "kubectl", "--context", "kind-pagerless", "-n", "pagerless", "get", "triages",
-        "--watch", "--no-headers",
-        "-o", "custom-columns=NAME:.metadata.name,WORKLOAD:.spec.workload.name,PHASE:.status.phase",
+        "kubectl",
+        "--context",
+        "kind-pagerless",
+        "-n",
+        "pagerless",
+        "get",
+        "triages",
+        "--watch",
+        "--no-headers",
+        "-o",
+        "custom-columns=NAME:.metadata.name,WORKLOAD:.spec.workload.name,PHASE:.status.phase",
     ]
     try:
         watcher = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
     except OSError as error:
         raise RuntimeError("could not start the Triage watch") from error
+
+    def terminate(_number: int, _frame: Any) -> None:
+        raise SystemExit(143)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
     deadline = time.monotonic() + timeout
     last_phase = ""
     try:
@@ -75,7 +102,7 @@ def collect(history: Path, snapshot: Path, timeout: int) -> None:
                         continue
                     phase = fields[-1]
                     if phase and phase != last_phase:
-                        observed = datetime.now(timezone.utc)
+                        observed = datetime.now(UTC)
                         current = triage_snapshot()
                         if current is not None:
                             snapshot.write_text(json.dumps(current), encoding="utf-8")
@@ -85,15 +112,23 @@ def collect(history: Path, snapshot: Path, timeout: int) -> None:
                         last_phase = phase
                     if phase == "Recovered":
                         return
-                    if phase in {"NotRecovered", "Failed", "Invalid", "Expired", "Rejected"}:
+                    if phase in {
+                        "NotRecovered",
+                        "Failed",
+                        "Invalid",
+                        "Expired",
+                        "Rejected",
+                    }:
                         raise RuntimeError(f"the checkout Triage ended in {phase}")
         raise RuntimeError("the checkout Triage did not reach Recovered before timeout")
     finally:
+        signal.signal(signal.SIGTERM, previous)
         watcher.terminate()
         try:
             watcher.wait(timeout=5)
         except subprocess.TimeoutExpired:
             watcher.kill()
+            watcher.wait(timeout=5)
 
 
 def wait_proposed(timeout: int) -> str:
@@ -121,7 +156,15 @@ def verify(snapshot: Path, history: Path) -> None:
         raise RuntimeError("the agent did not propose PatchResources")
     events = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
     phases = [event["phase"] for event in events]
-    required = ["Pending", "Investigating", "Proposed", "Approved", "Executing", "Verifying", "Recovered"]
+    required = [
+        "Pending",
+        "Investigating",
+        "Proposed",
+        "Approved",
+        "Executing",
+        "Verifying",
+        "Recovered",
+    ]
     cursor = 0
     for phase in phases:
         if cursor < len(required) and phase == required[cursor]:
@@ -133,7 +176,18 @@ def verify(snapshot: Path, history: Path) -> None:
     if not merge_commit:
         raise RuntimeError("the Triage has no Sandbox merge commit")
     argo = subprocess.run(
-        ["kubectl", "--context", "kind-pagerless", "-n", "argocd", "get", "application", "sandbox", "-o", "json"],
+        [
+            "kubectl",
+            "--context",
+            "kind-pagerless",
+            "-n",
+            "argocd",
+            "get",
+            "application",
+            "sandbox",
+            "-o",
+            "json",
+        ],
         check=False,
         capture_output=True,
         text=True,
@@ -152,7 +206,7 @@ def verify(snapshot: Path, history: Path) -> None:
     if not started:
         raise RuntimeError("the Triage has no Verification start timestamp")
     start_time = datetime.fromisoformat(started.replace("Z", "+00:00"))
-    elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+    elapsed = (datetime.now(UTC) - start_time).total_seconds()
     if elapsed < 300:
         raise RuntimeError(f"Verification ended after {elapsed:.1f}s; at least 300s is required")
     verifying_event = next((event for event in events if event["phase"] == "Verifying"), None)
@@ -163,11 +217,20 @@ def verify(snapshot: Path, history: Path) -> None:
     recovered_observed = datetime.fromisoformat(recovered_event["observedAt"])
     if abs((verify_observed - start_time).total_seconds()) > 60:
         raise RuntimeError("the Verifying phase was not observed near its server start timestamp")
-    observed_window = (recovered_observed - verify_observed).total_seconds()
+    # Receipt delays differ between events. The server timestamp gives a stable,
+    # one-sided check without rejecting a valid window when Verifying arrives late.
+    observed_window = (recovered_observed - start_time).total_seconds()
     if observed_window < 300:
-        raise RuntimeError(f"the observed Verification window was {observed_window:.1f}s; at least 300s is required")
+        raise RuntimeError(
+            f"the observed Verification window was {observed_window:.1f}s; at least 300s is required"
+        )
     checks = status.get("verificationChecks", [])
-    if len(checks) < 4 or any(check.get("passed") is not True for check in checks):
+    expected_checks = {"ArgoCDSynced", "RolloutAvailable", "NoNewRestarts", "AlertResolved"}
+    if (
+        len(checks) != len(expected_checks)
+        or {check.get("name") for check in checks} != expected_checks
+        or any(check.get("passed") is not True for check in checks)
+    ):
         raise RuntimeError(f"the deterministic Verification checks did not all pass: {checks}")
     print(triage["metadata"]["name"])
 
