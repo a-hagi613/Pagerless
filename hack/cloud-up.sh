@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Creates one EKS session: Terraform, Argo CD, Karpenter, and the same root
-# Application that kind runs (ADR-0009, ADR-0010).
+# Creates one EKS session: Terraform, Karpenter, and then the same bootstrap that
+# `make up` runs on kind (hack/bootstrap-stack.sh), so the two paths cannot drift.
 #
 # The session is the only billable state this repository can create. It ends
 # with `make cloud-down`, which destroys the cluster and proves that nothing
@@ -21,9 +21,6 @@ CLOUD_CONTEXT="${PAGERLESS_CLOUD_CONTEXT:-pagerless-eks}"
 export PAGERLESS_KUBE_CONTEXT="$CLOUD_CONTEXT"
 export AWS_REGION="$CLOUD_REGION"
 export MODEL_PROVIDER=bedrock
-
-PLATFORM_REPO_URL="${PLATFORM_REPO_URL:-https://github.com/a-hagi613/pagerless}"
-PLATFORM_REVISION="${PLATFORM_REVISION:-main}"
 
 require_commands terraform aws kubectl helm uv
 
@@ -46,7 +43,7 @@ account="$(aws sts get-caller-identity --query Account --output text)"
 	die "this session must run in account ${CLOUD_ACCOUNT_ID}, but the credentials are for ${account}."
 
 echo "Creating the EKS session in account ${CLOUD_ACCOUNT_ID}, region ${CLOUD_REGION}."
-echo "The served cluster is destroyed by make cloud-down, and a session must not span the nightly teardown at 03:17 UTC."
+echo "The cluster is destroyed by make cloud-down, and a session must not span the nightly teardown at 03:17 UTC."
 
 # 1. Infrastructure. The state bucket already exists (infra/bootstrap).
 terraform -chdir="$REPO_ROOT/infra" init -input=false
@@ -63,16 +60,7 @@ for _ in $(seq 1 60); do
 done
 [ "$ready_nodes" -ge 1 ] || die "no node joined the cluster within ten minutes."
 
-# 3. Argo CD from the same pinned chart and values as kind.
-helm repo add argo "$ARGOCD_CHART_REPO" --force-update >/dev/null
-helm upgrade --install argocd argo/argo-cd \
-	--version "$ARGOCD_CHART_VERSION" \
-	--namespace argocd --create-namespace \
-	--values "$REPO_ROOT/deploy/argocd/values.yaml" \
-	--kube-context "$CLOUD_CONTEXT" \
-	--wait --timeout 15m
-
-# 4. Karpenter, from its signed OCI chart. Pod Identity supplies the controller's
+# 3. Karpenter, from its signed OCI chart. Pod Identity supplies the controller's
 # credentials, so the chart needs the cluster name and the interruption queue
 # rather than a role annotation.
 helm registry logout public.ecr.aws >/dev/null 2>&1 || true
@@ -89,7 +77,7 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
 	--wait --timeout 10m
 
 # The NodePool and EC2NodeClass name the cluster and the node role, which the
-# Terraform outputs own.
+# Terraform outputs own. The StorageClass must exist before any claim does.
 karpenter_node_role="$(terraform -chdir="$REPO_ROOT/infra" output -raw karpenter_node_role_name)"
 bash "$REPO_ROOT/hack/render-cloud-manifest.sh" \
 	"$REPO_ROOT/deploy/cloud/karpenter/ec2nodeclass.yaml" "$CLOUD_CLUSTER" "$karpenter_node_role" | kc apply -f -
@@ -97,62 +85,10 @@ bash "$REPO_ROOT/hack/render-cloud-manifest.sh" \
 	"$REPO_ROOT/deploy/cloud/karpenter/nodepool.yaml" "$CLOUD_CLUSTER" "$karpenter_node_role" | kc apply -f -
 kc apply -f "$REPO_ROOT/deploy/cloud/storage"
 
-# 5. The Alertmanager credential must exist before the observability Application
-# creates Alertmanager, which is the same order `make up` uses.
-uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-authorization.py" alerts
-
-kc create namespace pagerless-system --dry-run=client -o yaml | kc apply -f -
-kc create namespace pagerless --dry-run=client -o yaml | kc apply -f -
-
-# 6. Secrets from .env. Tokens reach kubectl through file descriptors, not argv.
-# The agent's inference Secret stays empty: EKS Pod Identity supplies the
-# credentials of ADR-0023, and pagerless-agent-credentials has no keys at all.
-kc -n pagerless create secret generic github-read \
-	--from-file=token=<(printf '%s' "$GITHUB_READ_TOKEN") \
-	--dry-run=client -o yaml | kc apply -f -
-kc -n pagerless create secret generic github-write \
-	--from-file=token=<(printf '%s' "$GITHUB_WRITE_TOKEN") \
-	--dry-run=client -o yaml | kc apply -f -
-kc -n pagerless create configmap pagerless-sandbox \
-	--from-literal=url="$SANDBOX_URL" \
-	--from-literal=githubRepository="${PAGERLESS_GITHUB_REPOSITORY:-}" \
-	--dry-run=client -o yaml | kc apply -f -
-kc -n argocd create secret generic sandbox-repository \
-	--from-literal=type=git \
-	--from-literal=url="$SANDBOX_URL" \
-	--from-literal=username=pagerless \
-	--from-file=password=<(printf '%s' "$GITHUB_READ_TOKEN") \
-	--dry-run=client -o yaml |
-	kc label --local -f - argocd.argoproj.io/secret-type=repository -o yaml |
-	kc apply -f -
-
-# 7. The same root Application as kind, over the same chart.
-helm template pagerless-root "$REPO_ROOT/deploy/root" \
-	--namespace argocd \
-	--set "platform.repoURL=$PLATFORM_REPO_URL" \
-	--set "platform.targetRevision=$PLATFORM_REVISION" \
-	--set "sandbox.repoURL=$SANDBOX_URL" \
-	--set-string "mcp.githubHost=${PAGERLESS_MCP_GITHUB_HOST:-}" |
-	kc apply -f -
-
-# 8. Wait for the stack, then provision the read-only MCP identities. Node
-# provisioning through Karpenter and image pulls are slower than kind, so the
-# waits are longer than `make up`'s.
-wait_for_application root "" 600 synced
-wait_for_application sandbox "" 900
-for app in kube-prometheus-stack loki tempo opentelemetry-collector observability-alerts; do
-	wait_for_application "$app" "" 1800
-done
-kc -n sandbox rollout status deployment/checkout --timeout=600s
-uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-mcp.py"
-wait_for_application mcp "" 600
-if kc -n pagerless get deployment pagerless-server >/dev/null 2>&1; then
-	# Environment variables from a ConfigMap are read only when a container starts.
-	kc -n pagerless rollout restart deployment/pagerless-server
-fi
-wait_for_application pagerless-server "" 900
-wait_for_application pagerless-executor "" 900
-uv run --no-project --python "$PYTHON_VERSION" "$REPO_ROOT/hack/provision-authorization.py" approver
+# 4. Argo CD, the Secrets, the root Application and the provisioning are the
+# same script the local stack runs.
+echo "The cluster is ready. Running the shared stack bootstrap."
+bash "$REPO_ROOT/hack/bootstrap-stack.sh"
 
 cat <<EOF
 

@@ -130,6 +130,8 @@ make cloud-down    # terraform destroy, then the teardown check
 
 `make cloud-up` prints the port-forward commands when the stack is healthy. There is no public endpoint other than the EKS API: the dashboard and Grafana are reached with `kubectl port-forward` on the `pagerless-eks` context.
 
+`make up` and `make cloud-up` differ only in the cluster: both then run [hack/bootstrap-stack.sh](hack/bootstrap-stack.sh), which installs Argo CD, writes the Secrets, applies the root Application and provisions the MCP and approval identities. That is what keeps the local and cloud paths from drifting.
+
 ```bash
 export PAGERLESS_KUBE_CONTEXT=pagerless-eks
 make break SCENARIO=oom
