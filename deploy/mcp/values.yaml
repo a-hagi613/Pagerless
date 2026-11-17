@@ -17,6 +17,7 @@ servers:
       - streamable-http
       - --address
       - :8000
+      - --allowed-hosts=mcp-grafana.pagerless.svc:8000
       - --disable-write
       - --enable-query
       - --enabled-tools=datasource,prometheus,loki,tempo

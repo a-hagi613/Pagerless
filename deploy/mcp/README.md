@@ -2,6 +2,8 @@
 
 The `mcp` Argo CD Application renders this chart into `pagerless`. The agent connects directly over Streamable HTTP in Phase 1. No Service is exposed outside the cluster.
 
+Grafana MCP validates the HTTP `Host` header against the configured Service address, `mcp-grafana.pagerless.svc:8000`. Its default loopback-only allowlist would reject the agent's requests even while the TCP readiness probe passes.
+
 Versions were checked against each project's release API and the registry manifests on 2026-11-17. Every image is pinned by both release tag and manifest digest in `values.yaml`:
 
 - [kubernetes-mcp-server v0.1.3](https://github.com/containers/kubernetes-mcp-server/releases/tag/v0.1.3), at `http://mcp-kubernetes.pagerless.svc:8080/mcp`.
