@@ -75,7 +75,7 @@ cloud-check: ## Check formatting, validation and lint of every Terraform configu
 	cd infra/ci && terraform init -backend=false -input=false && terraform validate
 	cd infra && terraform init -backend=false -input=false && terraform validate
 	cd infra && tflint --init && tflint --recursive
-	bash -n hack/cloud-up.sh hack/cloud-down.sh hack/cloud-teardown-check.sh
+	bash -n hack/cloud-up.sh hack/cloud-down.sh hack/cloud-teardown-check.sh hack/bootstrap-stack.sh hack/up.sh
 	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/ec2nodeclass.yaml pagerless pagerless-karpenter-node >/dev/null
 	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/nodepool.yaml pagerless pagerless-karpenter-node >/dev/null
 	grep -q '__CLUSTER_NAME__' deploy/cloud/karpenter/nodepool.yaml
