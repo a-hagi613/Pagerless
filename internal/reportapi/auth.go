@@ -96,6 +96,21 @@ func (a *Authenticator) Authorize(ctx context.Context, caller *Caller, t *v1alph
 	if t.Status.JobName == "" {
 		return fmt.Errorf("%w: the Triage has no agent Job", ErrForbidden)
 	}
+	return a.authorizeJob(ctx, caller, t, t.Status.JobName)
+}
+
+// AuthorizeNarrative verifies that the caller's pod belongs to the Narrative Job
+// that this Triage started.
+func (a *Authenticator) AuthorizeNarrative(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+	if t.Status.NarrativeJobName == "" {
+		return fmt.Errorf("%w: the Triage has no Narrative Job", ErrForbidden)
+	}
+	return a.authorizeJob(ctx, caller, t, t.Status.NarrativeJobName)
+}
+
+// authorizeJob verifies that the caller's pod is controlled by the named Job and
+// that the Job is controlled by the Triage.
+func (a *Authenticator) authorizeJob(ctx context.Context, caller *Caller, t *v1alpha1.Triage, jobName string) error {
 	var pod corev1.Pod
 	if err := a.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: caller.podName}, &pod); err != nil {
 		return fmt.Errorf("%w: pod %s not found", ErrForbidden, caller.podName)
@@ -104,7 +119,7 @@ func (a *Authenticator) Authorize(ctx context.Context, caller *Caller, t *v1alph
 		return fmt.Errorf("%w: pod identity changed", ErrForbidden)
 	}
 	var job batchv1.Job
-	if err := a.Reader.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: t.Status.JobName}, &job); err != nil {
+	if err := a.Reader.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: jobName}, &job); err != nil {
 		return fmt.Errorf("%w: the Triage's Job was not found", ErrForbidden)
 	}
 	if !metav1.IsControlledBy(&job, t) || !metav1.IsControlledBy(&pod, &job) {

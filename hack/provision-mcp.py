@@ -173,6 +173,9 @@ def main():
             "PAGERLESS_MCP_GITHUB_URL", "http://mcp-github.pagerless.svc:8082/readonly"
         ) or "http://mcp-github.pagerless.svc:8082/readonly",
         "PAGERLESS_REPLAY_FILE": os.environ.get("PAGERLESS_REPLAY_FILE", "/app/recordings/oom.json"),
+        "PAGERLESS_NARRATIVE_REPLAY_FILE": os.environ.get(
+            "PAGERLESS_NARRATIVE_REPLAY_FILE", "/app/recordings/narrative.json"
+        ),
         "PAGERLESS_SANDBOX_OWNER": owner,
         "PAGERLESS_SANDBOX_REPO": repo,
         "PAGERLESS_ARGOCD_APPLICATION": "sandbox",

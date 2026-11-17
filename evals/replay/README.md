@@ -38,3 +38,25 @@ Retrieval uses a restricted, non-root helper Pod that mounts the claim read-only
 Clear the recording file and PVC settings, restore `PAGERLESS_MODEL_PROVIDER=replay`, and restart the server. Rebuild and load the agent image with the retrieved artifact at `/app/recordings/oom.json`. Run Replay against another injection of the real local Scenario to prove the placeholders resolve with fresh pod names and commit identifiers. That validation makes no paid model calls.
 
 The capture claim is deliberately separate from the normal Replay input path. The kind node owns the retained local volume; tearing down that cluster removes its underlying storage. Keep the validated repository artifact before teardown. No credential belongs in the recording, provenance, or commits.
+
+## The Narrative recording
+
+`narrative.json` holds the one response of the Narrative stage. The Narrative Job plays it in CI and by default, so CI makes no paid model call. The response checked in here was written from the validated `oom.json` facts: it is a synthetic recording of the right shape, not evidence of a live model run, and a genuine capture replaces it before release.
+
+The Narrative call has no Context Bundle, so its recording cannot hold a placeholder. The prompt asks for prose without pod names, timestamps, commit identifiers, hashes, or alert fingerprints, and `Recording.load` refuses a response that still contains a volatile identifier. A capture that names one fails loudly; adjust the prompt rather than the recording.
+
+To capture a genuine recording, prepare the claim as above and let one Triage reach a terminal Verification outcome with the server configured to record only the Narrative:
+
+```bash
+kubectl --context kind-pagerless -n pagerless patch configmap pagerless-agent-config --type merge \
+  --patch '{"data":{"PAGERLESS_MODEL_PROVIDER":"anthropic","PAGERLESS_RECORDING_PVC":"pagerless-replay-capture","PAGERLESS_NARRATIVE_RECORDING_FILE":"/recordings/narrative.json"}}'
+kubectl --context kind-pagerless -n pagerless rollout restart deployment/pagerless-server
+```
+
+The provider setting applies to both Jobs: the investigation that leads to a Recovered or NotRecovered Triage is live as well, and the Narrative Job records its single call to `/recordings/narrative.json` after the server accepts the Narrative. `PAGERLESS_RECORDING_FILE` stays unset, so an investigation Job never writes the Narrative artifact. Retrieve it with the same restricted helper Pod:
+
+```bash
+python evals/replay/capture.py retrieve-narrative --context kind-pagerless
+```
+
+Then clear the recording settings, restore `PAGERLESS_MODEL_PROVIDER=replay`, restart the server, and rebuild the agent image with the retrieved artifact at `/app/recordings/narrative.json`.

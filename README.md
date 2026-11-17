@@ -13,6 +13,7 @@
 5. **Approve.** A human reviews the rendered change in the CLI and creates a TriageApproval bound to that hash. The admission webhooks stamp the authenticated Kubernetes identity and refuse a Stale Proposal, an expired Proposal or a mismatched hash.
 6. **Execute.** The separate Executor independently checks the Approval and stored change before opening an auto-merging Sandbox pull request. Argo CD applies the merged commit. A NoAction Approval acknowledges the Diagnosis without changing the Workload.
 7. **Verify.** Go checks the rollout, Argo CD health at the merge commit, restarts during the full five-minute observation window, and resolution of any triggering alert. The Triage ends Recovered or NotRecovered; NotRecovered starts a linked Follow-up Triage when no other Active Triage already covers the Workload.
+8. **Narrate.** After Verification ends, `pagerless-server` starts one short-lived Narrative Job. It makes one Claude Haiku 5.5 call capped at about 2,000 output tokens and stores a short, purely descriptive account in the Triage's status. It never changes the outcome: a failed or timed-out Narrative Job leaves the Verification outcome and every other status field as they were.
 
 The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repository for demo Workload manifests. Failure injection and remediation pull requests change that repository, as specified in [ADR-0003](docs/adr/0003-separate-sandbox-repository.md).
 
@@ -20,7 +21,7 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 
 - **Control plane:** `pagerless-server` in Go, with the reconcilers, agent report endpoint, authenticated Alertmanager receiver and admission webhooks.
 - **Execution:** `pagerless-executor` in Go, with the separate GitHub write token and idempotent pull request execution.
-- **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching.
+- **Agent:** Python 3.14, LangGraph, sequence-based Replay and Claude Haiku 5.5 providers for the Anthropic API and Bedrock, with prompt caching. A separate short-lived Narrative Job writes each Triage's account after Verification.
 - **CLI:** the Go/Cobra `kubectl-triage` plugin, using the selected kube context.
 - **Read-only MCP services:** kubernetes-mcp-server, mcp-grafana, mcp-for-argocd and GitHub MCP. Their images, accounts and access restrictions are documented in [deploy/mcp](deploy/mcp/README.md).
 - **Observability and GitOps:** Prometheus, Alertmanager, Loki, Tempo, Grafana, the OpenTelemetry Collector and Argo CD's app-of-apps deployment, with a provisioned Grafana dashboard for Pagerless's own behaviour.
@@ -78,7 +79,7 @@ export PATH="$PWD/bin:$PATH"
 PLATFORM_REVISION="$(git rev-parse HEAD)" make dev
 ```
 
-The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation of the Phase 1 placeholder Workload, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. It predates the OpenTelemetry Demo in the Sandbox: its Proposal names the Phase 1 container, so it does not remediate the demo's `oom` Scenario. Replay plays the recorded responses against the current Sandbox, so the default Replay path needs a new genuine recording captured against the demo. Until that recording is committed, use a live provider, or the isolated end-to-end harness with its synthetic fixture, to run the demo.
+The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation of the Phase 1 placeholder Workload, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. It predates the OpenTelemetry Demo in the Sandbox: its Proposal names the Phase 1 container, so it does not remediate the demo's `oom` Scenario. Replay plays the recorded responses against the current Sandbox, so the default Replay path needs a new genuine recording captured against the demo. Until that recording is committed, use a live provider, or the isolated end-to-end harness with its synthetic fixture, to run the demo. The Narrative Job plays `evals/replay/narrative.json`, which needs no paid call.
 
 The terminal workflow is:
 
@@ -119,7 +120,7 @@ The genuine OOMKilled recording at `evals/replay/oom.json` was captured from one
 
 - `kubectl triage <pod/name | deploy/name | sts/name>` starts or joins a Triage; `--namespace` selects the Workload namespace and `--hint` adds human guidance.
 - `kubectl triage list` lists Triages. `list -o json` and `list -o yaml` return structured output.
-- `kubectl triage show <name>` shows Findings, the Diagnosis, Proposal, execution and Verification checks. `show -o json` and `show -o yaml` return structured output.
+- `kubectl triage show <name>` shows Findings, the Diagnosis, Proposal, execution, Verification checks, and the Narrative. `show -o json` and `show -o yaml` return structured output.
 - `kubectl triage show <name> --watch` streams investigation steps and stops at Proposed or a terminal phase. It cannot be combined with structured output.
 - `kubectl triage approve <name>` reviews and approves the exact current Proposal.
 - `kubectl triage reject <name> --reason "The proposed memory limit needs further review."` records a final Rejection.

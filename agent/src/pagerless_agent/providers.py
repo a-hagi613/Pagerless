@@ -57,7 +57,11 @@ class _MessagesProvider:
             tools[-1]["cache_control"] = {"type": "ephemeral"}
         response = await self._client.messages.create(
             model=self._model,
-            max_tokens=self._max_output_tokens,
+            max_tokens=(
+                self._max_output_tokens
+                if request.max_output_tokens is None
+                else min(self._max_output_tokens, request.max_output_tokens)
+            ),
             system=[{"type": "text", "text": request.system, "cache_control": {"type": "ephemeral"}}],
             tools=tools or omit,
             tool_choice=(

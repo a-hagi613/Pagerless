@@ -92,8 +92,10 @@ func run() error {
 			"service account that agent Jobs run as")
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
 			"service account that pagerless-server runs as")
-		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
-		sandboxURL    = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
+		agentDeadline     = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		narrativeDeadline = flag.Duration("narrative-deadline", server.DefaultNarrativeDeadline,
+			"active deadline of a Narrative Job")
+		sandboxURL = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
 			"git URL of the Sandbox; PatchResources and Rollback are accepted only when it is set")
 		sandboxBranch        = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
 		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
@@ -200,6 +202,7 @@ func run() error {
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,
+		NarrativeDeadline:    *narrativeDeadline,
 		Sandbox: sandbox.Repository{
 			URL: *sandboxURL, Branch: *sandboxBranch, ReadToken: sandboxReadToken,
 		},
@@ -252,19 +255,21 @@ func parsePatchBounds(
 // Provider and MCP credentials are referenced directly by agent Jobs, not read by the server.
 func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
 	return controller.AgentRuntimeConfig{
-		Provider:          os.Getenv(agentapi.EnvModelProvider),
-		KubernetesURL:     os.Getenv(agentapi.EnvMCPKubernetesURL),
-		GrafanaURL:        os.Getenv(agentapi.EnvMCPGrafanaURL),
-		ArgoCDURL:         os.Getenv(agentapi.EnvMCPArgoCDURL),
-		GitHubURL:         os.Getenv(agentapi.EnvMCPGitHubURL),
-		ReplayFile:        os.Getenv(agentapi.EnvReplayFile),
-		RecordingFile:     os.Getenv(agentapi.EnvRecordingFile),
-		RecordingPVC:      os.Getenv("PAGERLESS_RECORDING_PVC"),
-		SandboxOwner:      os.Getenv(agentapi.EnvSandboxOwner),
-		SandboxRepo:       os.Getenv(agentapi.EnvSandboxRepo),
-		ArgoCDApplication: os.Getenv(agentapi.EnvArgoCDApplication),
-		AllowedNamespaces: os.Getenv(agentapi.EnvAllowedNamespaces),
-		AWSRegion:         os.Getenv("AWS_REGION"),
+		Provider:               os.Getenv(agentapi.EnvModelProvider),
+		KubernetesURL:          os.Getenv(agentapi.EnvMCPKubernetesURL),
+		GrafanaURL:             os.Getenv(agentapi.EnvMCPGrafanaURL),
+		ArgoCDURL:              os.Getenv(agentapi.EnvMCPArgoCDURL),
+		GitHubURL:              os.Getenv(agentapi.EnvMCPGitHubURL),
+		ReplayFile:             os.Getenv(agentapi.EnvReplayFile),
+		RecordingFile:          os.Getenv(agentapi.EnvRecordingFile),
+		RecordingPVC:           os.Getenv("PAGERLESS_RECORDING_PVC"),
+		NarrativeReplayFile:    os.Getenv(agentapi.EnvNarrativeReplayFile),
+		NarrativeRecordingFile: os.Getenv(controller.NarrativeRecordingFileEnv),
+		SandboxOwner:           os.Getenv(agentapi.EnvSandboxOwner),
+		SandboxRepo:            os.Getenv(agentapi.EnvSandboxRepo),
+		ArgoCDApplication:      os.Getenv(agentapi.EnvArgoCDApplication),
+		AllowedNamespaces:      os.Getenv(agentapi.EnvAllowedNamespaces),
+		AWSRegion:              os.Getenv("AWS_REGION"),
 	}
 }
 

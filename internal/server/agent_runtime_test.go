@@ -18,15 +18,18 @@ import (
 )
 
 const (
-	anthropicProvider    = "anthropic"
-	bedrockProvider      = "bedrock"
-	recordingPVCVariable = "PAGERLESS_RECORDING_PVC"
-	recordingFile        = "/recordings/oom.json"
-	recordingClaimName   = "pagerless-replay-capture"
+	anthropicProvider       = "anthropic"
+	bedrockProvider         = "bedrock"
+	replayProvider          = "replay"
+	liveProviderRequirement = "live model provider"
+	unrelatedClaimName      = "private-data"
+	recordingPVCVariable    = "PAGERLESS_RECORDING_PVC"
+	recordingFile           = "/recordings/oom.json"
+	recordingClaimName      = "pagerless-replay-capture"
 )
 
 func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *testing.T) {
-	for _, provider := range []string{"replay", anthropicProvider, bedrockProvider} {
+	for _, provider := range []string{replayProvider, anthropicProvider, bedrockProvider} {
 		t.Run(provider, func(t *testing.T) {
 			runtime := controller.AgentRuntimeConfig{
 				Provider: provider, KubernetesURL: "http://mcp-kubernetes:8080/mcp",
@@ -187,42 +190,78 @@ func requireAgentRecordingStorage(t *testing.T, provider string) {
 	}
 }
 
-func TestAgentRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *testing.T) {
-	cases := []struct {
+// TestRecordingRejectsIncompleteOrInaccessibleStorageConfiguration covers both
+// server settings that make a Job capture a recording: the investigation's and
+// the Narrative's. Each reuses the same claim and the same live-provider rule.
+func TestRecordingRejectsIncompleteOrInaccessibleStorageConfiguration(t *testing.T) {
+	const narrativeRecordingFile = "/recordings/narrative.json"
+	investigation := []struct {
+		provider, claim, file, want string
+	}{
+		{anthropicProvider, "", "/tmp/oom.json", recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "", agentapi.EnvRecordingFile},
+		{replayProvider, recordingClaimName, recordingFile, liveProviderRequirement},
+		{"", recordingClaimName, recordingFile, liveProviderRequirement},
+		{anthropicProvider, "NotValid", recordingFile, recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
+		{anthropicProvider, unrelatedClaimName, recordingFile, recordingPVCVariable},
+		{anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
+	}
+	narrative := []struct {
 		name, provider, claim, file, want string
 	}{
-		{"no claim", anthropicProvider, "", "/tmp/oom.json", recordingPVCVariable},
-		{"no file", anthropicProvider, recordingClaimName, "", agentapi.EnvRecordingFile},
-		{"Replay", "replay", recordingClaimName, recordingFile, "live model provider"},
-		{"default Replay", "", recordingClaimName, recordingFile, "live model provider"},
-		{"invalid claim", anthropicProvider, "NotValid", recordingFile, recordingPVCVariable},
-		{"relative path", anthropicProvider, recordingClaimName, "oom.json", agentapi.EnvRecordingFile},
-		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/oom.json", agentapi.EnvRecordingFile},
-		{"traversal", anthropicProvider, recordingClaimName, "/recordings/../oom.json", agentapi.EnvRecordingFile},
-		{"unrelated claim", anthropicProvider, "private-data", recordingFile, recordingPVCVariable},
-		{"directory", anthropicProvider, recordingClaimName, "/recordings", agentapi.EnvRecordingFile},
+		{"no claim", anthropicProvider, "", narrativeRecordingFile, recordingPVCVariable},
+		{"Replay", replayProvider, recordingClaimName, narrativeRecordingFile, liveProviderRequirement},
+		{"default Replay", "", recordingClaimName, narrativeRecordingFile, liveProviderRequirement},
+		{"unrelated claim", anthropicProvider, unrelatedClaimName, narrativeRecordingFile, recordingPVCVariable},
+		{"outside claim", anthropicProvider, recordingClaimName, "/tmp/narrative.json", controller.NarrativeRecordingFileEnv},
+		{
+			"traversal", anthropicProvider, recordingClaimName, "/recordings/../narrative.json",
+			controller.NarrativeRecordingFileEnv,
+		},
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = listener.Close() })
-			token := func() (string, error) { return "unused", nil }
-			_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
-				Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
-				ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
-				ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
-				AlertmanagerToken: token,
-				AgentRuntime: controller.AgentRuntimeConfig{
-					Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
-				},
-			})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("configuration error = %v, want %q", err, tc.want)
-			}
+	names := []string{
+		"no claim", "no file", "Replay", "default Replay", "invalid claim",
+		"relative path", "outside claim", "traversal", "unrelated claim", "directory",
+	}
+	for i, tc := range investigation {
+		name := names[i]
+		t.Run("investigation/"+name, func(t *testing.T) {
+			requireConfigurationRefused(t, controller.AgentRuntimeConfig{
+				Provider: tc.provider, RecordingPVC: tc.claim, RecordingFile: tc.file,
+			}, tc.want)
 		})
+	}
+	for _, tc := range narrative {
+		t.Run("narrative/"+tc.name, func(t *testing.T) {
+			requireConfigurationRefused(t, controller.AgentRuntimeConfig{
+				Provider: tc.provider, RecordingPVC: tc.claim, NarrativeRecordingFile: tc.file,
+			}, tc.want)
+		})
+	}
+}
+
+// requireConfigurationRefused builds a server with the runtime configuration and
+// checks that it refuses to start with the expected reason.
+func requireConfigurationRefused(t *testing.T, runtime controller.AgentRuntimeConfig, want string) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	token := func() (string, error) { return "unused", nil }
+	_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
+		Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
+		ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
+		ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
+		AlertmanagerToken: token,
+		AgentRuntime:      runtime,
+	})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Errorf("configuration error = %v, want %q", err, want)
 	}
 }
 

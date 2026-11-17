@@ -208,6 +208,37 @@ async def test_schema_output_is_returned_as_structured_data_without_running_exte
     }
 
 
+async def test_a_request_caps_output_tokens_below_the_provider_default() -> None:
+    exchange = Exchange()
+    client = anthropic.AsyncAnthropic(
+        api_key="test-key", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(exchange.respond))
+    )
+    narrative = request().model_copy(
+        update={
+            "stage": Stage.NARRATIVE,
+            "tools": (),
+            "bundle": None,
+            "max_output_tokens": 2000,
+        }
+    )
+    async with AnthropicProvider(client=client) as provider:
+        await provider.complete(narrative)
+
+    assert json.loads(exchange.requests[0].content)["max_tokens"] == 2000
+
+
+async def test_a_request_cannot_raise_the_providers_output_cap() -> None:
+    exchange = Exchange()
+    client = anthropic.AsyncAnthropic(
+        api_key="test-key", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(exchange.respond))
+    )
+    raised = request().model_copy(update={"max_output_tokens": 1_000_000})
+    async with AnthropicProvider(client=client) as provider:
+        await provider.complete(raised)
+
+    assert json.loads(exchange.requests[0].content)["max_tokens"] == 4096
+
+
 @pytest.mark.parametrize("stop_reason", ["max_tokens", "refusal", "model_context_window_exceeded"])
 async def test_truncated_or_refused_answers_cannot_be_treated_as_completed_output(stop_reason: str) -> None:
     exchange = Exchange(stop_reason=stop_reason)

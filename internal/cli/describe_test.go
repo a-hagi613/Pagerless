@@ -67,6 +67,8 @@ func TestDescribeWritesEverySection(t *testing.T) {
 				{Name: "pods ready", Passed: true, Message: "3 of 3 pods are ready"},
 				{Name: "no restarts", Passed: false, Message: "2 restarts since the merge"},
 			},
+			Narrative: "The checkout Deployment was OOMKilled after its memory limit was lowered.\n" +
+				"The approved change raised the limit, and Verification found the rollout available.",
 		},
 	}
 
@@ -95,6 +97,8 @@ func TestDescribeWritesEverySection(t *testing.T) {
 		"  Restarted pods: none",
 		"  PASS  pods ready: 3 of 3 pods are ready",
 		"  FAIL  no restarts: 2 restarts since the merge",
+		"Narrative\n  The checkout Deployment was OOMKilled after its memory limit was lowered.",
+		"  The approved change raised the limit, and Verification found the rollout available.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("presentation lacks %q:\n%s", want, text)
@@ -122,7 +126,7 @@ func TestDescribeMarksSectionsThatHaveNoContentAsNone(t *testing.T) {
 		t.Errorf("presentation shows fields that the Triage does not have:\n%s", text)
 	}
 	for _, section := range []string{"Diagnosis\n  none", "Findings\n  none", "Proposal\n  none",
-		"Decision\n  none", "Execution\n  none", "Verification\n  none"} {
+		"Decision\n  none", "Execution\n  none", "Verification\n  none", "Narrative\n  none"} {
 		if !strings.Contains(text, section) {
 			t.Errorf("presentation lacks the placeholder for %q:\n%s", section, text)
 		}

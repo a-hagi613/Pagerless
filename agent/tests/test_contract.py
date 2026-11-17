@@ -80,11 +80,13 @@ class TestAgreementWithTheServer:
             "MaxDiagnosisLength": contract.MAX_DIAGNOSIS_LENGTH,
             "MaxFindingSourceLen": contract.MAX_FINDING_SOURCE_LENGTH,
             "MaxFindingSummaryLen": contract.MAX_FINDING_SUMMARY_LENGTH,
+            "MaxNarrativeLength": contract.MAX_NARRATIVE_LENGTH,
             "MaxStepSummaryLength": contract.MAX_STEP_SUMMARY_LENGTH,
             "MaxToolNameLength": contract.MAX_TOOL_NAME_LENGTH,
         }
         types = go_source("api/v1alpha1/triage_types.go")
         assert re.search(rf"const MaxFindings = {contract.MAX_FINDINGS}\b", types)
+        assert re.search(rf"const MaxNarrativeLength = {contract.MAX_NARRATIVE_LENGTH}\b", types)
 
     def test_the_vocabularies_match_the_servers(self) -> None:
         types = go_source("api/v1alpha1/triage_types.go")
@@ -106,6 +108,7 @@ class TestAgreementWithTheServer:
         assert 'Audience = "pagerless-server"' in source
         assert '"/v1/triages/" + url.PathEscape(triage) + "/events"' in source
         assert '"/v1/triages/" + url.PathEscape(triage) + "/report"' in source
+        assert '"/v1/triages/" + url.PathEscape(triage) + "/narrative"' in source
 
 
 class TestFindingAndStep:
@@ -295,3 +298,29 @@ def test_diagnosis_output_is_bounded_like_the_servers_report() -> None:
     ):
         with pytest.raises(ValidationError):
             contract.DiagnosisOutput.model_validate(bad)
+
+
+def test_the_narrative_report_is_bounded_and_encoded_as_the_server_decodes_it() -> None:
+    assert encode(contract.NarrativeReport(narrative="The Triage recovered.")) == {
+        "narrative": "The Triage recovered."
+    }
+    for bad in ({"narrative": ""}, {"narrative": " "}, {"narrative": "x" * 4001}):
+        with pytest.raises(ValidationError):
+            contract.NarrativeReport.model_validate(bad)
+
+
+def test_the_narrative_record_needs_a_workload_and_non_blank_text() -> None:
+    record = contract.NarrativeRecord.model_validate(
+        {
+            "workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"},
+            "text": "Phase: Recovered",
+        }
+    )
+    assert record.workload.name == "checkout"
+    for bad in (
+        {"text": "Phase: Recovered"},
+        {"workload": {"kind": "Pod", "namespace": "sandbox", "name": "checkout"}, "text": "x"},
+        {"workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"}, "text": ""},
+    ):
+        with pytest.raises(ValidationError):
+            contract.NarrativeRecord.model_validate(bad)

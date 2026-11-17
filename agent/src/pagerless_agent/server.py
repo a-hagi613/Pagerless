@@ -13,7 +13,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import ValidationError
 
-from pagerless_agent.contract import Report, ReportError, StepEvent, encode
+from pagerless_agent.contract import NarrativeRecord, NarrativeReport, Report, ReportError, StepEvent, encode
 
 log = logging.getLogger(__name__)
 
@@ -97,14 +97,42 @@ class ServerClient:
         if response.status_code in (401, 403, 409):
             raise ServerRefusedError(response.status_code, _message(response))
 
+    async def narrative_record(self) -> NarrativeRecord:
+        """Read the Triage record that the Narrative describes."""
+        response = await self._request("GET", "narrative")
+        if response.status_code == 200:
+            try:
+                return NarrativeRecord.model_validate(_json(response))
+            except ValidationError as error:
+                raise ServerError(f"the server's Narrative record is malformed: {error}") from error
+        self._raise_if_refused(response)
+        raise ServerError(
+            f"the server answered {response.status_code} to the Narrative record: {_message(response)}"
+        )
+
+    async def post_narrative(self, narrative: str) -> None:
+        """Post the Narrative, which the server stores in the Triage's status."""
+        response = await self._request("POST", "narrative", encode(NarrativeReport(narrative=narrative)))
+        if response.status_code == 202:
+            return
+        self._raise_if_refused(response)
+        raise ServerError(
+            f"the server answered {response.status_code} to the Narrative: {_message(response)}"
+        )
+
     async def _post(self, endpoint: str, body: dict[str, Any]) -> httpx.Response:
+        return await self._request("POST", endpoint, body)
+
+    async def _request(
+        self, method: str, endpoint: str, body: dict[str, Any] | None = None
+    ) -> httpx.Response:
         url = f"{self._base}/v1/triages/{self._triage}/{endpoint}"
         last: str = ""
         for attempt in range(1, _ATTEMPTS + 1):
             # The kubelet refreshes the projected token before it expires, so read it for every request.
             headers = {"Authorization": f"Bearer {self._read_token()}"}
             try:
-                response = await self._http.post(url, json=body, headers=headers)
+                response = await self._http.request(method, url, json=body, headers=headers)
             except httpx.TransportError as error:
                 last = f"{type(error).__name__}: {error}"
             else:

@@ -1,8 +1,10 @@
-"""Capture and retrieve one genuine OOMKilled Replay artifact from an existing kind stack.
+"""Capture and retrieve genuine Replay artifacts from an existing kind stack.
 
-Run with the agent's pinned Python environment. These helpers do not start a
-cluster, modify the remote Sandbox, or call a model. The coordinator starts one
-live Triage only after the local stack and durable destination are ready.
+The stages produce the OOMKilled investigation recording and the Narrative
+recording. Run with the agent's pinned Python environment. These helpers do not
+start a cluster, modify the remote Sandbox, or call a model. The coordinator
+starts one live Triage only after the local stack and durable destination are
+ready.
 """
 
 from __future__ import annotations
@@ -29,6 +31,8 @@ from pagerless_agent.replay import Recording
 NAMESPACE = "pagerless"
 CLAIM = "pagerless-replay-capture"
 CONTAINER_FILE = "/recordings/oom.json"
+NARRATIVE_CONTAINER_FILE = "/recordings/narrative.json"
+NARRATIVE_SCENARIO = "narrative"
 _MAX_ARTIFACT_BYTES = 1 << 20
 _TERMINAL = {
     "Recovered",
@@ -227,6 +231,28 @@ def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
     return recording
 
 
+def validate_narrative_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
+    """Require exactly one live Narrative call that is identifier-free."""
+    payload = path.read_bytes()
+    if len(payload) > _MAX_ARTIFACT_BYTES:
+        raise RuntimeError("the recording exceeds the capture size limit")
+    for secret in secrets:
+        if secret and (
+            secret.encode() in payload or base64.b64encode(secret.encode()) in payload
+        ):
+            raise RuntimeError(
+                "the recording contains a credential and must not be published"
+            )
+    recording = Recording.load(path)
+    if (recording.model, recording.scenario) != (ANTHROPIC_MODEL, NARRATIVE_SCENARIO):
+        raise RuntimeError("the artifact is not a live Haiku Narrative recording")
+    if len(recording.turns) != 1 or recording.turns[0].stage != Stage.NARRATIVE:
+        raise RuntimeError("the Narrative recording must hold exactly one call")
+    if not recording.turns[0].response.text.strip():
+        raise RuntimeError("the live Narrative is empty")
+    return recording
+
+
 def volume_command(
     cluster: Cluster, image: str, program: str, *, read_only: bool
 ) -> bytes:
@@ -347,6 +373,33 @@ def retrieve(
         temporary.unlink(missing_ok=True)
 
 
+def retrieve_narrative(
+    cluster: Cluster,
+    image: str,
+    destination: Path,
+    key_file: Path,
+) -> Recording:
+    """Read and validate the Narrative artifact after its Job has exited."""
+    payload = volume_command(
+        cluster,
+        image,
+        f"from pathlib import Path; import sys; p=Path({NARRATIVE_CONTAINER_FILE!r}); "
+        "assert p.stat().st_size <= 1048576; sys.stdout.buffer.write(p.read_bytes())",
+        read_only=True,
+    )
+    temporary = destination.with_suffix(".capture.tmp")
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_bytes(payload)
+        recording = validate_narrative_recording(
+            temporary, (read_api_key(key_file),)
+        )
+        temporary.replace(destination)
+        return recording
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def write_provenance(
     cluster: Cluster, triage: str, artifact: Path, revision: str
 ) -> None:
@@ -422,11 +475,15 @@ def write_provenance(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "stage", choices=("prepare", "retrieve", "validate", "provenance")
+        "stage",
+        choices=("prepare", "retrieve", "retrieve-narrative", "validate", "provenance"),
     )
     parser.add_argument("--context", default="kind-pagerless")
     parser.add_argument("--key-file", type=Path, default=Path(".env"))
     parser.add_argument("--artifact", type=Path, default=Path("evals/replay/oom.json"))
+    parser.add_argument(
+        "--narrative-artifact", type=Path, default=Path("evals/replay/narrative.json")
+    )
     parser.add_argument("--image", default="ghcr.io/a-hagi613/pagerless-agent:0.1.0")
     parser.add_argument("--triage")
     parser.add_argument("--source-revision")
@@ -440,6 +497,13 @@ def main() -> int:
         recording = retrieve(cluster, args.image, args.artifact, args.key_file)
         print(
             f"Retrieved and validated {len(recording.turns)} genuine model responses."
+        )
+    elif args.stage == "retrieve-narrative":
+        recording = retrieve_narrative(
+            cluster, args.image, args.narrative_artifact, args.key_file
+        )
+        print(
+            f"Retrieved and validated {len(recording.turns)} genuine Narrative response."
         )
     elif args.stage == "provenance":
         if not args.triage or not args.source_revision:

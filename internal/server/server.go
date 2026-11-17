@@ -47,6 +47,8 @@ const (
 	DefaultServerServiceAccount = "pagerless-server"
 	// DefaultAgentDeadline is the agent Job's active deadline: the five-minute budget of ADR-0010.
 	DefaultAgentDeadline = 5 * time.Minute
+	// DefaultNarrativeDeadline is the Narrative Job's active deadline: one short model call, not an investigation.
+	DefaultNarrativeDeadline = 2 * time.Minute
 	// shutdownTimeout bounds how long the report API drains when the server stops.
 	shutdownTimeout = 10 * time.Second
 	// readHeaderTimeout bounds how long a client may take to send request headers.
@@ -91,6 +93,8 @@ type Config struct {
 	ServerServiceAccount string
 	// AgentDeadline defaults to DefaultAgentDeadline.
 	AgentDeadline time.Duration
+	// NarrativeDeadline is the Narrative Job's active deadline. It defaults to DefaultNarrativeDeadline.
+	NarrativeDeadline time.Duration
 	// AlertNamespaces are the namespaces whose opted-in alerts may start Triages. Empty accepts none.
 	AlertNamespaces []string
 	// Clock defaults to the real clock.
@@ -197,6 +201,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.AgentDeadline == 0 {
 		c.AgentDeadline = DefaultAgentDeadline
+	}
+	if c.NarrativeDeadline == 0 {
+		c.NarrativeDeadline = DefaultNarrativeDeadline
 	}
 	if c.Clock == nil {
 		c.Clock = clock.RealClock{}
@@ -328,6 +335,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 
 	verifications := &controller.VerificationReconciler{
 		Client: mgr.GetClient(),
+		Scheme: scheme,
 		Status: store,
 		Verifier: &verification.Verifier{
 			Reader:       mgr.GetAPIReader(),
@@ -338,6 +346,13 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Clock:        cfg.Clock,
 		Window:       cfg.VerificationWindow,
 		PollInterval: cfg.VerificationPollInterval,
+		NarrativeJob: controller.AgentJobConfig{
+			Image:          cfg.AgentImage,
+			ServiceAccount: cfg.AgentServiceAccount,
+			ServerURL:      cfg.AgentServerURL,
+			Deadline:       int64(cfg.NarrativeDeadline.Seconds()),
+			Runtime:        cfg.AgentRuntime,
+		},
 	}
 	if err := verifications.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the verification controller: %w", err)

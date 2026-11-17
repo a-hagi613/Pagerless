@@ -20,8 +20,11 @@ from pydantic import (
     model_validator,
 )
 
+from pagerless_agent.bundle import WorkloadRef
+
 # Limits that the server enforces, matching `internal/agentapi/check.go`.
 MAX_DIAGNOSIS_LENGTH = 4000
+MAX_NARRATIVE_LENGTH = 4000
 MAX_FINDING_SOURCE_LENGTH = 500
 MAX_FINDING_SUMMARY_LENGTH = 1000
 MAX_STEP_SUMMARY_LENGTH = 300
@@ -264,6 +267,21 @@ class ReportError(_Strict):
 
     field: str
     message: str
+
+
+class NarrativeReport(_Strict):
+    """The Narrative Job's answer: the short account of a finished Triage."""
+
+    narrative: Annotated[str, StringConstraints(min_length=1, max_length=MAX_NARRATIVE_LENGTH)]
+
+    _narrative_given = field_validator("narrative")(_not_blank)
+
+
+class NarrativeRecord(_Strict):
+    """What the server gives a Narrative Job: the Triage rendered as text, and its Workload."""
+
+    workload: WorkloadRef
+    text: Annotated[str, StringConstraints(min_length=1)]
 
 
 def encode(model: BaseModel) -> dict[str, object]:
