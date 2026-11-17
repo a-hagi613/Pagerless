@@ -44,8 +44,14 @@ require_commands() {
 }
 
 # Runs kubectl against the pagerless kind cluster, never the current context.
+# `make cloud-up` sets PAGERLESS_KUBE_CONTEXT to target the EKS cluster instead,
+# and the same helpers then wait on that cluster.
 kc() {
-	kubectl --context "kind-${KIND_CLUSTER_NAME}" "$@"
+	if [ -n "${PAGERLESS_KUBE_CONTEXT:-}" ]; then
+		kubectl --context "$PAGERLESS_KUBE_CONTEXT" "$@"
+	else
+		kubectl --context "kind-${KIND_CLUSTER_NAME}" "$@"
+	fi
 }
 
 # Prints the owner/name slug of SANDBOX_URL, for example a-hagi613/pagerless-sandbox.
