@@ -97,6 +97,31 @@ func TestANonServerRequesterCannotAssertAnotherApprover(t *testing.T) {
 	requireUndecided(t, env, proposed.Name, v1alpha1.PhaseProposed)
 }
 
+// TestAnotherServiceAccountCannotAssertAnApprover proves that the asserted
+// approver path is exclusive to pagerless-server: no other service account may
+// name a Keycloak user, even when the stamping webhook is absent.
+func TestAnotherServiceAccountCannotAssertAnApprover(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources(), testenv.WithApprovers(dashboardApprover))
+	deploy(t, env, workload{name: checkout})
+	proposed := proposedTriage(t, env, checkout)
+
+	deleteMutatingWebhook(t, env)
+
+	for _, account := range []string{"pagerless-agent", "pagerless-executor"} {
+		user := "system:serviceaccount:pagerless:" + account
+		// The approval Role is granted so the request passes RBAC and reaches
+		// the webhook: even with approval rights, only pagerless-server may
+		// assert a different approver.
+		env.GrantApprover(t, user)
+		asserted := decision(proposed, v1alpha1.DecisionApproved, "")
+		asserted.Spec.Approver = dashboardApprover
+		requester := env.ClientAs(t, user)
+		requireRefusal(t, requester.Create(t.Context(), asserted), "only pagerless-server may assert an approver")
+	}
+	requireUndecided(t, env, proposed.Name, v1alpha1.PhaseProposed)
+}
+
 // TestStampedIdentityIsUnchangedForAClobberedAssertion keeps the Phase 1
 // behaviour: a plain user who supplies another name is recorded as itself.
 func TestStampedIdentityIsUnchangedForAClobberedAssertion(t *testing.T) {
