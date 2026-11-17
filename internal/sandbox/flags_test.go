@@ -1,11 +1,9 @@
 package sandbox_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -83,40 +81,12 @@ func readFlagdConfig(t *testing.T, manifest []byte) flagdDocument {
 	return document
 }
 
-// applyScenarioPatch applies a Scenario's inject.patch to a fresh copy of the
+// applyFlagdScenarioPatch applies a flag Scenario's inject.patch to the
 // known-good flagd ConfigMap and returns the flags that result.
-func applyScenarioPatch(t *testing.T, scenario string, patch []byte) flagdDocument {
+func applyFlagdScenarioPatch(t *testing.T, scenario string, patch []byte) flagdDocument {
 	t.Helper()
-	knownGood, err := os.ReadFile(knownGoodFlagdConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	work := t.TempDir()
-	target := filepath.Join(work, filepath.FromSlash(flagdConfigPath))
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(target, knownGood, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// git apply needs the file to be in a repository, and it must not rewrite the
-	// line endings of the patch or of the manifest.
-	init := exec.CommandContext(t.Context(), "git", "init", "--quiet")
-	init.Dir = work
-	if output, err := init.CombinedOutput(); err != nil {
-		t.Fatalf("Scenario %s: git init: %v\n%s", scenario, err, output)
-	}
-	apply := exec.CommandContext(t.Context(), "git", "-c", "core.autocrlf=false", "apply")
-	apply.Dir = work
-	apply.Stdin = bytes.NewReader(patch)
-	if output, err := apply.CombinedOutput(); err != nil {
-		t.Fatalf("Scenario %s: git apply: %v\n%s", scenario, err, output)
-	}
-	patched, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return readFlagdConfig(t, patched)
+	knownGood := mustReadFile(t, knownGoodFlagdConfig)
+	return readFlagdConfig(t, applyScenarioPatch(t, scenario, flagdConfigPath, knownGood, patch))
 }
 
 // The four flag Scenarios change the flagd ConfigMap, and each one must both
@@ -145,7 +115,7 @@ func TestFlagScenarioPatchesEnableTheirFlagInTheFlagdConfigMap(t *testing.T) {
 			if got := patchTarget(t, tc.scenario, string(patch)); got != flagdConfigPath {
 				t.Fatalf("the patch changes %q, want %q", got, flagdConfigPath)
 			}
-			patched := applyScenarioPatch(t, tc.scenario, patch)
+			patched := applyFlagdScenarioPatch(t, tc.scenario, patch)
 
 			injected, ok := patched.Flags[tc.flag]
 			if !ok {
@@ -192,7 +162,7 @@ func TestTheProductCatalogFailureInjectionWidensTargetingToEveryProduct(t *testi
 	if knownGood.DefaultVariant != variantOff {
 		t.Fatalf("known-good productCatalogFailure defaultVariant = %q, want off", knownGood.DefaultVariant)
 	}
-	patched := applyScenarioPatch(t, "product-catalog-flag",
+	patched := applyFlagdScenarioPatch(t, "product-catalog-flag",
 		mustReadFile(t, filepath.Join("..", "..", "scenarios", "product-catalog-flag", "inject.patch")))
 	flag := patched.Flags["productCatalogFailure"]
 	if len(flag.Targeting) != 0 {

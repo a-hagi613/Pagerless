@@ -11,6 +11,13 @@ PYTHONPATH="$script_dir" "${python[@]}" -m unittest discover -s "$script_dir" -p
 
 keep="${PAGERLESS_E2E_KEEP_CLUSTER:-0}"
 case "$keep" in 0|1) ;; *) echo "PAGERLESS_E2E_KEEP_CLUSTER must be 0 or 1." >&2; exit 1 ;; esac
+# The harness plays one Scenario. Each Scenario's Replay recording lives beside
+# this script, named for it, so a Scenario is selected without another flag.
+scenario="${PAGERLESS_E2E_SCENARIO:-oom}"
+recording="${PAGERLESS_E2E_RECORDING:-synthetic-$scenario.json}"
+case "$scenario" in *[!a-z0-9-]*|"") echo "PAGERLESS_E2E_SCENARIO must be a lowercase Scenario name." >&2; exit 1 ;; esac
+[ -f "$script_dir/fixtures/$recording" ] ||
+	{ echo "The Replay recording $recording is not in evals/e2e/fixtures." >&2; exit 1; }
 if kind get clusters | grep -qx "$KIND_CLUSTER_NAME" && [ "${PAGERLESS_E2E_REUSE_CLUSTER:-0}" != 1 ]; then
 	echo "The kind cluster already exists; set PAGERLESS_E2E_REUSE_CLUSTER=1 only for the isolated E2E cluster." >&2
 	exit 1
@@ -51,7 +58,7 @@ SANDBOX_URL=https://sandbox-adapter.pagerless-e2e.svc:8443/git/pagerless-test/sa
 GITHUB_READ_TOKEN=$read_token
 GITHUB_WRITE_TOKEN=$write_token
 MODEL_PROVIDER=replay
-PAGERLESS_REPLAY_FILE=/app/recordings/synthetic-oom.json
+PAGERLESS_REPLAY_FILE=/app/recordings/$recording
 PAGERLESS_SANDBOX_OWNER=pagerless-test
 PAGERLESS_SANDBOX_REPO=sandbox
 PAGERLESS_GITHUB_REPOSITORY=pagerless-test/sandbox
@@ -107,7 +114,7 @@ for deployment in pagerless-server pagerless-executor mcp-github; do
 	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch deployment "$deployment" --type=merge \
 		--patch "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"pagerless.dev/config-checksum\":\"$config_checksum\"}}}}}"
 done
-kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch '{"data":{"PAGERLESS_REPLAY_FILE":"/app/recordings/synthetic-oom.json"}}'
+kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch "{\"data\":{\"PAGERLESS_REPLAY_FILE\":\"/app/recordings/$recording\"}}"
 for deployment in pagerless-server pagerless-executor mcp-github; do kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout status "deployment/$deployment" --timeout=180s; done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless-e2e port-forward deployment/sandbox-adapter 18443:8443 18080:8080 >"$state/port-forward.log" 2>&1 &
 forward=$!
@@ -132,7 +139,7 @@ snapshot="$state/triage.json"
 "${python[@]}" "$script_dir/triage.py" collect --history "$history" --snapshot "$snapshot" --timeout 1200 & observer=$!
 export GIT_AUTHOR_NAME="Pagerless E2E" GIT_AUTHOR_EMAIL=e2e@pagerless.dev
 export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-make -C "$repo_root" break SCENARIO=oom
+make -C "$repo_root" break SCENARIO="$scenario"
 triage="$("${python[@]}" "$script_dir/triage.py" proposed --timeout 300)"
 make -C "$repo_root" build-cli
 PATH="$repo_root/bin:$PATH" kubectl triage approve "$triage" --yes

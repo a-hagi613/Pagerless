@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 from mcp import Client
 from mcp.server import MCPServer
 from mcp.types import CallToolResult, TextContent, Tool
@@ -47,7 +46,7 @@ async def test_only_allowlisted_read_tools_are_exposed_and_called() -> None:
         assert calls == ["checkout-1"]
 
 
-async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_the_server() -> None:
+async def test_namespace_and_repository_boundaries_refuse_calls_before_the_server() -> None:
     server = MCPServer("reads")
     calls: list[dict[str, str]] = []
 
@@ -72,13 +71,9 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         client_factory=lambda _: Client(server),
     ) as tools:
         for args in (
-            {"apiVersion": "v1", "kind": "Secret", "name": "token"},
             {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "namespace": "kube-system"},
-            {"apiVersion": "example.dev/v1", "kind": "Pod", "name": "checkout"},
-            {"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "NetworkChaos", "name": "cpu-stress"},
-            {"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "PodChaos", "name": "kill"},
-            {"apiVersion": "v1", "kind": "StressChaos", "name": "cpu-stress"},
-            {"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "Deployment", "name": "payment"},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "allNamespaces": True},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "name": "checkout", "cluster": "other"},
         ):
             assert (await tools.call("k8s__resources_get", args)).is_error
         assert (await tools.call("github__list_commits", {"owner": "other", "repo": "private"})).is_error
@@ -89,14 +84,14 @@ async def test_namespace_resource_and_repository_boundaries_refuse_calls_before_
         assert calls == [{"owner": "example", "repo": "sandbox"}]
 
 
-async def test_stress_chaos_is_the_only_custom_resource_the_agent_may_read() -> None:
+async def test_a_secret_read_reaches_the_gateway_so_its_policy_can_refuse_it() -> None:
     server = MCPServer("Kubernetes")
     seen: list[dict[str, str]] = []
 
     @server.tool()
-    def resources_list(apiVersion: str, kind: str, namespace: str) -> str:  # noqa: N803
-        seen.append({"apiVersion": apiVersion, "kind": kind, "namespace": namespace})
-        return yaml.safe_dump([{"metadata": {"name": "cpu-stress-payment"}}])
+    def resources_get(apiVersion: str, kind: str, name: str, namespace: str) -> dict[str, str]:  # noqa: N803
+        seen.append({"apiVersion": apiVersion, "kind": kind, "name": name, "namespace": namespace})
+        return {"kind": kind}
 
     async with MCPTools(
         (MCPServerConfig("k8s", "http://kubernetes/mcp", TOKEN),),
@@ -105,17 +100,21 @@ async def test_stress_chaos_is_the_only_custom_resource_the_agent_may_read() -> 
         repository="sandbox",
         client_factory=lambda _: Client(server),
     ) as tools:
-        listed = await tools.read_objects(
-            "k8s", "resources_list", {"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "StressChaos"}
-        )
-        refused = await tools.call(
-            "k8s__resources_list", {"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "NetworkChaos"}
+        await tools.call(
+            "k8s__resources_get",
+            {"apiVersion": "v1", "kind": "Secret", "name": "github-write", "namespace": "sandbox"},
         )
 
-    assert listed == [{"metadata": {"name": "cpu-stress-payment"}}]
-    assert refused.is_error
-    # Only the allowlisted read reached the server, in the Workload's namespace.
-    assert seen == [{"apiVersion": "chaos-mesh.org/v1alpha1", "kind": "StressChaos", "namespace": "sandbox"}]
+    # The client forwards the read, so agentgateway's policy is the boundary that
+    # refuses it by argument and logs the denial (ADR-0022, Scenario 10).
+    assert seen == [
+        {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "name": "github-write",
+            "namespace": "sandbox",
+        }
+    ]
 
 
 async def test_complete_objects_are_read_past_a_reduced_summary_table() -> None:
