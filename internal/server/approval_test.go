@@ -341,16 +341,23 @@ func TestSimultaneousDecisionsApplyExactlyOne(t *testing.T) {
 	tr := env.WaitFor(t, proposed.Name, "a decision is applied", func(tr *v1alpha1.Triage) bool {
 		return tr.Status.Phase != v1alpha1.PhaseProposed
 	})
-	want := map[v1alpha1.DecisionOutcome]v1alpha1.Phase{
-		v1alpha1.DecisionApproved: v1alpha1.PhaseApproved,
-		v1alpha1.DecisionRejected: v1alpha1.PhaseRejected,
+	// The server hands an Approved Triage to the Executor, so an Approval may already show as Executing.
+	matches := func(status v1alpha1.TriageStatus) bool {
+		switch {
+		case status.Decision == nil:
+			return false
+		case status.Decision.Outcome == v1alpha1.DecisionApproved:
+			return status.Phase == v1alpha1.PhaseApproved || status.Phase == v1alpha1.PhaseExecuting
+		default:
+			return status.Phase == v1alpha1.PhaseRejected
+		}
 	}
 	first := tr.Status.Decision
-	if first == nil || tr.Status.Phase != want[first.Outcome] {
+	if !matches(tr.Status) {
 		t.Fatalf("phase = %s, decision = %+v, want a phase that matches the decision", tr.Status.Phase, first)
 	}
 	time.Sleep(500 * time.Millisecond)
-	if again := env.Get(t, proposed.Name).Status; again.Phase != tr.Status.Phase || *again.Decision != *first {
+	if again := env.Get(t, proposed.Name).Status; !matches(again) || *again.Decision != *first {
 		t.Errorf("the decision changed from %+v (%s) to %+v (%s)", first, tr.Status.Phase, again.Decision, again.Phase)
 	}
 }
