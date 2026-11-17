@@ -60,7 +60,7 @@ cat >"$state/config.env" <<EOF
 SANDBOX_URL=https://sandbox-adapter.pagerless-e2e.svc:8443/git/pagerless-test/sandbox.git
 GITHUB_READ_TOKEN=$read_token
 GITHUB_WRITE_TOKEN=$write_token
-MODEL_PROVIDER=replay
+MODEL_PROVIDER=${PAGERLESS_E2E_MODEL_PROVIDER:-replay}
 PAGERLESS_REPLAY_FILE=/app/recordings/$recording
 PAGERLESS_SANDBOX_OWNER=pagerless-test
 PAGERLESS_SANDBOX_REPO=sandbox
@@ -78,6 +78,10 @@ printf 'PAGERLESS_E2E_CA_FILE=%q\n' "$state/certs/ca.crt" >>"$state/config.env"
 printf 'PAGERLESS_E2E_TLS_CERT_FILE=%q\n' "$state/certs/tls.crt" >>"$state/config.env"
 printf 'PAGERLESS_E2E_TLS_KEY_FILE=%q\n' "$state/certs/tls.key" >>"$state/config.env"
 printf 'PAGERLESS_E2E_KUBECONFORM_BIN=%q\n' "$state/bin/kubeconform" >>"$state/config.env"
+if [ "${PAGERLESS_E2E_MODEL_PROVIDER:-replay}" = anthropic ]; then
+	[ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "ANTHROPIC_API_KEY is required for a live run." >&2; exit 2; }
+	printf 'ANTHROPIC_API_KEY=%q\n' "$ANTHROPIC_API_KEY" >>"$state/config.env"
+fi
 unset read_token write_token
 # The server, Executor, and relay read the adapter CA and tokens when they
 # start. Roll their pod templates whenever this run's material changes so a
@@ -119,6 +123,22 @@ for deployment in pagerless-server pagerless-executor mcp-github; do
 done
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge --patch "{\"data\":{\"PAGERLESS_REPLAY_FILE\":\"/app/recordings/$recording\"}}"
 for deployment in pagerless-server pagerless-executor mcp-github; do kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout status "deployment/$deployment" --timeout=180s; done
+
+# A live evaluation can also produce the genuine Replay recordings. The
+# destination claim and the inference Secret are provisioned with the same
+# stdin-only path as a manual capture, then the server is restarted so the
+# investigation and Narrative Jobs record to the claim.
+if [ "${PAGERLESS_E2E_RECORDING:-0}" = "1" ]; then
+	(
+		cd "$repo_root/agent" &&
+			uv run --locked python "$repo_root/evals/replay/capture.py" prepare \
+				--context "kind-$KIND_CLUSTER_NAME" --key-file "$state/config.env" --image "$PAGERLESS_AGENT_IMAGE"
+	)
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless patch configmap pagerless-agent-config --type merge \
+		--patch '{"data":{"PAGERLESS_MODEL_PROVIDER":"anthropic","PAGERLESS_RECORDING_PVC":"pagerless-replay-capture","PAGERLESS_RECORDING_FILE":"/recordings/oom.json","PAGERLESS_NARRATIVE_RECORDING_FILE":"/recordings/narrative.json"}}'
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout restart deployment/pagerless-server
+	kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless rollout status deployment/pagerless-server --timeout=180s
+fi
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless-e2e port-forward deployment/sandbox-adapter 18443:8443 18080:8080 >"$state/port-forward.log" 2>&1 &
 forward=$!
 attempt=0
@@ -143,10 +163,42 @@ if [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
 	eval_arguments=(--adapter --scenarios "${PAGERLESS_E2E_SCENARIOS:-oom}"
 		--repeats "${PAGERLESS_E2E_REPEATS:-1}"
 		--results-dir "$repo_root/evals/results")
+	if [ -n "${PAGERLESS_E2E_MAX_TOKENS:-}" ]; then
+		eval_arguments+=(--max-tokens "$PAGERLESS_E2E_MAX_TOKENS")
+	fi
+	if [ -n "${PAGERLESS_E2E_MAX_COST_USD:-}" ]; then
+		eval_arguments+=(--max-cost-usd "$PAGERLESS_E2E_MAX_COST_USD")
+	fi
 	if [ "${PAGERLESS_E2E_REQUIRE_PASS:-1}" = "1" ]; then
 		eval_arguments+=(--require-pass)
 	fi
 	"${python[@]}" "$repo_root/evals/harness/eval.py" "${eval_arguments[@]}"
+	if [ "${PAGERLESS_E2E_RECORDING:-0}" = "1" ]; then
+		triage="$(kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless \
+			get triages --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1:].metadata.name}')"
+		[ -n "$triage" ] || { echo "the recorded evaluation produced no Triage" >&2; exit 1; }
+		# The Narrative Job starts after Verification; wait for its text before
+		# retrieving the recording.
+		for _ in $(seq 1 36); do
+			narrative="$(kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless \
+				get triage "$triage" -o jsonpath='{.status.narrative}')"
+			[ -n "$narrative" ] && break
+			sleep 5
+		done
+		(
+			cd "$repo_root/agent"
+			uv run --locked python "$repo_root/evals/replay/capture.py" retrieve \
+				--context "kind-$KIND_CLUSTER_NAME" --key-file "$state/config.env" \
+				--image "$PAGERLESS_AGENT_IMAGE" --artifact "$repo_root/evals/replay/oom.json"
+			uv run --locked python "$repo_root/evals/replay/capture.py" provenance \
+				--context "kind-$KIND_CLUSTER_NAME" --key-file "$state/config.env" \
+				--image "$PAGERLESS_AGENT_IMAGE" --triage "$triage" \
+				--source-revision "$PLATFORM_REVISION" --artifact "$repo_root/evals/replay/oom.json"
+			uv run --locked python "$repo_root/evals/replay/capture.py" retrieve-narrative \
+				--context "kind-$KIND_CLUSTER_NAME" --key-file "$state/config.env" \
+				--image "$PAGERLESS_AGENT_IMAGE" --narrative-artifact "$repo_root/evals/replay/narrative.json"
+		)
+	fi
 	uv run --no-project --python "$PYTHON_VERSION" "$script_dir/client.py" \
 		--repository "$PAGERLESS_E2E_REPOSITORY" reset
 	wait_for_application sandbox 9eff68bdf72bcf9e99d6d713a152995d851aa841 900 healthy

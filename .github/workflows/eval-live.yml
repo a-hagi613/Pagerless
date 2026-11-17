@@ -1,0 +1,138 @@
+name: Paid evaluation
+
+# A manually dispatched, budgeted live run. It never triggers on a push or a
+# pull request, so a fork can never reach the model credential, and one run at
+# a time keeps the spend predictable.
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: "measured runs oom once to confirm cost; full runs every Scenario twice"
+        type: choice
+        options: [measured, full]
+        default: measured
+      scenarios:
+        description: "Optional comma-separated Scenario override; empty uses the phase default"
+        type: string
+        required: false
+        default: ""
+      repeats:
+        description: "Repeats per Scenario"
+        type: number
+        required: false
+        default: 1
+      max_tokens:
+        description: "Hard token budget for the whole batch"
+        type: number
+        required: false
+        default: 40000
+      max_cost_usd:
+        description: "Hard cost budget in USD for the whole batch"
+        type: number
+        required: false
+        default: 1
+      confirm_paid_run:
+        description: "Type yes to spend money on a live model"
+        type: string
+        required: true
+        default: ""
+      model_provider:
+        description: "Measured provider"
+        type: choice
+        options: [anthropic, bedrock]
+        default: anthropic
+
+concurrency:
+  group: paid-evaluation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Live evaluation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - name: Check the paid-run confirmation and budget
+        env:
+          CONFIRM: ${{ inputs.confirm_paid_run }}
+          MAX_COST: ${{ inputs.max_cost_usd }}
+        run: |
+          set -euo pipefail
+          [ "$CONFIRM" = "yes" ] || { echo "Refusing to run: confirm_paid_run must be exactly yes." >&2; exit 1; }
+          python3 - <<'PY'
+          import os, sys
+          cost = float(os.environ["MAX_COST"])
+          if cost <= 0 or cost > 4.5:
+              sys.exit("The batch cost budget must be positive and at most 4.5 USD inside the 5 USD mission cap.")
+          PY
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.8"
+          python-version: "3.14.10"
+
+      - name: Install pinned Kubernetes tools
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" --output kind
+          chmod +x kind
+          sudo install kind /usr/local/bin/kind
+          curl --fail --silent --show-error --location "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
+          chmod +x kubectl
+          sudo install kubectl /usr/local/bin/kubectl
+          curl --fail --silent --show-error --location "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+
+      - name: Run the paid evaluation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PAGERLESS_E2E: "1"
+          PAGERLESS_E2E_EVAL: "1"
+          PAGERLESS_E2E_MODEL_PROVIDER: ${{ inputs.model_provider }}
+          PAGERLESS_E2E_SCENARIOS: ${{ inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom') }}
+          PAGERLESS_E2E_REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
+          PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
+          PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
+          PAGERLESS_E2E_RECORDING: ${{ inputs.phase == 'measured' && '1' || '0' }}
+          PAGERLESS_E2E_REQUIRE_PASS: "1"
+          PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
+          PLATFORM_REVISION: ${{ github.sha }}
+        run: bash evals/e2e/run.sh
+
+      - name: Upload evaluation results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-results-${{ github.sha }}-${{ inputs.phase }}
+          path: evals/results
+          if-no-files-found: ignore
+
+      - name: Upload Replay recordings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: replay-recordings-${{ github.sha }}
+          path: |
+            evals/replay/oom.json
+            evals/replay/oom.provenance.json
+            evals/replay/narrative.json
+          if-no-files-found: ignore
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: paid-eval-diagnostics-${{ github.sha }}
+          path: e2e-diagnostics
+          if-no-files-found: ignore

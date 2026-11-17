@@ -408,14 +408,18 @@ def write_provenance(
         raise RuntimeError("source revision must be the full Git commit SHA")
     tr = cluster.get("triage", triage)
     job = cluster.get("job", triage + "-agent")
-    if (
-        tr.get("status", {}).get("phase") != "Proposed"
-        or job.get("status", {}).get("succeeded") != 1
-    ):
+    status = tr.get("status", {})
+    phase = status.get("phase")
+    # An evaluation run approves and verifies the Triage before retrieval, so a
+    # terminal phase is valid evidence as long as the Job succeeded and the
+    # server-validated Proposal is still recorded.
+    if phase not in _TERMINAL or job.get("status", {}).get("succeeded") != 1:
         raise RuntimeError(
-            "capture provenance requires a succeeded live Job and a Proposed Triage"
+            "capture provenance requires a succeeded live Job and a finished Triage"
         )
-    proposal = tr["status"]["proposal"]
+    proposal = status.get("proposal")
+    if not proposal:
+        raise RuntimeError("the finished Triage has no server-validated Proposal")
     if proposal["action"] != "PatchResources":
         raise RuntimeError("the server did not validate a PatchResources Proposal")
     container = job["spec"]["template"]["spec"]["containers"][0]
