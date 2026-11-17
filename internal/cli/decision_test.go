@@ -214,7 +214,7 @@ func TestApproveShowsTheRenderedChangeAndApprovesItsHash(t *testing.T) {
 		}
 	}
 
-	tr := c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+	tr := c.env.WaitForApproved(t, proposed.Name)
 	if got := tr.Status.Decision; got == nil || got.Approver != decisionUser || got.Outcome != v1alpha1.DecisionApproved {
 		t.Errorf("decision = %+v, want an Approval by %s", got, decisionUser)
 	}
@@ -250,7 +250,7 @@ func TestApproveWithoutConfirmationApprovesNothing(t *testing.T) {
 		if out, err := c.run(t, strings.NewReader("YES\n"), approveCommand, proposed.Name); err != nil {
 			t.Fatalf("approve: %v\n%s", err, out)
 		}
-		c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+		c.env.WaitForApproved(t, proposed.Name)
 	})
 }
 
@@ -267,7 +267,7 @@ func TestApproveYesSkipsTheConfirmation(t *testing.T) {
 	if strings.Contains(out, "[y/N]") || !strings.Contains(out, "+              memory: 512Mi") {
 		t.Errorf("output = %s, want the change shown and no question", out)
 	}
-	tr := c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+	tr := c.env.WaitForApproved(t, proposed.Name)
 	if got := tr.Status.Decision; got == nil || got.Reason != "limit is right" {
 		t.Errorf("decision = %+v, want the reason recorded", got)
 	}

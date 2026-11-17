@@ -109,7 +109,7 @@ func TestApprovalIsStampedWithTheRequesterAndMovesTheTriageToApproved(t *testing
 		t.Errorf("stored approver = %q, want %q", stored.Spec.Approver, aliceUser)
 	}
 
-	tr := env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+	tr := env.WaitForApproved(t, proposed.Name)
 	got := tr.Status.Decision
 	if got == nil || got.Outcome != v1alpha1.DecisionApproved || got.Approver != aliceUser ||
 		got.Reason != "memory limit looks right" || !got.DecidedAt.Time.Equal(testenv.StartTime) {
@@ -148,7 +148,7 @@ spec:
 	if err := alice.Create(t.Context(), &obj); err != nil {
 		t.Fatalf("create the manifest: %v", err)
 	}
-	tr := env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+	tr := env.WaitForApproved(t, proposed.Name)
 	if got := tr.Status.Decision; got == nil || got.Approver != aliceUser || got.Reason != "applied with kubectl" {
 		t.Errorf("decision = %+v, want an Approval by %s from the manifest", got, aliceUser)
 	}
@@ -289,7 +289,7 @@ func TestApprovalOfARevalidatedProposalNeedsTheNewHash(t *testing.T) {
 	if err := alice.Create(t.Context(), decision(after, v1alpha1.DecisionApproved, "")); err != nil {
 		t.Fatalf("approve the re-validated Proposal: %v", err)
 	}
-	env.WaitForPhase(t, before.Name, v1alpha1.PhaseApproved)
+	env.WaitForApproved(t, before.Name)
 }
 
 func TestADecisionIsAppliedOnceAndCannotBeReplayed(t *testing.T) {
@@ -303,17 +303,20 @@ func TestADecisionIsAppliedOnceAndCannotBeReplayed(t *testing.T) {
 	if err := alice.Create(t.Context(), decision(proposed, v1alpha1.DecisionApproved, "")); err != nil {
 		t.Fatal(err)
 	}
-	approved := env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseApproved)
+	approved := env.WaitForApproved(t, proposed.Name)
 
 	t.Run("the same Approval again", func(t *testing.T) {
-		requireRefusal(t, bob.Create(t.Context(), decision(proposed, v1alpha1.DecisionApproved, "")), "Approved")
+		again := decision(proposed, v1alpha1.DecisionApproved, "")
+		requireRefusal(t, bob.Create(t.Context(), again), "only a Proposed Triage")
 	})
 	t.Run("a Rejection after an Approval", func(t *testing.T) {
 		reversal := decision(proposed, v1alpha1.DecisionRejected, "changed my mind")
-		requireRefusal(t, bob.Create(t.Context(), reversal), "Approved")
+		requireRefusal(t, bob.Create(t.Context(), reversal), "only a Proposed Triage")
 	})
 	got := env.Get(t, proposed.Name).Status
-	if got.Phase != v1alpha1.PhaseApproved || got.Decision == nil || *got.Decision != *approved.Status.Decision {
+	// The server hands an Approved Triage to the Executor, so it may already be Executing.
+	decided := got.Phase == v1alpha1.PhaseApproved || got.Phase == v1alpha1.PhaseExecuting
+	if !decided || got.Decision == nil || *got.Decision != *approved.Status.Decision {
 		t.Errorf("status after replays = %+v, want the first decision unchanged", got)
 	}
 }

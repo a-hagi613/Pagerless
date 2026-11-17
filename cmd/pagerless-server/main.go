@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/webhooktls"
@@ -24,6 +25,21 @@ func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "pagerless-server:", err)
 		os.Exit(1)
+	}
+}
+
+// defaultExecutorTokenFile is where the Deployment projects the token for the Executor.
+const defaultExecutorTokenFile = "/var/run/secrets/pagerless/executor/token"
+
+// tokenFromFile returns a source that reads the token at every call, because
+// the kubelet rotates a projected token in place.
+func tokenFromFile(path string) func() (string, error) {
+	return func() (string, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read the executor token: %w", err)
+		}
+		return strings.TrimSpace(string(raw)), nil
 	}
 }
 
@@ -65,6 +81,11 @@ func run() error {
 		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
 		patchable     = flag.String("patch-namespaces", "",
 			"comma-separated namespaces whose Workloads PatchResources may change")
+		executorURL = flag.String("executor-url", "",
+			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
+		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
+			"file that holds the projected service account token, with audience "+executorapi.Audience+
+				", that authenticates the server to the Executor")
 		alertNamespaces = flag.String("alert-namespaces", "",
 			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
 	)
@@ -102,6 +123,9 @@ func run() error {
 		return fmt.Errorf("provision webhook TLS: %w", err)
 	}
 
+	if *executorURL == "" {
+		*executorURL = fmt.Sprintf("http://pagerless-executor.%s.svc:8080", *namespace)
+	}
 	listener, err := net.Listen("tcp", *reportBind)
 	if err != nil {
 		return fmt.Errorf("listen for the report API: %w", err)
@@ -111,6 +135,8 @@ func run() error {
 		AgentImage:           *agentImage,
 		AgentServerURL:       *reportURL,
 		ReportListener:       listener,
+		ExecutorURL:          *executorURL,
+		ExecutorToken:        tokenFromFile(*executorTokenFile),
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,

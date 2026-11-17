@@ -37,7 +37,7 @@ func (e *Env) PatchResources(allowedNamespaces ...string) map[v1alpha1.Action]pr
 	validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
 		Reader:            asServer,
 		Writer:            asServer,
-		Sandbox:           sandbox.Repository{URL: e.Sandbox.URL, Branch: "main"},
+		Sandbox:           sandbox.Repository{URL: e.Sandbox.URL, Branch: SandboxBranch},
 		AllowedNamespaces: allowedNamespaces,
 		Bounds:            patchresources.DefaultBounds(),
 	})

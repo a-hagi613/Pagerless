@@ -1,5 +1,5 @@
-// Package server assembles pagerless-server: the Triage and TriageApproval reconcilers, the agent
-// report endpoint, and the admission webhooks, run by one manager (ADR-0005).
+// Package server assembles pagerless-server: the Triage, TriageApproval, and execution reconcilers, the
+// agent report endpoint, and the admission webhooks, run by one manager (ADR-0005).
 package server
 
 import (
@@ -27,6 +27,7 @@ import (
 	admissionpkg "github.com/a-hagi613/pagerless/internal/admission"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
@@ -57,6 +58,11 @@ type Config struct {
 	AgentServerURL string
 	// ReportListener is the listener the report API serves on. It is required.
 	ReportListener net.Listener
+	// ExecutorURL is the base URL of pagerless-executor. It is required.
+	ExecutorURL string
+	// ExecutorToken returns the projected service account token, with the audience
+	// executorapi.Audience, that authenticates the server to the Executor. It is required.
+	ExecutorToken func() (string, error)
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
 	AgentServiceAccount string
@@ -82,6 +88,9 @@ type Config struct {
 	// ProposalPollInterval is how often a Proposed Triage is checked for a Stale Proposal.
 	// It defaults to controller.DefaultProposalPollInterval.
 	ProposalPollInterval time.Duration
+	// ExecutionPollInterval is how often the Executor is asked whether an open pull request has merged.
+	// It defaults to controller.DefaultExecutionPollInterval.
+	ExecutionPollInterval time.Duration
 
 	// WebhookHost, WebhookPort, and WebhookCertDir configure the admission webhook server.
 	WebhookHost    string
@@ -111,6 +120,10 @@ func (c Config) validate() error {
 		return errors.New("agent server URL is required")
 	case c.ReportListener == nil:
 		return errors.New("report listener is required")
+	case c.ExecutorURL == "":
+		return errors.New("executor URL is required")
+	case c.ExecutorToken == nil:
+		return errors.New("executor token source is required")
 	}
 	return nil
 }
@@ -133,6 +146,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.ProposalPollInterval == 0 {
 		c.ProposalPollInterval = controller.DefaultProposalPollInterval
+	}
+	if c.ExecutionPollInterval == 0 {
+		c.ExecutionPollInterval = controller.DefaultExecutionPollInterval
 	}
 	return c
 }
@@ -204,6 +220,17 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 	if err := approvals.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the TriageApproval controller: %w", err)
+	}
+
+	executions := &controller.ExecutionReconciler{
+		Client:       mgr.GetClient(),
+		Status:       store,
+		Executor:     &executorapi.Client{BaseURL: cfg.ExecutorURL, Token: cfg.ExecutorToken},
+		Clock:        cfg.Clock,
+		PollInterval: cfg.ExecutionPollInterval,
+	}
+	if err := executions.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the execution controller: %w", err)
 	}
 
 	webhooks := mgr.GetWebhookServer()
