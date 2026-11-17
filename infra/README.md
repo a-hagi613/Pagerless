@@ -67,6 +67,29 @@ The cluster is EKS 1.37, the newest version in standard support when it was writ
 
 Karpenter's controller, node role, Pod Identity association and Spot interruption queue all come from the `karpenter` submodule. The chart is installed by `make cloud-up`, which is also what applies the NodePool and EC2NodeClass.
 
+## The CI identity, once per account
+
+Pull request plans and the nightly teardown authenticate with a short-lived OIDC token instead of an AWS access key. That identity is account plumbing, not part of a session, so it lives in its own root and is applied once, like the state bucket:
+
+```sh
+cd infra/ci
+terraform init
+terraform apply
+```
+
+It creates the GitHub Actions OIDC provider (`https://token.actions.githubusercontent.com`) and two roles:
+
+| Role | Assumed by | Permissions |
+| --- | --- | --- |
+| `pagerless-github-plan` | a `pull_request` workflow in `a-hagi613/pagerless` | read the state bucket and describe the infrastructure; no writes |
+| `pagerless-github-destroy` | a `main` branch workflow, which is the only place the nightly run executes | `PowerUserAccess` plus IAM writes scoped to `pagerless-*` identities |
+
+Both trust policies match the repository's immutable subject claim, which includes the owner ID `92589940` and repository ID `1460399228` because the repository was created after 2026-07-15. A recycled repository name cannot inherit either role. Neither role can be assumed by a fork: the plan job also refuses a pull request whose head repository is not this one.
+
+A `terraform destroy` of `infra/` never touches this root, so the nightly teardown cannot delete the roles it runs as.
+
+The plan job plans with `-lock=false`, because the plan role may only read the state bucket; the nightly job takes the lock, because `destroy` writes state.
+
 ## Network posture
 
 - Public subnets only, one per Availability Zone, each with a public IPv4 address on launch. Nodes reach Amazon ECR, Bedrock and the cluster endpoint through the internet gateway; there is no NAT gateway.
