@@ -125,7 +125,7 @@ uv run --no-project --python "$PYTHON_VERSION" "$script_dir/client.py" \
 	--repository "$PAGERLESS_E2E_REPOSITORY" reset
 . "$repo_root/hack/lib.sh"
 load_versions
-wait_for_application sandbox 55ab7c5f78ab29a8c6560e6134304c5f53d4fa0c 300 healthy
+wait_for_application sandbox 85f60904a8eb245e0e337e4c463863cbd59404e9 300 healthy
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless delete triages --all --wait=true
 history="$state/phase-history.txt"
 snapshot="$state/triage.json"
@@ -144,7 +144,7 @@ set -a
 . "$state/config.env"
 set +a
 uv run --no-project --python "$PYTHON_VERSION" "$script_dir/client.py" --repository "$PAGERLESS_E2E_REPOSITORY" reset
-wait_for_application sandbox 55ab7c5f78ab29a8c6560e6134304c5f53d4fa0c 300 healthy
+wait_for_application sandbox 85f60904a8eb245e0e337e4c463863cbd59404e9 300 healthy
 kubectl --context "kind-$KIND_CLUSTER_NAME" -n pagerless delete triages --all --wait=true
 if [ "$keep" = 1 ]; then
 	echo "Retained the reset healthy kind cluster and restricted state in $state."

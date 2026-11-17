@@ -2,7 +2,7 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 is complete and validated locally: a fresh kind run and CI both reach Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard, agentgateway, Keycloak and EKS deployment are later phases.
+> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard, agentgateway, Keycloak and EKS deployment are later phases.
 
 ## The Phase 1 loop
 
@@ -71,7 +71,7 @@ export PATH="$PWD/bin:$PATH"
 PLATFORM_REVISION="$(git rev-parse HEAD)" make dev
 ```
 
-The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation and validated, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. The default Replay investigation uses it.
+The production Replay artifact at `evals/replay/oom.json` was captured from one live Haiku investigation of the Phase 1 placeholder Workload, and its provenance binds the artifact to that agent Job and the server-validated PatchResources Proposal. It predates the OpenTelemetry Demo in the Sandbox: its Proposal names the Phase 1 container, so it does not remediate the demo's `oom` Scenario. Replay plays the recorded responses against the current Sandbox, so the default Replay path needs a new genuine recording captured against the demo. Until that recording is committed, use a live provider, or the isolated end-to-end harness with its synthetic fixture, to run the demo.
 
 The terminal workflow is:
 

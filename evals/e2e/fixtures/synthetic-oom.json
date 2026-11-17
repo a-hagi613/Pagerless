@@ -8,7 +8,7 @@
     {
       "stage": "investigate",
       "response": {
-        "text": "The checkout container was terminated after the Scenario reduced its memory limit below its allocation.",
+        "text": "The memory-holder container of the checkout Workload was terminated after the Scenario reduced its memory limit below its allocation.",
         "tool_calls": [],
         "structured": null,
         "usage": {"input_tokens": 1, "output_tokens": 1}
@@ -20,17 +20,17 @@
         "text": "",
         "tool_calls": [],
         "structured": {
-          "diagnosis": "The checkout container was OOMKilled because the Scenario lowered its memory request and limit below the container's allocation.",
+          "diagnosis": "The memory-holder container of the checkout Workload was OOMKilled because the Scenario lowered its memory request and limit below the container's allocation.",
           "findings": [
             {
               "kind": "Event",
               "source": "Context Bundle: pod state",
-              "summary": "The checkout container terminated with reason OOMKilled."
+              "summary": "The memory-holder container terminated with reason OOMKilled."
             },
             {
               "kind": "Commit",
               "source": "Context Bundle: Sandbox commits",
-              "summary": "The newest Sandbox commit lowered the checkout memory limit to 32Mi."
+              "summary": "The newest Sandbox commit lowered the memory-holder memory limit to 32Mi."
             }
           ]
         },
@@ -46,7 +46,7 @@
           "action": "PatchResources",
           "parameters": {
             "patchResources": {
-              "container": "checkout",
+              "container": "memory-holder",
               "requests": {"memory": "64Mi"},
               "limits": {"memory": "128Mi"}
             }
