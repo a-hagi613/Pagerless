@@ -87,6 +87,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         rule=Rule.ROLLBACK,
         trigger=Trigger.MANUAL,
         alert=None,
+        replay_recording="synthetic-bad-config.json",
     ),
     Scenario(
         number=3,

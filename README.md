@@ -2,7 +2,7 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented, and agentgateway with Keycloak now fronts every MCP tool call. Start Triage, dashboard sign-in and approvals, and the EKS deployment are later work.
+> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented, and agentgateway with Keycloak now fronts every MCP tool call. `make eval` now scores every Scenario by deterministic code and records versioned results, and the credential-free Replay subset runs in CI; no live measured evaluation has been published yet. Start Triage, dashboard sign-in and approvals, and the EKS deployment are later work.
 
 ## The Phase 1 loop
 
@@ -29,7 +29,7 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 - **Dashboard:** a Vite, React, TypeScript, Tailwind CSS and shadcn/ui application that `pagerless-server` serves from its binary, with a Triage list, a Triage detail view that streams live steps over Server-Sent Events, and embedded Grafana panels for the Workload's metrics and logs.
 - **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
 
-The Start Triage view, dashboard sign-in and approvals, the remaining Actions and Scenarios, and the published evaluation suite are remaining Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+The Start Triage view, dashboard sign-in and approvals, the remaining Actions and Scenarios, and the published live evaluation results are remaining Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
 
 ## History, retention and metrics
 
@@ -152,7 +152,7 @@ Triages are stored in `pagerless`; the Workload namespace is independent. The pl
 
 ## Development checks and services
 
-`make test` runs the Go and Python suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make validate` renders every chart and kustomization and checks it with the pinned kubeconform. `make test-go`, `make test-agent`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
+`make test` runs the Go, Python, and evaluation-harness suites. `make lint` runs Go vet, golangci-lint, ruff formatting/lint and strict mypy. `make validate` renders every chart and kustomization and checks it with the pinned kubeconform. `make test-go`, `make test-agent`, `make test-eval`, `make lint-go` and `make lint-agent` run their respective subsets. The Go suites use envtest rather than the local kind cluster. `make dashboard-check` runs the dashboard's typecheck and lint, and `make dashboard-build` produces the assets that the Go embed and the server image use.
 
 The observability stack runs in `monitoring`. Grafana has Loki and Tempo data sources and the provisioned **Pagerless** dashboard, which charts Triages by Phase, Proposals by Action, decisions, Verification outcomes, time to Recovered, and tokens and cost per Triage. It can be opened with:
 
@@ -160,18 +160,52 @@ The observability stack runs in `monitoring`. Grafana has Loki and Tempo data so
 kubectl --context kind-pagerless -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 ```
 
-Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, credential-free kind integration, and versioned runtime image publication on release tags. The `v0.1.0` tag published the server, Executor and agent images, and anonymous registry pulls succeed for all three.
+Stack values and component pins are documented in [deploy/observability](deploy/observability/README.md). The [CI workflow](.github/workflows/ci.yml) defines Go and agent checks, the credential-free three-Scenario Replay evaluation on kind, and versioned runtime image publication on release tags. The `v0.1.0` tag published the server, Executor and agent images, and anonymous registry pulls succeed for all three.
+
+## Evaluation
+
+`make eval` measures how well Pagerless remediates every Scenario. For each one it resets the
+Sandbox, injects the failure with `make break SCENARIO=<name>`, waits for the opted-in alert (or
+starts the Triage where [docs/scenarios.md](docs/scenarios.md) says to), waits for Proposed,
+approves as the dedicated `eval-approver` Kubernetes user bound to the existing `pagerless-approver`
+Role, waits for the terminal phase, and scores the run by deterministic code against the answer key.
+It records the Scenario, Action, result, time to Recovered, Verification outcome, tokens, and cost
+in a versioned document under [`evals/results`](evals/results), named by date and commit. The
+harness never calls a model and never approves with the cluster administrator.
+
+The harness is tested without a cluster: `make test-eval` runs its unit tests, and the
+credential-free Replay subset is `make eval-replay`, which runs three Scenarios (`oom`,
+`unschedulable`, `bad-config`) in the isolated adapter cluster. CI runs that subset. A live run
+needs the local stack and a paid provider: `make eval` runs every Scenario twice by default, and
+`make eval SCENARIOS=oom REPEATS=1 MAX_TOKENS=40000` can bound a small measured run. The evaluator
+contract, scoring decisions, JSON schema, and the guarded live workflow command are in
+[docs/evaluation.md](docs/evaluation.md).
+
+### Results
+
+<!-- BEGIN EVAL RESULTS (generated by evals/harness/pagerless_eval/table.py) -->
+No live evaluation has been published yet. `make eval` writes one versioned
+document per batch under `evals/results`, and this table is generated from those
+documents by `make eval-table`. The credential-free Replay subset runs in CI as a
+harness check and is not evidence of model performance. The evaluator contract,
+scoring rules, and JSON schema are in [docs/evaluation.md](docs/evaluation.md).
+<!-- END EVAL RESULTS -->
+
+The prompt-injection suite is separate: `make prompts-check` runs twenty hostile lines through the
+agent's own prompts with [promptfoo](https://www.promptfoo.dev/) and needs no paid call. The paid
+suite is `evals/prompts/promptfooconfig.yaml`, and running it is the lead's decision.
 
 ## Roadmap
 
 1. **Phase 1: core loop locally.** Complete: the genuine live OOMKilled capture, free Replay validation through Recovered on kind, credential-free end-to-end CI, and the public `v0.1.0` runtime images. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
-2. **Phase 2: complete the local product.** Finish the React/shadcn dashboard with Start Triage, Keycloak sign-in and approvals, add RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway, and the evaluation and prompt-injection suites. `make eval` is planned for that phase and is not an available target yet.
+2. **Phase 2: complete the local product.** Finish the React/shadcn dashboard with Start Triage, Keycloak sign-in and approvals, add RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway, and the evaluation and prompt-injection suites. `make eval` and its credential-free Replay subset are available; the live measured results are not yet published.
 3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
 
 ## Documentation
 
 - [Glossary](GLOSSARY.md): the project's domain vocabulary.
 - [Scenarios and the answer key](docs/scenarios.md): the failure injections, both injection paths, and the expected Proposal for each Scenario.
+- [Evaluation harness](docs/evaluation.md): the evaluator contract, deterministic scoring, result schema, guardrails, and the live workflow command.
 - [Architecture Decision Records](docs/adr/README.md): significant decisions and their rationale.
 - [Dashboard API and build](docs/dashboard.md): Keycloak sign-in, decisions, Start Triage, the HTTP endpoints, the event stream and the Grafana configuration.
 - [Server manifests and admission boundaries](deploy/pagerless-server/README.md).

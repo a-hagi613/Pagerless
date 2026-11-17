@@ -56,8 +56,14 @@ def parse_memory(value: str) -> Decimal:
 
 def format_memory(value: Decimal) -> str:
     """Return a quantity for a byte count, using the largest exact binary suffix."""
-    for suffix, multiplier in (("Ei", _SUFFIXES["Ei"]), ("Pi", _SUFFIXES["Pi"]), ("Ti", _SUFFIXES["Ti"]),
-                               ("Gi", _SUFFIXES["Gi"]), ("Mi", _SUFFIXES["Mi"]), ("Ki", _SUFFIXES["Ki"])):
+    for suffix, multiplier in (
+        ("Ei", _SUFFIXES["Ei"]),
+        ("Pi", _SUFFIXES["Pi"]),
+        ("Ti", _SUFFIXES["Ti"]),
+        ("Gi", _SUFFIXES["Gi"]),
+        ("Mi", _SUFFIXES["Mi"]),
+        ("Ki", _SUFFIXES["Ki"]),
+    ):
         if value % multiplier == 0:
             return f"{(value // multiplier):g}{suffix}"
     return f"{value:g}"
