@@ -145,9 +145,13 @@ def admin_token(base, password):
 
 
 def ensure_realm(admin):
-    status, _ = admin.call("GET", f"/admin/realms/{REALM}")
-    if status != 200:
-        admin.require("POST", "/admin/realms", {"realm": REALM, "enabled": True, "sslRequired": "NONE"})
+    status, realm = admin.call("GET", f"/admin/realms/{REALM}")
+    if status == 200:
+        realm["enabled"] = True
+        realm["sslRequired"] = "NONE"
+        admin.require("PUT", f"/admin/realms/{REALM}", realm)
+        return
+    admin.require("POST", "/admin/realms", {"realm": REALM, "enabled": True, "sslRequired": "NONE"})
 
 
 def ensure_group(admin):
