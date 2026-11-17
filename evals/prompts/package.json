@@ -7,6 +7,6 @@
     "check": "promptfoo eval -c promptfooconfig.offline.yaml --no-cache"
   },
   "devDependencies": {
-    "promptfoo": "0.120.0"
+    "promptfoo": "0.125.1"
   }
 }

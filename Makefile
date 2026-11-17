@@ -89,7 +89,11 @@ test-eval: ## Run the evaluation harness's unit tests (no cluster required).
 
 prompts-check: ## Run the prompt-injection suite against the agent's prompts without a paid call.
 	cd agent && uv sync --locked
-	cd evals/prompts && npm ci --no-audit --no-fund && PATH="$(CURDIR)/agent/.venv/bin:$$PATH" ./node_modules/.bin/promptfoo eval -c promptfooconfig.offline.yaml --no-cache
+# promptfoo declares optional peer dependencies, among them gcp-metadata for the
+# mongodb driver, and npm's strict `ci` lock validation rejects them while its
+# installer resolves them. The committed lock still pins every package that this
+# dev-only suite runs, and peer resolution plays no part in it.
+	cd evals/prompts && npm ci --no-audit --no-fund --legacy-peer-deps && PATH="$(CURDIR)/agent/.venv/bin:$$PATH" ./node_modules/.bin/promptfoo eval -c promptfooconfig.offline.yaml --no-cache
 
 down: ## Delete the kind cluster and the local Helm repository entry.
 	bash hack/down.sh

@@ -12,8 +12,8 @@ the exact prompts and escaping the agent uses in a Triage rather than a copy.
 make prompts-check
 ```
 
-This enters the agent's uv environment, downloads the pinned `promptfoo`
-0.120.0, and runs [`promptfooconfig.offline.yaml`](promptfooconfig.offline.yaml).
+This enters the agent's uv environment, installs the pinned `promptfoo`
+0.125.1, and runs [`promptfooconfig.offline.yaml`](promptfooconfig.offline.yaml).
 Its provider makes no model call. It checks that every case reaches the agent's
 real system and task prompts, that the hostile line stays inside the
 untrusted-data section, and that a line beginning with `#`, `##`, or ``` is
