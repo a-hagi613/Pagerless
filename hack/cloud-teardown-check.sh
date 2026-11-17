@@ -24,6 +24,7 @@ exempt=(
 	"arn:aws:s3:::${STATE_BUCKET}"
 	"arn:aws:iam::${ACCOUNT}:role/pagerless-github-plan"
 	"arn:aws:iam::${ACCOUNT}:role/pagerless-github-destroy"
+	"arn:aws:iam::${ACCOUNT}:oidc-provider/token.actions.githubusercontent.com"
 )
 
 is_exempt() {
@@ -42,6 +43,9 @@ remaining() {
 		--tag-filters Key=project,Values=pagerless \
 		--query 'ResourceTagMappingList[].ResourceARN' \
 		--output text 2>/dev/null |
+		# The AWS CLI on Windows ends lines with CRLF; a carriage return would
+		# defeat every comparison below.
+		tr -d '\r' |
 		tr '\t' '\n' |
 		while IFS= read -r arn; do
 			[ -n "$arn" ] || continue
