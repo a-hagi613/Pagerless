@@ -22,9 +22,9 @@ const hashDomain = "pagerless.dev/proposal/v1\n"
 
 // hashInput is the canonical encoding of everything a Proposal hash covers:
 // the Triage identifier, the Action, its parameters, the target Workload, and
-// the rendered change (ADR-0008). Field order is fixed by the struct, and
-// every map is encoded as a sorted slice, so equal Proposals encode to
-// identical bytes.
+// the rendered change with the base it was rendered against (ADR-0008). Field
+// order is fixed by the struct, and every map is encoded as a sorted slice, so
+// equal Proposals encode to identical bytes.
 type hashInput struct {
 	Triage   triageIdentity             `json:"triage"`
 	Workload v1alpha1.WorkloadReference `json:"workload"`
@@ -33,6 +33,7 @@ type hashInput struct {
 	Patch    *patchInput                `json:"patchResources,omitempty"`
 	Rollback *string                    `json:"rollback,omitempty"`
 	Change   *v1alpha1.RenderedChange   `json:"renderedChange,omitempty"`
+	Base     *v1alpha1.ProposalBase     `json:"base,omitempty"`
 }
 
 type triageIdentity struct {
@@ -74,13 +75,16 @@ func resourceItems(list corev1.ResourceList) []resourceItem {
 
 // Hash returns the hash that an Approval binds to: a lowercase hexadecimal
 // SHA-256 digest over the Triage identifier, the Action and its parameters,
-// the target Workload, and the rendered change.
-func Hash(triage *v1alpha1.Triage, action v1alpha1.ProposedAction, change *v1alpha1.RenderedChange) (string, error) {
+// the target Workload, and the rendered change with its base.
+func Hash(
+	triage *v1alpha1.Triage, action v1alpha1.ProposedAction, change *v1alpha1.RenderedChange, base *v1alpha1.ProposalBase,
+) (string, error) {
 	input := hashInput{
 		Triage:   triageIdentity{Namespace: triage.Namespace, Name: triage.Name, UID: triage.UID},
 		Workload: triage.Spec.Workload,
 		Action:   action.Action,
 		Change:   change,
+		Base:     base,
 	}
 	if p := action.Parameters; p != nil {
 		if p.Scale != nil {

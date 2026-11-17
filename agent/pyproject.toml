@@ -3,7 +3,11 @@ name = "pagerless-agent"
 version = "0.1.0"
 description = "The Pagerless investigation agent."
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "httpx==0.28.1",
+    "langgraph==1.2.22",
+    "pydantic==2.14.3",
+]
 
 [build-system]
 requires = ["uv_build==0.13.8"]
@@ -13,11 +17,13 @@ build-backend = "uv_build"
 dev = [
     "mypy==2.4.1",
     "pytest==9.2.0",
+    "pytest-asyncio==1.5.0",
     "ruff==0.17.5",
 ]
 
 [tool.ruff]
 target-version = "py314"
+line-length = 110
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "N", "SIM", "UP", "W"]
@@ -29,3 +35,12 @@ mypy_path = "src"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "error",
+    "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:langsmith",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/pagerless_agent/prompts.py" = ["E501"]

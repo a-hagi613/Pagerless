@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
@@ -40,6 +41,9 @@ type Handler struct {
 
 // errNotInvestigating is returned when a request needs an Investigating Triage and the Triage is in another phase.
 var errNotInvestigating = errors.New("the Triage is not Investigating")
+
+// errReportRaced is returned when another report for the same Triage was recorded while this one was validated.
+var errReportRaced = errors.New("another report for the Triage was recorded first")
 
 // errNoFindings is returned when a report would leave the Diagnosis without a cited Finding.
 var errNoFindings = errors.New("the report must carry at least one finding")
@@ -166,22 +170,35 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 	if !decode(w, body, &report) {
 		return
 	}
-	if errs := report.Check(); len(errs) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs})
+	if t.Status.Phase != v1alpha1.PhaseInvestigating {
+		h.writeUpdateError(ctx, w, errNotInvestigating)
 		return
 	}
-	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Triage: t, Action: report.Proposal}, 1)
+	// The agent's first report is attempt 1; every report that is refused gives it one more try, up to the limit.
+	attempt := t.Status.ValidationAttempts + 1
+	errs := report.Check()
+	if len(errs) == 0 && len(mergeFindings(t.Status.Findings, report.Findings)) == 0 {
+		errs = []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}}
+	}
+	if len(errs) > 0 {
+		h.refuse(ctx, w, t, attempt, errs)
+		return
+	}
+	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Triage: t, Action: report.Proposal}, attempt)
 	if err != nil {
 		h.writeInternal(ctx, w, err)
 		return
 	}
 	if len(errs) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs})
+		h.refuse(ctx, w, t, attempt, errs)
 		return
 	}
 	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
 			return errNotInvestigating
+		}
+		if latest.Status.ValidationAttempts != attempt-1 {
+			return errReportRaced
 		}
 		findings := mergeFindings(latest.Status.Findings, report.Findings)
 		if len(findings) == 0 {
@@ -200,10 +217,45 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 	writeJSON(w, http.StatusOK, agentapi.ReportResponse{Accepted: true, Phase: updated.Status.Phase})
 }
 
+// refuse records a Proposal that failed Validation and answers with its errors.
+// The answer names the Triage's phase: Investigating means the agent may
+// submit a revised Proposal, and Invalid means the second failure ended the Triage.
+func (h *Handler) refuse(
+	ctx context.Context, w http.ResponseWriter, t *v1alpha1.Triage, attempt int32, errs []agentapi.ValidationError,
+) {
+	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
+			return errNotInvestigating
+		}
+		if latest.Status.ValidationAttempts != attempt-1 {
+			return errReportRaced
+		}
+		latest.Status.ValidationAttempts = attempt
+		if attempt >= v1alpha1.MaxValidationAttempts {
+			latest.Status.Phase = v1alpha1.PhaseInvalid
+			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+				Type:               v1alpha1.ConditionInvalid,
+				Status:             metav1.ConditionTrue,
+				Reason:             v1alpha1.ReasonValidationFailedTwice,
+				Message:            "the second Proposal also failed Validation: " + proposal.Summary(errs),
+				ObservedGeneration: latest.Generation,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		h.writeUpdateError(ctx, w, err)
+		return
+	}
+	writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs, Phase: updated.Status.Phase})
+}
+
 func (h *Handler) writeUpdateError(ctx context.Context, w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errNotInvestigating):
 		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNotInvestigating.Error()})
+	case errors.Is(err, errReportRaced):
+		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errReportRaced.Error()})
 	case errors.Is(err, errNoFindings):
 		writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{
 			Errors: []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}},

@@ -1,5 +1,5 @@
-// Package server assembles pagerless-server: the Triage reconciler, the agent
-// report endpoint, and the admission webhooks, run by one manager (ADR-0005).
+// Package server assembles pagerless-server: the Triage, TriageApproval, and execution reconcilers, the
+// agent report endpoint, and the admission webhooks, run by one manager (ADR-0005).
 package server
 
 import (
@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -26,8 +27,11 @@ import (
 	admissionpkg "github.com/a-hagi613/pagerless/internal/admission"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
+	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/triage"
 )
 
@@ -54,6 +58,11 @@ type Config struct {
 	AgentServerURL string
 	// ReportListener is the listener the report API serves on. It is required.
 	ReportListener net.Listener
+	// ExecutorURL is the base URL of pagerless-executor. It is required.
+	ExecutorURL string
+	// ExecutorToken returns the projected service account token, with the audience
+	// executorapi.Audience, that authenticates the server to the Executor. It is required.
+	ExecutorToken func() (string, error)
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
 	AgentServiceAccount string
@@ -65,8 +74,23 @@ type Config struct {
 	AlertNamespaces []string
 	// Clock defaults to the real clock.
 	Clock clock.Clock
-	// Validators are the Actions that Validation accepts. It defaults to proposal.DefaultValidators.
+	// Validators are the Actions that Validation accepts, which replaces the
+	// defaults below. When it is nil, Validation accepts NoAction, and also
+	// PatchResources if Sandbox is set.
 	Validators map[v1alpha1.Action]proposal.ActionValidator
+	// Sandbox is the repository that PatchResources Proposals are rendered against.
+	Sandbox sandbox.Repository
+	// AllowedNamespaces are the namespaces whose Workloads PatchResources may change.
+	AllowedNamespaces []string
+	// PatchBounds are the permitted ranges of PatchResources requests and limits.
+	// It defaults to patchresources.DefaultBounds.
+	PatchBounds map[corev1.ResourceName]patchresources.Bounds
+	// ProposalPollInterval is how often a Proposed Triage is checked for a Stale Proposal.
+	// It defaults to controller.DefaultProposalPollInterval.
+	ProposalPollInterval time.Duration
+	// ExecutionPollInterval is how often the Executor is asked whether an open pull request has merged.
+	// It defaults to controller.DefaultExecutionPollInterval.
+	ExecutionPollInterval time.Duration
 
 	// WebhookHost, WebhookPort, and WebhookCertDir configure the admission webhook server.
 	WebhookHost    string
@@ -96,6 +120,10 @@ func (c Config) validate() error {
 		return errors.New("agent server URL is required")
 	case c.ReportListener == nil:
 		return errors.New("report listener is required")
+	case c.ExecutorURL == "":
+		return errors.New("executor URL is required")
+	case c.ExecutorToken == nil:
+		return errors.New("executor token source is required")
 	}
 	return nil
 }
@@ -113,8 +141,14 @@ func (c Config) withDefaults() Config {
 	if c.Clock == nil {
 		c.Clock = clock.RealClock{}
 	}
-	if c.Validators == nil {
-		c.Validators = proposal.DefaultValidators()
+	if c.PatchBounds == nil {
+		c.PatchBounds = patchresources.DefaultBounds()
+	}
+	if c.ProposalPollInterval == 0 {
+		c.ProposalPollInterval = controller.DefaultProposalPollInterval
+	}
+	if c.ExecutionPollInterval == 0 {
+		c.ExecutionPollInterval = controller.DefaultExecutionPollInterval
 	}
 	return c
 }
@@ -144,6 +178,21 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("create manager: %w", err)
 	}
 
+	validators := cfg.Validators
+	if validators == nil {
+		validators = proposal.DefaultValidators()
+		if cfg.Sandbox.URL != "" {
+			validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
+				Reader:            mgr.GetAPIReader(),
+				Writer:            mgr.GetClient(),
+				Sandbox:           cfg.Sandbox,
+				AllowedNamespaces: cfg.AllowedNamespaces,
+				Bounds:            cfg.PatchBounds,
+			})
+		}
+	}
+	proposals := proposal.NewPipeline(cfg.Clock, validators)
+
 	store := &triage.StatusStore{Client: mgr.GetClient(), Reader: mgr.GetAPIReader()}
 	reconciler := &controller.TriageReconciler{
 		Client: mgr.GetClient(),
@@ -155,15 +204,46 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			ServerURL:      cfg.AgentServerURL,
 			Deadline:       int64(cfg.AgentDeadline.Seconds()),
 		},
+		Proposals:    proposals,
+		Clock:        cfg.Clock,
+		PollInterval: cfg.ProposalPollInterval,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the Triage controller: %w", err)
+	}
+
+	approvals := &controller.ApprovalReconciler{
+		Client:    mgr.GetClient(),
+		Status:    store,
+		Proposals: proposals,
+		Clock:     cfg.Clock,
+	}
+	if err := approvals.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the TriageApproval controller: %w", err)
+	}
+
+	executions := &controller.ExecutionReconciler{
+		Client:       mgr.GetClient(),
+		Status:       store,
+		Executor:     &executorapi.Client{BaseURL: cfg.ExecutorURL, Token: cfg.ExecutorToken},
+		Clock:        cfg.Clock,
+		PollInterval: cfg.ExecutionPollInterval,
+	}
+	if err := executions.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the execution controller: %w", err)
 	}
 
 	webhooks := mgr.GetWebhookServer()
 	webhooks.Register(admissionpkg.CreatePath, &webhook.Admission{Handler: &admissionpkg.CreateValidator{
 		Reader:    mgr.GetAPIReader(),
 		Namespace: cfg.Namespace,
+	}})
+	webhooks.Register(admissionpkg.ApprovalStampPath, &webhook.Admission{Handler: admissionpkg.ApprovalStamper{}})
+	webhooks.Register(admissionpkg.ApprovalValidatePath, &webhook.Admission{Handler: &admissionpkg.ApprovalValidator{
+		Reader:    mgr.GetAPIReader(),
+		Namespace: cfg.Namespace,
+		Proposals: proposals,
+		Clock:     cfg.Clock,
 	}})
 	webhooks.Register(admissionpkg.StatusPath, &webhook.Admission{Handler: &admissionpkg.StatusGuard{
 		ServerUsername: fmt.Sprintf("system:serviceaccount:%s:%s", cfg.Namespace, cfg.ServerServiceAccount),
@@ -177,7 +257,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			ServiceAccount: cfg.AgentServiceAccount,
 		},
 		Status:    store,
-		Proposals: proposal.NewPipeline(cfg.Clock, cfg.Validators),
+		Proposals: proposals,
 		Clock:     cfg.Clock,
 	}
 	receiver := &alerts.Receiver{

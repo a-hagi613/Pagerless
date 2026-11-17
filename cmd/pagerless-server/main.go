@@ -15,6 +15,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/webhooktls"
 )
@@ -24,6 +26,32 @@ func main() {
 		fmt.Fprintln(os.Stderr, "pagerless-server:", err)
 		os.Exit(1)
 	}
+}
+
+// defaultExecutorTokenFile is where the Deployment projects the token for the Executor.
+const defaultExecutorTokenFile = "/var/run/secrets/pagerless/executor/token"
+
+// tokenFromFile returns a source that reads the token at every call, because
+// the kubelet rotates a projected token in place.
+func tokenFromFile(path string) func() (string, error) {
+	return func() (string, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read the executor token: %w", err)
+		}
+		return strings.TrimSpace(string(raw)), nil
+	}
+}
+
+// splitList splits a comma-separated list and drops empty items.
+func splitList(s string) []string {
+	var items []string
+	for item := range strings.SplitSeq(s, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func run() error {
@@ -41,11 +69,23 @@ func run() error {
 			"name of the Service that fronts the admission webhooks")
 		webhookConfig = flag.String("webhook-config", "pagerless-server",
 			"name of the ValidatingWebhookConfiguration that receives the certificate authority")
+		mutatingWebhookConfig = flag.String("mutating-webhook-config", "pagerless-server",
+			"name of the MutatingWebhookConfiguration that receives the certificate authority")
 		agentAccount = flag.String("agent-service-account", server.DefaultAgentServiceAccount,
 			"service account that agent Jobs run as")
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
 			"service account that pagerless-server runs as")
-		agentDeadline   = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		agentDeadline = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
+		sandboxURL    = flag.String("sandbox-url", "",
+			"git URL of the Sandbox; PatchResources is accepted only when it is set")
+		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
+		patchable     = flag.String("patch-namespaces", "",
+			"comma-separated namespaces whose Workloads PatchResources may change")
+		executorURL = flag.String("executor-url", "",
+			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
+		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
+			"file that holds the projected service account token, with audience "+executorapi.Audience+
+				", that authenticates the server to the Executor")
 		alertNamespaces = flag.String("alert-namespaces", "",
 			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
 	)
@@ -73,15 +113,19 @@ func run() error {
 		return fmt.Errorf("create client: %w", err)
 	}
 	if _, err := webhooktls.Provision(ctx, plain, webhooktls.Options{
-		ServiceName: *webhookService,
-		Namespace:   *namespace,
-		ConfigName:  *webhookConfig,
-		CertDir:     *webhookCertDir,
-		Now:         time.Now(),
+		ServiceName:        *webhookService,
+		Namespace:          *namespace,
+		ConfigName:         *webhookConfig,
+		MutatingConfigName: *mutatingWebhookConfig,
+		CertDir:            *webhookCertDir,
+		Now:                time.Now(),
 	}); err != nil {
 		return fmt.Errorf("provision webhook TLS: %w", err)
 	}
 
+	if *executorURL == "" {
+		*executorURL = fmt.Sprintf("http://pagerless-executor.%s.svc:8080", *namespace)
+	}
 	listener, err := net.Listen("tcp", *reportBind)
 	if err != nil {
 		return fmt.Errorf("listen for the report API: %w", err)
@@ -91,9 +135,13 @@ func run() error {
 		AgentImage:           *agentImage,
 		AgentServerURL:       *reportURL,
 		ReportListener:       listener,
+		ExecutorURL:          *executorURL,
+		ExecutorToken:        tokenFromFile(*executorTokenFile),
 		AgentServiceAccount:  *agentAccount,
 		ServerServiceAccount: *serverAccount,
 		AgentDeadline:        *agentDeadline,
+		Sandbox:              sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch},
+		AllowedNamespaces:    splitList(*patchable),
 		AlertNamespaces:      allowed,
 		WebhookPort:          *webhookPort,
 		WebhookCertDir:       *webhookCertDir,

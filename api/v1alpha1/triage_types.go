@@ -83,6 +83,36 @@ const (
 	ReasonAgentJobMissing = "AgentJobMissing"
 )
 
+// Condition types and reasons that Validation and the Proposal lifecycle record.
+const (
+	// ConditionInvalid is set on a Triage that ended in the Invalid phase.
+	ConditionInvalid = "Invalid"
+	// ConditionProposalRevalidated records that a Stale Proposal was re-validated under a new hash.
+	ConditionProposalRevalidated = "ProposalRevalidated"
+
+	// ReasonValidationFailedTwice means the agent's second Proposal also failed Validation.
+	ReasonValidationFailedTwice = "ValidationFailedTwice"
+	// ReasonStaleProposalInvalid means a Stale Proposal failed re-validation.
+	ReasonStaleProposalInvalid = "StaleProposalInvalid"
+
+	// ReasonWorkloadGenerationChanged means the Workload's generation changed after the Proposal was rendered.
+	ReasonWorkloadGenerationChanged = "WorkloadGenerationChanged"
+	// ReasonSourcePathChanged means the Workload's pagerless.dev/source-path annotation changed.
+	ReasonSourcePathChanged = "SourcePathChanged"
+	// ReasonSandboxFileChanged means the Sandbox file that the patch changes was modified.
+	ReasonSandboxFileChanged = "SandboxFileChanged"
+	// ReasonWorkloadDeleted means the Workload no longer exists.
+	ReasonWorkloadDeleted = "WorkloadDeleted"
+)
+
+// MaxValidationAttempts is the number of Proposals an agent may submit for one
+// Triage. The second Proposal that fails Validation ends the Triage as Invalid.
+const MaxValidationAttempts = 2
+
+// AnnotationSourcePath is the annotation on a Workload that names the Sandbox
+// file holding its manifest, relative to the root of the Sandbox.
+const AnnotationSourcePath = "pagerless.dev/source-path"
+
 // WorkloadKind is the kind of a Workload that a Triage can target.
 // +kubebuilder:validation:Enum=Deployment;StatefulSet
 type WorkloadKind string
@@ -358,6 +388,12 @@ type TriageStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=4000
 	Diagnosis string `json:"diagnosis,omitempty"`
+
+	// ValidationAttempts is the number of Proposals from the agent that failed Validation.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=2
+	ValidationAttempts int32 `json:"validationAttempts,omitempty"`
 
 	// Proposal is the current Proposal.
 	// +optional

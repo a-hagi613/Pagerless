@@ -77,7 +77,7 @@ _Avoid_: validation (the pre-approval check), fixed / not fixed
 ## Lifecycle
 
 **Phase**:
-The stage a Triage is in. The main path is Pending, Investigating, Proposed, Approved, Executing, Verifying, then Recovered or NotRecovered. A Triage may instead end as Diagnosed (NoAction acknowledged), Rejected, Expired (no decision within one hour), Invalid (failed Validation twice), or Failed (agent error or budget exhausted).
+The stage a Triage is in. The main path is Pending, Investigating, Proposed, Approved, Executing, Verifying, then Recovered or NotRecovered. A Triage may instead end as Diagnosed (NoAction acknowledged), Rejected, Expired (no decision within one hour), Invalid (failed Validation twice), or Failed (agent error, exhausted budget, or refused or abandoned execution).
 _Avoid_: state, status, stage
 
 ## Environment

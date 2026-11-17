@@ -2,7 +2,8 @@
 // admission webhooks without any other component. At every start the server
 // generates a certificate authority and a serving certificate in memory,
 // writes the serving pair to a directory, and publishes the certificate
-// authority in the caBundle of its ValidatingWebhookConfiguration.
+// authority in the caBundle of its ValidatingWebhookConfiguration and
+// MutatingWebhookConfiguration.
 //
 // The private keys exist only in the process and in the directory it writes,
 // which is a memory-backed volume. Because both are regenerated at every
@@ -138,6 +139,23 @@ func InjectCABundle(ctx context.Context, c client.Client, configName string, caP
 	return nil
 }
 
+// InjectMutatingCABundle sets the caBundle of every webhook in the named
+// MutatingWebhookConfiguration to the certificate authority.
+func InjectMutatingCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	var config admissionregistrationv1.MutatingWebhookConfiguration
+	if err := c.Get(ctx, types.NamespacedName{Name: configName}, &config); err != nil {
+		return fmt.Errorf("get MutatingWebhookConfiguration %s: %w", configName, err)
+	}
+	patch := client.MergeFrom(config.DeepCopy())
+	for i := range config.Webhooks {
+		config.Webhooks[i].ClientConfig.CABundle = caPEM
+	}
+	if err := c.Patch(ctx, &config, patch); err != nil {
+		return fmt.Errorf("patch MutatingWebhookConfiguration %s: %w", configName, err)
+	}
+	return nil
+}
+
 // Options select what Provision generates and where it publishes it.
 type Options struct {
 	// ServiceName and Namespace name the Service that fronts the webhook server.
@@ -145,6 +163,9 @@ type Options struct {
 	Namespace   string
 	// ConfigName is the ValidatingWebhookConfiguration that receives the certificate authority.
 	ConfigName string
+	// MutatingConfigName is the MutatingWebhookConfiguration that receives the certificate authority.
+	// When it is empty, no mutating configuration is updated.
+	MutatingConfigName string
 	// CertDir receives tls.crt and tls.key.
 	CertDir string
 	// Now is the time the certificates are valid from.
@@ -174,6 +195,11 @@ func Provision(ctx context.Context, c client.Client, o Options) (*Bundle, error)
 	}
 	if err := InjectCABundle(ctx, c, o.ConfigName, bundle.CACertPEM); err != nil {
 		return nil, err
+	}
+	if o.MutatingConfigName != "" {
+		if err := InjectMutatingCABundle(ctx, c, o.MutatingConfigName, bundle.CACertPEM); err != nil {
+			return nil, err
+		}
 	}
 	return bundle, nil
 }

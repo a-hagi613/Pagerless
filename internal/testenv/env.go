@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
 )
@@ -73,12 +74,20 @@ type Env struct {
 	Clock *clocktesting.FakeClock
 	// Sandbox is a local bare git repository that stands in for the Sandbox.
 	Sandbox *BareRepo
+	// GitHub is the fake GitHub API that pagerless-executor opens pull requests on. Its repository is Sandbox.
+	GitHub *FakeGitHub
+	// ExecutorURL is the base URL of pagerless-executor, which runs in the harness under its own service account.
+	ExecutorURL string
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
 	WebhookInstall *envtest.WebhookInstallOptions
+
+	t testing.TB
 }
 
 type options struct {
 	validators      func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll    time.Duration
+	executionPoll   time.Duration
 	agentDeadline   time.Duration
 	alertNamespaces []string
 }
@@ -103,11 +112,11 @@ func WithAlertNamespaces(namespaces ...string) Option {
 	return func(o *options) { o.alertNamespaces = namespaces }
 }
 
-// Start runs the API server, installs pagerless-server's manifests, and runs
-// pagerless-server. It stops everything when the test ends.
+// Start runs the API server, installs the manifests of pagerless-server and
+// pagerless-executor, and runs both. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
-	var o options
+	o := options{executionPoll: defaultExecutionPoll}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -147,13 +156,22 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("create clientset: %v", err)
 	}
 	ctx := t.Context()
-	for _, manifest := range []string{"namespace.yaml", "serviceaccounts.yaml", "rbac.yaml"} {
-		if err := applyManifestFile(ctx, c, filepath.Join(deployDir, manifest)); err != nil {
+	executorDir := filepath.Join(root, "deploy", "pagerless-executor")
+	for _, manifest := range []string{
+		filepath.Join(deployDir, "namespace.yaml"),
+		filepath.Join(deployDir, "serviceaccounts.yaml"),
+		filepath.Join(deployDir, "rbac.yaml"),
+		filepath.Join(executorDir, "serviceaccounts.yaml"),
+		filepath.Join(executorDir, "rbac.yaml"),
+	} {
+		if err := applyManifestFile(ctx, c, manifest); err != nil {
 			t.Fatalf("apply %s: %v", manifest, err)
 		}
 	}
 
 	serverConfig := rest.CopyConfig(cfg)
+	// The default client-side rate limit would throttle tests that poll quickly.
+	serverConfig.QPS, serverConfig.Burst = -1, 0
 	serverConfig.Impersonate = rest.ImpersonationConfig{
 		UserName: fmt.Sprintf("system:serviceaccount:%s:%s", Namespace, server.DefaultServerServiceAccount),
 	}
@@ -170,25 +188,35 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ReportURL:      "http://" + listener.Addr().String(),
 		Clock:          clocktesting.NewFakeClock(StartTime),
 		WebhookInstall: &testEnv.WebhookInstallOptions,
+		t:              t,
 	}
 	env.Sandbox = NewBareRepo(t)
+	env.GitHub = NewFakeGitHub(t, env.Sandbox)
+	env.ExecutorURL = startExecutor(t, env)
 
 	validators := proposal.DefaultValidators()
 	if o.validators != nil {
 		validators = o.validators(env)
 	}
+	executorToken := func() (string, error) {
+		return env.issueToken(context.Background(), Namespace, server.DefaultServerServiceAccount, executorapi.Audience)
+	}
 	mgr, err := server.New(serverConfig, server.Config{
-		Namespace:       Namespace,
-		AgentImage:      AgentImage,
-		AgentServerURL:  env.ReportURL,
-		ReportListener:  listener,
-		AgentDeadline:   o.agentDeadline,
-		AlertNamespaces: o.alertNamespaces,
-		Clock:           env.Clock,
-		Validators:      validators,
-		WebhookHost:     testEnv.WebhookInstallOptions.LocalServingHost,
-		WebhookPort:     testEnv.WebhookInstallOptions.LocalServingPort,
-		WebhookCertDir:  testEnv.WebhookInstallOptions.LocalServingCertDir,
+		Namespace:             Namespace,
+		AgentImage:            AgentImage,
+		AgentServerURL:        env.ReportURL,
+		ReportListener:        listener,
+		ExecutorURL:           env.ExecutorURL,
+		ExecutorToken:         executorToken,
+		AgentDeadline:         o.agentDeadline,
+		ProposalPollInterval:  o.proposalPoll,
+		ExecutionPollInterval: o.executionPoll,
+		AlertNamespaces:       o.alertNamespaces,
+		Clock:                 env.Clock,
+		Validators:            validators,
+		WebhookHost:           testEnv.WebhookInstallOptions.LocalServingHost,
+		WebhookPort:           testEnv.WebhookInstallOptions.LocalServingPort,
+		WebhookCertDir:        testEnv.WebhookInstallOptions.LocalServingCertDir,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)
@@ -286,6 +314,17 @@ func (e *Env) WaitForPhase(t testing.TB, name string, phase v1alpha1.Phase) *v1a
 	t.Helper()
 	inPhase := func(tr *v1alpha1.Triage) bool { return tr.Status.Phase == phase }
 	return e.WaitFor(t, name, "phase is "+string(phase), inPhase)
+}
+
+// WaitForApproved polls until the Triage holds an Approval: it is Approved,
+// or Executing once pagerless-server has handed an Approved Proposal that is
+// delivered by pull request to the Executor, which happens within moments.
+func (e *Env) WaitForApproved(t testing.TB, name string) *v1alpha1.Triage {
+	t.Helper()
+	approved := func(tr *v1alpha1.Triage) bool {
+		return tr.Status.Phase == v1alpha1.PhaseApproved || tr.Status.Phase == v1alpha1.PhaseExecuting
+	}
+	return e.WaitFor(t, name, "phase is Approved or Executing", approved)
 }
 
 // Get returns the Triage as the API server holds it.

@@ -2,6 +2,7 @@ package proposal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"time"
@@ -73,6 +74,53 @@ func DefaultValidators() map[v1alpha1.Action]ActionValidator {
 	}
 }
 
+// StalenessChecker is implemented by an ActionValidator whose Proposals are
+// rendered against a base that can change.
+type StalenessChecker interface {
+	// Stale returns the reason the Triage's current Proposal is a Stale
+	// Proposal, or an empty string when its base still holds.
+	Stale(ctx context.Context, t *v1alpha1.Triage) (string, error)
+}
+
+// Stale reports why the Triage's current Proposal is a Stale Proposal, or an
+// empty string when it is not. A Proposal whose Action has nothing to render
+// against is never stale.
+func (p *Pipeline) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error) {
+	current := t.Status.Proposal
+	if current == nil {
+		return "", nil
+	}
+	checker, ok := p.validators[current.Action].(StalenessChecker)
+	if !ok {
+		return "", nil
+	}
+	reason, err := checker.Stale(ctx, t)
+	if err != nil {
+		return "", fmt.Errorf("check %s proposal for staleness: %w", current.Action, err)
+	}
+	return reason, nil
+}
+
+// Revalidate validates the Triage's current Proposal again against the
+// present state and returns it under a new hash. The attempt and the expiry
+// are kept, because re-validation neither gives the agent another try nor
+// gives the approver more time. When Validation now finds errors it returns
+// them and no Proposal.
+func (p *Pipeline) Revalidate(
+	ctx context.Context, t *v1alpha1.Triage,
+) (*v1alpha1.Proposal, []agentapi.ValidationError, error) {
+	current := t.Status.Proposal
+	if current == nil {
+		return nil, nil, errors.New("the Triage has no Proposal to re-validate")
+	}
+	rebuilt, errs, err := p.Build(ctx, Request{Triage: t, Action: current.ProposedAction}, current.Attempt)
+	if err != nil || len(errs) > 0 {
+		return nil, errs, err
+	}
+	rebuilt.ExpiresAt = current.ExpiresAt
+	return rebuilt, nil, nil
+}
+
 // Build validates the Proposal and, if it passes, returns the Proposal to
 // store: the agent's Action plus the rendered change, base, hash, attempt, and
 // expiry. When Validation finds errors it returns them and no Proposal.
@@ -93,7 +141,7 @@ func (p *Pipeline) Build(
 	if len(outcome.Errors) > 0 {
 		return nil, outcome.Errors, nil
 	}
-	hash, err := Hash(req.Triage, req.Action, outcome.Change)
+	hash, err := Hash(req.Triage, req.Action, outcome.Change, outcome.Base)
 	if err != nil {
 		return nil, nil, err
 	}

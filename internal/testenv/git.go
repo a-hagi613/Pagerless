@@ -2,6 +2,8 @@ package testenv
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +50,22 @@ func (r *BareRepo) Commit(path, content, message string) string {
 	return r.Head()
 }
 
+// Symlink commits a symbolic link on main, pushes, and returns the new commit.
+func (r *BareRepo) Symlink(path, target, message string) string {
+	r.t.Helper()
+	full := filepath.Join(r.work, path)
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		r.t.Fatalf("create directory for %s: %v", path, err)
+	}
+	if err := os.Symlink(target, full); err != nil {
+		r.t.Fatalf("link %s: %v", path, err)
+	}
+	git(r.t, r.work, "add", path)
+	git(r.t, r.work, "commit", "--message", message)
+	git(r.t, r.work, "push", "origin", "HEAD:main")
+	return r.Head()
+}
+
 // Head returns the commit at the tip of main in the bare repository.
 func (r *BareRepo) Head() string {
 	r.t.Helper()
@@ -65,7 +83,18 @@ func (r *BareRepo) Clone() string {
 // git runs git with a fixed identity and no user or system configuration.
 func git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "git", args...)
+	out, err := gitOutput(t.Context(), dir, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// gitOutput is git without the test: it returns the failure, so that code
+// running outside the test's goroutine, such as the fake GitHub's handlers,
+// can report it.
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GIT_CONFIG_GLOBAL=/dev/null",
@@ -76,7 +105,7 @@ func git(t testing.TB, dir string, args ...string) string {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, stderr.String())
+		return "", fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
 	}
-	return stdout.String()
+	return stdout.String(), nil
 }
