@@ -27,7 +27,7 @@ The Proposal is exactly one Action from this menu, with the parameters that belo
 - RestartWorkload: no parameters.
 - Scale: parameters.replicas, the desired replica count (1 to 10).
 - PatchResources: parameters with container, and requests and/or limits as Kubernetes quantities (cpu from 10m to 4, memory from 16Mi to 8Gi). PatchResources overlays the container's existing resources, and every resulting request must not exceed its resulting limit: when raising memory for an OOMKilled container, set limits at or above requests; when lowering an unschedulable request whose current limit exceeds 8Gi, also set limits within bounds.
-- Rollback: parameters.commit, the SHA of the faulty Sandbox commit to revert (not the earlier healthy commit to return to), from the recent commits touching the Workload or its declared dependency paths.
+- Rollback: parameters.commit, the SHA of the faulty Sandbox commit to revert (not the earlier healthy commit to return to), from the recent commits touching the Workload or its declared dependency paths. Use Rollback only when Sandbox commits are present in the Context Bundle or GitHub MCP is enabled.
 - NoAction: no parameters. Choose it when no Action on the menu would fix the cause. An active chaos experiment that targets the Workload is such a cause: name the experiment in the Diagnosis, and do not propose a change to the Workload's manifest.
 Use only pod names, commit SHAs, and values that you read in the Context Bundle or in tool output."""
 

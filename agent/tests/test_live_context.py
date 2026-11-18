@@ -236,3 +236,108 @@ async def test_a_deleted_triggering_pod_does_not_prevent_investigating_the_workl
         )
     assert bundle.triggering_pod is None
     assert len(bundle.pods) == 2
+
+
+async def test_bundle_tolerates_disabled_optional_mcp_servers_and_missing_chaos_mesh_crd() -> None:
+    server = MCPServer("minimal-k8s")
+    calls: list[str] = []
+
+    @server.tool()
+    def resources_get(apiVersion: str, kind: str, name: str, namespace: str) -> dict[str, Any]:  # noqa: N803
+        calls.append("workload")
+        return {"spec": {"selector": {"matchLabels": {"app": "checkout"}}}, "status": {"readyReplicas": 1}}
+
+    @server.tool()
+    def pods_list_in_namespace(namespace: str, labelSelector: str) -> dict[str, Any]:  # noqa: N803
+        calls.append("pods")
+        return {
+            "items": [
+                {
+                    "metadata": {"name": "checkout-1", "creationTimestamp": "2026-11-16T12:00:00Z"},
+                    "spec": {"containers": [{"name": "app"}]},
+                    "status": {
+                        "phase": "Running",
+                        "containerStatuses": [{"name": "app", "ready": True, "restartCount": 0}],
+                    },
+                }
+            ]
+        }
+
+    @server.tool()
+    def events_list(namespace: str) -> dict[str, Any]:
+        calls.append("events")
+        return {"items": []}
+
+    @server.tool()
+    def pods_log(namespace: str, name: str, container: str, tail: int, previous: bool) -> str:
+        calls.append("logs")
+        return "listening on :8080"
+
+    @server.tool()
+    def resources_list(apiVersion: str, kind: str, namespace: str) -> str:  # noqa: N803
+        calls.append("experiments")
+        raise ValueError('no matches for kind "StressChaos" in version "chaos-mesh.org/v1alpha1"')
+
+    async with MCPTools(
+        (MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),),
+        namespace="production",
+        client_factory=lambda _: Client(server),
+    ) as tools:
+        assert tools.has_server("k8s")
+        assert not tools.has_server("argocd")
+        assert not tools.has_server("github")
+        bundle = await MCPContextSource(tools).gather(
+            Target("triage-live", "Deployment", "production", "checkout")
+        )
+
+    assert bundle.argocd_status == "Argo CD integration is not enabled for this investigation."
+    assert bundle.experiments == ()
+    assert bundle.commits == ()
+    assert calls == ["workload", "pods", "events", "logs", "experiments"]
+
+
+async def test_bundle_tolerates_unmanaged_argocd_app_unconfigured_github_and_nonlist_chaos_response() -> None:
+    server = MCPServer("unmanaged")
+
+    @server.tool()
+    def resources_get(apiVersion: str, kind: str, name: str, namespace: str) -> dict[str, Any]:  # noqa: N803
+        return {"spec": {"selector": {"matchLabels": {"app": "checkout"}}}, "status": {"readyReplicas": 1}}
+
+    @server.tool()
+    def pods_list_in_namespace(namespace: str, labelSelector: str) -> dict[str, Any]:  # noqa: N803
+        return {"items": []}
+
+    @server.tool()
+    def events_list(namespace: str) -> dict[str, Any]:
+        return {"items": []}
+
+    @server.tool()
+    def resources_list(apiVersion: str, kind: str, namespace: str) -> str:  # noqa: N803
+        return "No resources found in sandbox namespace."
+
+    @server.tool()
+    def get_application(applicationName: str) -> dict[str, Any]:  # noqa: N803
+        raise ValueError("applications.argoproj.io 'sandbox' not found")
+
+    @server.tool()
+    def list_commits(owner: str, repo: str, perPage: int) -> list[dict[str, Any]]:  # noqa: N803
+        raise AssertionError("unconfigured GitHub repository must be refused before reaching the server")
+
+    async with MCPTools(
+        (
+            MCPServerConfig("k8s", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("argocd", "http://evidence/mcp", TOKEN),
+            MCPServerConfig("github", "http://evidence/mcp", TOKEN),
+        ),
+        namespace="sandbox",
+        owner="",
+        repository="",
+        client_factory=lambda _: Client(server),
+    ) as tools:
+        bundle = await MCPContextSource(tools).gather(
+            Target("triage-unmanaged", "Deployment", "sandbox", "checkout")
+        )
+
+    assert bundle.argocd_status.startswith("Argo CD status unavailable:")
+    assert bundle.experiments == ()
+    assert bundle.commits == ()

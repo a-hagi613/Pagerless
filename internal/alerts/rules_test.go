@@ -177,7 +177,8 @@ func TestServiceErrorRateHighReadsTheSpanMetricsErrorStatus(t *testing.T) {
 		`status_code="STATUS_CODE_ERROR"`,
 		`span_kind="SPAN_KIND_SERVER"`,
 		`"deployment", "$1", "service_name", "(.+)"`,
-		`"namespace", "sandbox", "__name__", ".*"`,
+		`"namespace", "$1", "k8s_namespace_name", "(.+)"`,
+		`"namespace", "sandbox", "namespace", "^$"`,
 		`service_name!~"frontend|frontend-proxy|checkout|shipping"`,
 		"[5m]",
 	} {
