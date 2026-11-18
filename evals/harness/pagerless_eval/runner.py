@@ -47,6 +47,18 @@ AGENT_CONFIG = "pagerless-agent-config"
 SERVER_DEPLOYMENT = "pagerless-server"
 CHECKOUT = "checkout"
 INJECTED_CONTAINER = "memory-holder"
+# The pods that read the demo's flags at start-up, in the order hack/reset.sh
+# replaces them: flagd first, so the services start after it and read the
+# restored flags.
+FLAG_WORKLOADS = ("flagd", "cart", "payment", "product-catalog", "email")
+# Alertmanager is reachable only inside the cluster, so the harness reads its
+# active alerts through the Kubernetes API service proxy, as gateway.py does for
+# Loki.
+ALERTMANAGER_ALERTS = (
+    "/api/v1/namespaces/monitoring/services/"
+    "kube-prometheus-stack-alertmanager:http-web/proxy/api/v2/alerts?active=true"
+)
+ALERT_POLL_INTERVAL = 5
 ADAPTER_FIXTURES = Path("evals/e2e/fixtures")
 # A checked-in recording that came from a live capture lives in evals/replay and
 # is baked into the agent image; the synthetic development fixtures live in
@@ -75,6 +87,10 @@ class Timeouts:
     approval: int = 120
     adapter_check: int = 300
     reset: int = 1200
+    # alert_inactive covers the scrape interval, the alert rule's `for` delay,
+    # and Prometheus's evaluation of the recovered Workload; it is deliberately
+    # longer than the reset itself.
+    alert_inactive: int = 420
 
 
 @dataclass
@@ -296,7 +312,7 @@ class Harness:
         failure = ""
         if self.config.adapter:
             self._set_recording(scenario)
-        self._reset()
+        self._reset(scenario)
         evidence.known_good = self._memory_settings()
         self._delete_triages()
         since = isoformat(utc_now())
@@ -484,9 +500,22 @@ class Harness:
             timeout=240,
         )
 
-    def _reset(self) -> None:
+    def _reset(self, scenario: Scenario | None = None) -> None:
         if self.config.adapter:
             self._adapter_client("reset")
+            # Scenario 9 applies its StressChaos experiment outside Git, so the
+            # adapter's Git reset cannot remove it the way hack/reset.sh does.
+            # A leftover experiment would keep burning CPU through later runs.
+            self.kube.run(
+                "-n",
+                SANDBOX_NAMESPACE,
+                "delete",
+                "stresschaos",
+                "--all",
+                "--ignore-not-found",
+                "--wait=true",
+                check=False,
+            )
             self._wait_sandbox_healthy()
         else:
             self._make("reset", timeout=self.config.timeouts.reset)
@@ -500,6 +529,86 @@ class Harness:
             "--timeout=600s",
             timeout=660,
         )
+        if self.config.adapter:
+            self._replace_flag_workloads()
+        if scenario is not None and scenario.alert is not None:
+            self._wait_alert_inactive(scenario)
+
+    def _replace_flag_workloads(self) -> None:
+        """Replace the pods that read the demo's flags, as hack/reset.sh does.
+
+        The adapter restores the Sandbox's Git state, and Argo CD syncs it, but
+        the flagd pod copies its ConfigMap into an emptyDir when it starts and
+        the flag-driven services resolve a flag when they start. Without this
+        step a Scenario's flag would outlive the reset even though the Sandbox is
+        at known-good. flagd is replaced first, so the services that start after
+        it read the restored flags.
+        """
+        for workload in FLAG_WORKLOADS:
+            self.kube.run(
+                "-n",
+                SANDBOX_NAMESPACE,
+                "delete",
+                "pod",
+                "-l",
+                f"opentelemetry.io/name={workload}",
+                "--ignore-not-found",
+                "--wait=true",
+                timeout=300,
+            )
+            self.kube.run(
+                "-n",
+                SANDBOX_NAMESPACE,
+                "rollout",
+                "status",
+                f"deployment/{workload}",
+                "--timeout=180s",
+                timeout=240,
+            )
+
+    def _wait_alert_inactive(self, scenario: Scenario) -> None:
+        """Wait until Alertmanager no longer reports the Scenario's alert.
+
+        A Scenario that an alert starts must begin from a quiet Alertmanager: an
+        alert still firing for the same Workload would either join or start the
+        next Triage, and Verification would never observe it resolve. Alertmanager
+        reports the alert inactive only after Prometheus evaluates its rule
+        against the recovered Workload, so this polls instead of sleeping for a
+        fixed delay.
+        """
+        deadline = time.monotonic() + self.config.timeouts.alert_inactive
+        while True:
+            try:
+                active = self._active_alerts()
+            except (HarnessError, KubectlError) as error:
+                last = str(error)
+            else:
+                firing = [alert for alert in active if _matches(alert, scenario)]
+                if not firing:
+                    return
+                last = f"{len(firing)} active {scenario.alert} alert(s) for {scenario.workload}"
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(ALERT_POLL_INTERVAL)
+        raise HarnessError(
+            f"Alertmanager did not report the {scenario.alert} alert for "
+            f"{scenario.workload} inactive within {self.config.timeouts.alert_inactive}s: {last}"
+        )
+
+    def _active_alerts(self) -> list[dict[str, Any]]:
+        result = self.kube.run("get", "--raw", ALERTMANAGER_ALERTS, timeout=60, check=False)
+        if result.returncode:
+            raise HarnessError(
+                "the Alertmanager query through the Kubernetes API failed: "
+                + " ".join(result.stderr.split())[:400]
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except ValueError:
+            raise HarnessError("Alertmanager returned a response that is not JSON") from None
+        if not isinstance(payload, list):
+            raise HarnessError("Alertmanager returned a response that is not an alert list")
+        return [alert for alert in payload if isinstance(alert, dict)]
 
     def _wait_sandbox_healthy(self) -> None:
         deadline = time.monotonic() + self.config.timeouts.reset
@@ -848,3 +957,20 @@ def _number(value: Any) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     return value
+
+
+def _matches(alert: dict[str, Any], scenario: Scenario) -> bool:
+    """Return whether an active alert is the Scenario's alert for its Workload."""
+    labels = _labels(alert)
+    return (
+        labels.get("alertname") == scenario.alert
+        and labels.get("deployment") == scenario.workload
+    )
+
+
+def _labels(alert: dict[str, Any]) -> dict[str, str]:
+    """Return an Alertmanager alert's labels, ignoring a malformed value."""
+    labels = alert.get("labels")
+    if not isinstance(labels, dict):
+        return {}
+    return {key: value for key, value in labels.items() if isinstance(value, str)}

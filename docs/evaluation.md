@@ -14,7 +14,12 @@ For each Scenario and repeat, the harness:
    restarts `pagerless-server` so the agent Job reads it.
 2. Resets the Sandbox to `known-good` and waits for the Argo CD `sandbox`
    Application to be Synced and Healthy and for `deployment/checkout` to roll
-   out.
+   out. In the adapter subset it also deletes any leftover StressChaos
+   experiment and replaces the pods that read the demo's flags, as
+   `hack/reset.sh` does, so a previous Scenario's flag cannot outlive the reset.
+   When the Scenario has an opted-in alert, it then waits until Alertmanager no
+   longer reports that alert for the Workload, so the next run starts from a
+   quiet Alertmanager.
 3. Records the known-good memory settings of the injected container
    (`memory-holder`) and deletes every Triage and TriageApproval.
 4. Injects the Scenario with `make break SCENARIO=<name>` and records the
@@ -50,7 +55,7 @@ fails the run rather than being assumed.
 | Scenario | Rule | Passing condition |
 | --- | --- | --- |
 | `oom` | `patch-resources-oom` | `PatchResources` on `memory-holder` with a new memory limit between 1.5 and 4 times the injected limit (inclusive) and a resulting request that does not exceed the limit, **or** a `Rollback` of exactly the injected commit (spec #16). |
-| `unschedulable` | `patch-resources-unschedulable` | `PatchResources` on `memory-holder`; the new request fits the largest node's allocatable memory and does not exceed the known-good request; request ≤ limit. |
+| `unschedulable` | `patch-resources-unschedulable` | `PatchResources` on `memory-holder`; the new request fits the largest node's allocatable memory and does not exceed the known-good request; request ≤ limit, **or** a `Rollback` of exactly the injected commit. |
 | `bad-config`, `bad-image-tag`, `cart-flag`, `payment-flag`, `product-catalog-flag` | `rollback` | `Rollback` of exactly the injected commit, matched in full or by an unambiguous prefix of at least seven hexadecimal characters. |
 | `email-memory-leak` | `rollback` | `Rollback` scores `pass`; `RestartWorkload` scores `mitigated` because it clears the symptom without removing the cause; anything else fails. |
 | `cpu` | `noaction` | `NoAction`, and the Diagnosis names `cpu-stress-payment`. A manifest change fails. |

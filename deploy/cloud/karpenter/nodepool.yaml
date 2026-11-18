@@ -27,12 +27,17 @@ spec:
         - key: karpenter.k8s.aws/instance-category
           operator: In
           values: ["c", "m", "r"]
+        # Generation 5 and later are Nitro instances whose ENI limits give the
+        # cluster DaemonSets enough pod density; an older generation such as
+        # m3.medium tops out at six pods per node and cannot host them. The
+        # large and xlarge sizes keep that headroom without buying capacity the
+        # 12 vCPU limit has to refuse.
         - key: karpenter.k8s.aws/instance-generation
           operator: Gt
-          values: ["2"]
+          values: ["4"]
         - key: karpenter.k8s.aws/instance-size
           operator: In
-          values: ["medium", "large", "xlarge"]
+          values: ["large", "xlarge"]
       nodeClassRef:
         group: karpenter.k8s.aws
         kind: EC2NodeClass

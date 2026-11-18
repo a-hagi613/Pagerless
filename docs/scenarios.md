@@ -12,7 +12,7 @@ The answer key is the expectation that `make eval` scores each run against. All 
 | 1 | OOMKilled | checkout | Low memory limit commit | PatchResources, or Rollback of the injected commit | Implemented |
 | 2 | Bad config | checkout | Broken configuration commit | Rollback | Implemented |
 | 3 | Bad image tag | checkout | Nonexistent tag commit | Rollback | Implemented |
-| 4 | Unschedulable | checkout | Impossible request commit | PatchResources | Implemented |
+| 4 | Unschedulable | checkout | Impossible request commit | PatchResources, or Rollback of the injected commit | Implemented |
 | 5 | Cart flag fault | cart | `cartFailure` commit | Rollback | Implemented |
 | 6 | Payment flag fault | payment | `paymentFailure` commit | Rollback | Implemented |
 | 7 | Product catalog flag fault | product-catalog | `productCatalogFailure` commit | Rollback | Implemented |

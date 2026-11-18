@@ -51,7 +51,8 @@ class Scenario:
     mitigated_action: str | None = None
     # Further Actions that fix the cause and score as a pass. Spec #16 accepts
     # both a PatchResources inside the bound and a Rollback of exactly the
-    # injected commit for Scenario 1, and Scenario 10 inherits both.
+    # injected commit for Scenario 1, and Scenario 10 inherits both. A Rollback
+    # also reverts the commit that made Scenario 4 unschedulable.
     alternative_actions: tuple[str, ...] = ()
 
     @property
@@ -117,6 +118,9 @@ SCENARIOS: tuple[Scenario, ...] = (
         trigger=Trigger.MANUAL,
         alert=None,
         replay_recording="synthetic-unschedulable.json",
+        # A Rollback of the injected commit removes the impossible request just
+        # as a PatchResources inside the bound does, so both fix the cause.
+        alternative_actions=("Rollback",),
     ),
     Scenario(
         number=5,
