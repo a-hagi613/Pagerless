@@ -2,37 +2,37 @@
   "format": "pagerless.dev/replay-provenance",
   "version": 1,
   "artifact": "oom.json",
-  "sha256": "f5dcd1e0b5b227d0ba855b703049cc4e297b272c7c24456351cc1d3bd190f5ed",
+  "sha256": "765af3efa4ac9dc2ab8ee1dd4acad6ebd7112ef529342ae8bdf32e067d41bd34",
   "provider": "anthropic",
   "model": "claude-haiku-5-5",
   "scenario": "oom",
-  "source_revision_at_capture": "b7378498b11f72132def20593bf1c365ba8eb733",
-  "captured_at": "2026-11-17T08:28:28.635521Z",
+  "source_revision_at_capture": "f1568c0f0998bae6864839a35a8863fd2383f2b9",
+  "captured_at": "2026-11-18T07:15:54.328536Z",
   "environment": "kind with the isolated local Git/GitHub Sandbox adapter and original read-only MCP servers",
   "triage": {
-    "name": "checkout-rldwm",
-    "uid": "d62357f3-e8ad-4977-a527-31ea679aa047",
-    "phase": "Proposed",
-    "proposal_action": "PatchResources",
-    "proposal_hash": "2d6d09199856aca6f78fdb810e0dc2544ee690064c433416401e58bb43ce4a26"
+    "name": "triage-k2wl8",
+    "uid": "84b6ef6a-da08-490d-817e-4d2c49511429",
+    "phase": "Recovered",
+    "proposal_action": "Rollback",
+    "proposal_hash": "f75d6b58b9f2ba42aca97b287f86bfe7d54ad07488635e82099bfa18c448c163"
   },
   "job": {
-    "name": "checkout-rldwm-agent",
-    "uid": "8b7f0bb2-6ecb-4312-9bd6-7869e13ab9f1",
-    "started_at": "2026-11-17T08:26:46Z",
-    "completed_at": "2026-11-17T08:27:11Z",
-    "image": "ghcr.io/a-hagi613/pagerless-agent:0.1.0",
+    "name": "triage-k2wl8-agent",
+    "uid": "eea90ac7-412d-4e8d-b423-52c67fd2df9e",
+    "started_at": "2026-11-18T07:10:01Z",
+    "completed_at": "2026-11-18T07:10:20Z",
+    "image": "ghcr.io/a-hagi613/pagerless-agent:0.2.0",
     "succeeded": true
   },
   "usage": {
-    "model_calls": 5,
-    "input_tokens_including_cache": 61315,
-    "output_tokens": 2133
+    "model_calls": 6,
+    "input_tokens_including_cache": 94885,
+    "output_tokens": 2592
   },
   "limits": {
     "tool_calls": 15,
     "seconds": 300,
-    "input_tokens": 100000
+    "input_tokens": 300000
   },
   "normalization": "Recording.load validates every placeholder and refuses unresolved volatile identifiers"
 }

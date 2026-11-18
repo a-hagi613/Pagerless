@@ -23,6 +23,11 @@ on:
         type: number
         required: false
         default: 1
+      repeat_number:
+        description: "Optional single repeat number (1..repeats) when scenarios overrides the matrix"
+        type: string
+        required: false
+        default: ""
       max_tokens:
         description: "Hard token budget for the whole batch"
         type: number
@@ -92,7 +97,7 @@ jobs:
           SHARD: ${{ matrix.shard.id }}
           SCENARIOS: ${{ matrix.shard.scenarios }}
           REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
-          REPEAT: ${{ matrix.shard.repeat }}
+          REPEAT: ${{ matrix.shard.repeat || inputs.repeat_number }}
           MAX_TOKENS: ${{ inputs.max_tokens }}
           MAX_COST: ${{ inputs.max_cost_usd }}
         run: |
@@ -142,12 +147,16 @@ jobs:
           PAGERLESS_E2E_MODEL_PROVIDER: ${{ inputs.model_provider }}
           PAGERLESS_E2E_SCENARIOS: ${{ matrix.shard.scenarios }}
           PAGERLESS_E2E_REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
-          PAGERLESS_E2E_REPEAT_NUMBER: ${{ matrix.shard.repeat }}
+          PAGERLESS_E2E_REPEAT_NUMBER: ${{ matrix.shard.repeat || inputs.repeat_number }}
           PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
           PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
           PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && matrix.shard.id == 'single' && '1' || '0' }}
           PAGERLESS_E2E_LIVE: "1"
-          PAGERLESS_E2E_REQUIRE_PASS: "1"
+          # A measured run publishes the Replay recording, so it must recover for
+          # the capture to be usable. A full benchmark records the model's real
+          # scored outcomes, including misses; the aggregate job's merge rejects
+          # any run that errored or never reached a terminal phase.
+          PAGERLESS_E2E_REQUIRE_PASS: ${{ inputs.phase == 'measured' && '1' || '0' }}
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
           PAGERLESS_E2E_MEMORY_PEAK: ${{ github.workspace }}/memory-samples.txt
           PLATFORM_REVISION: ${{ github.sha }}

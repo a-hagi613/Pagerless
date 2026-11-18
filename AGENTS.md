@@ -32,7 +32,7 @@ Demo Workloads live in the separate `pagerless-sandbox` repository (ADR-0003).
 
 ## Development environment
 
-Development runs in WSL2 (Ubuntu), with the repository cloned into the Linux filesystem rather than under `/mnt/c`. The full local stack requires roughly 24 GB of memory allocated to WSL.
+Development runs in WSL2 (Ubuntu), with the repository cloned into the Linux filesystem rather than under `/mnt/c`. The bootstrap's Docker preflight rejects engines below 12 GiB (the measured 9.6 GiB full-stack peak plus 20 percent, rounded up to a whole GiB); roughly 24 GB allocated to WSL is recommended for the full local stack.
 
 ## Development workflow
 

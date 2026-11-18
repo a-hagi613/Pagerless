@@ -228,11 +228,37 @@ class MergeDocumentsTest(unittest.TestCase):
         with self.assertRaisesRegex(results.ResultError, "missing"):
             results.merge_documents(incomplete, commit=COMMIT)
 
-    def test_the_merge_refuses_a_failed_run(self) -> None:
+    def test_the_merge_keeps_a_completed_scored_fail_run(self) -> None:
         documents = shards()
-        documents[4] = shard(("email-memory-leak",), result="fail")
-        with self.assertRaisesRegex(results.ResultError, "failed runs"):
-            results.merge_documents(documents, commit=COMMIT)
+        # A live model miss is a measurement, not a merge error: the Triage
+        # completed cleanly in the Diagnosed phase but proposed NoAction where
+        # the answer key expects the recorded fix.
+        missed = [item for item in documents[3]["runs"] if item["scenario"] == "cpu"]
+        self.assertEqual(len(missed), 2)
+        for item in missed:
+            item["phase"] = "Diagnosed"
+            item["action"] = "NoAction"
+            item["failure"] = None
+            item["result"] = "fail"
+        merged = results.merge_documents(documents, commit=COMMIT)
+        results.validate_document(merged)
+        rendered = table.render([merged])
+        self.assertIn("| **Total** | | **18** | **0** | **2** |", rendered)
+
+    def test_the_merge_refuses_an_incomplete_or_errored_run(self) -> None:
+        cases = (
+            ("failure set", {"failure": "the agent Job exhausted its retries"}),
+            ("timed out", {"phase": "TimedOut"}),
+            ("failed", {"phase": "Failed"}),
+        )
+        for label, change in cases:
+            with self.subTest(run=label):
+                documents = shards()
+                documents[4]["runs"][0].update(change)
+                with self.assertRaisesRegex(
+                    results.ResultError, "incomplete or errored runs"
+                ):
+                    results.merge_documents(documents, commit=COMMIT)
 
     def test_the_merge_refuses_two_shards_for_the_same_run(self) -> None:
         documents = shards()

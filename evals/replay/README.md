@@ -41,7 +41,7 @@ The capture claim is deliberately separate from the normal Replay input path. Th
 
 ## The Narrative recording
 
-`narrative.json` holds the one response of the Narrative stage. The Narrative Job plays it in CI and by default, so CI makes no paid model call. The response checked in here was written from the validated `oom.json` facts: it is a synthetic recording of the right shape, not evidence of a live model run, and a genuine capture replaces it before release.
+`narrative.json` holds the one response of the Narrative stage. The Narrative Job plays it in CI and by default, so CI makes no paid model call. The response checked in here is the genuine Narrative recording of the same live Triage that produced `oom.json`, staged at revision `f1568c0`.
 
 The Narrative call has no Context Bundle, so its recording cannot hold a placeholder. The prompt asks for prose without pod names, timestamps, commit identifiers, hashes, or alert fingerprints, and `Recording.load` refuses a response that still contains a volatile identifier. A capture that names one fails loudly; adjust the prompt rather than the recording.
 
