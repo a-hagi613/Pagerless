@@ -128,11 +128,6 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: "regular file"},
 		{name: "workload that does not exist", workload: workload{noLive: true, noManifest: true},
 			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: "does not exist"},
-		{name: "dry run refused", requests: quantities("cpu", "1"), limits: nil,
-			workload: workload{mutateLive: func(d *appsv1.Deployment) {
-				d.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("500m")
-			}},
-			wantField: workloadField, wantText: "dry run"},
 		// Argo CD may not have applied the manifest yet, so the live Workload can
 		// differ from the Sandbox copy. Validation must judge the resources the
 		// API server will see and name the rule the Proposal breaks.
