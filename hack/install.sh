@@ -529,7 +529,7 @@ unset keycloak_admin_password keycloak_database_password
 
 helm template keycloak "$REPO_ROOT/deploy/keycloak" --namespace keycloak |
 	kctl -n keycloak apply -f -
-kctl -n keycloak rollout status statefulset/keycloak-db --timeout=300s
+kctl -n keycloak rollout status statefulset/keycloak-database --timeout=300s
 kctl -n keycloak rollout status deployment/keycloak --timeout=600s
 
 PAGERLESS_KUBE_CONTEXT="$KUBE_CONTEXT" uv run --no-project --python "$PYTHON_VERSION" -c '
@@ -597,7 +597,7 @@ elif [ "$INSTALL_PROVIDER" = "bedrock" ]; then
 	[ -n "${AWS_SESSION_TOKEN:-}" ] && agent_cred_args+=(--from-file=AWS_SESSION_TOKEN=<(printf '%s' "$AWS_SESSION_TOKEN"))
 fi
 kctl -n pagerless create secret generic pagerless-agent-credentials \
-	"${agent_cred_args[@]}" \
+	${agent_cred_args[@]+"${agent_cred_args[@]}"} \
 	--dry-run=client -o yaml | kctl apply -f -
 
 render_configmaps | kctl apply -f -
