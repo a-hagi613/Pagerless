@@ -373,10 +373,11 @@ class TestBudgets:
 
         assert result.outcome.kind == "budget_exhausted"
         assert len(result.model.requests) == 2
-        assert (
-            f"Budget exhausted (input tokens): {2 * per_call} input tokens read; the budget is {MAX_INPUT_TOKENS}."
-            in steps(result.server)[-1][2]
+        message = (
+            f"Budget exhausted (input tokens): {2 * per_call} input tokens read; "
+            f"the budget is {MAX_INPUT_TOKENS}."
         )
+        assert message in steps(result.server)[-1][2]
 
     async def test_the_time_budget_stops_the_run_between_steps(self, tmp_path: Path) -> None:
         now = [0.0]
