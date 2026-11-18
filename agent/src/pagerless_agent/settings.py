@@ -14,7 +14,9 @@ from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from pagerless_agent.keycloak import TokenProvider
-    from pagerless_agent.mcp import MCPServerConfig
+    from pagerless_agent.mcp import MCPServerConfig, ServerName
+
+    ENV_MCP_SERVERS = "PAGERLESS_MCP_SERVERS"
 
 ENV_SERVER_URL = "PAGERLESS_SERVER_URL"
 ENV_TOKEN_FILE = "PAGERLESS_TOKEN_FILE"
@@ -27,6 +29,7 @@ ENV_TRIGGERING_POD = "PAGERLESS_TRIGGERING_POD"
 ENV_HINT = "PAGERLESS_HINT"
 ENV_MODEL_PROVIDER = "PAGERLESS_MODEL_PROVIDER"
 ENV_MCP_GATEWAY_URL = "PAGERLESS_MCP_GATEWAY_URL"
+_ENV_MCP_SERVERS = "PAGERLESS_MCP_SERVERS"
 ENV_KEYCLOAK_ISSUER = "PAGERLESS_KEYCLOAK_ISSUER"
 ENV_KEYCLOAK_TOKEN_URL = "PAGERLESS_KEYCLOAK_TOKEN_URL"
 ENV_KEYCLOAK_CLIENT_ID = "PAGERLESS_KEYCLOAK_CLIENT_ID"
@@ -38,6 +41,8 @@ ENV_SANDBOX_OWNER = "PAGERLESS_SANDBOX_OWNER"
 ENV_SANDBOX_REPO = "PAGERLESS_SANDBOX_REPO"
 ENV_ARGOCD_APPLICATION = "PAGERLESS_ARGOCD_APPLICATION"
 ENV_ALLOWED_NAMESPACES = "PAGERLESS_ALLOWED_NAMESPACES"
+
+_ALL_MCP_SERVERS: tuple[ServerName, ...] = ("k8s", "grafana", "argocd", "github")
 
 
 class ConfigError(Exception):
@@ -120,9 +125,10 @@ class RuntimeSettings:
     investigation: Settings
     gateway_url: str
     keycloak: KeycloakSettings
-    sandbox_owner: str
-    sandbox_repository: str
+    sandbox_owner: str = ""
+    sandbox_repository: str = ""
     application: str = "sandbox"
+    mcp_servers: tuple[ServerName, ...] = _ALL_MCP_SERVERS
     provider: ModelProviderName = "replay"
     replay_file: Path = Path("/app/recordings/oom.json")
     recording_file: Path | None = None
@@ -138,15 +144,16 @@ class RuntimeSettings:
         allowed = env.get(ENV_ALLOWED_NAMESPACES, namespace).split(",")
         if namespace not in {name.strip() for name in allowed}:
             raise ConfigError("the Workload's namespace is not allowlisted")
+        mcp_servers = _parse_mcp_servers(env)
         required = [
             ENV_MCP_GATEWAY_URL,
             ENV_KEYCLOAK_ISSUER,
             ENV_KEYCLOAK_TOKEN_URL,
             ENV_KEYCLOAK_CLIENT_ID,
             ENV_KEYCLOAK_TOKEN_FILE,
-            ENV_SANDBOX_OWNER,
-            ENV_SANDBOX_REPO,
         ]
+        if "github" in mcp_servers:
+            required.extend([ENV_SANDBOX_OWNER, ENV_SANDBOX_REPO])
         missing = [name for name in required if not env.get(name)]
         if missing:
             raise ConfigError(f"missing environment variables: {', '.join(missing)}")
@@ -174,21 +181,55 @@ class RuntimeSettings:
                 client_id=client_id,
                 token_file=Path(env[ENV_KEYCLOAK_TOKEN_FILE]),
             ),
-            sandbox_owner=env[ENV_SANDBOX_OWNER],
-            sandbox_repository=env[ENV_SANDBOX_REPO],
+            sandbox_owner=env.get(ENV_SANDBOX_OWNER, "") if "github" in mcp_servers else "",
+            sandbox_repository=env.get(ENV_SANDBOX_REPO, "") if "github" in mcp_servers else "",
             application=env.get(ENV_ARGOCD_APPLICATION, "sandbox"),
+            mcp_servers=mcp_servers,
             provider=cast(ModelProviderName, provider),
             replay_file=Path(env.get(ENV_REPLAY_FILE, "/app/recordings/oom.json")),
             recording_file=Path(recording) if recording else None,
         )
 
     def servers(self, token_source: TokenProvider) -> tuple[MCPServerConfig, ...]:
-        """Return one authenticated gateway route per MCP server."""
+        """Return one authenticated gateway route per enabled MCP server."""
         from pagerless_agent.mcp import MCPServerConfig, gateway_endpoints
 
+        enabled = set(self.mcp_servers)
         return tuple(
-            MCPServerConfig(name, url, token_source) for name, url in gateway_endpoints(self.gateway_url)
+            MCPServerConfig(name, url, token_source)
+            for name, url in gateway_endpoints(self.gateway_url)
+            if name in enabled
         )
+
+
+def _parse_mcp_servers(env: Mapping[str, str]) -> tuple[ServerName, ...]:
+    raw = env.get(_ENV_MCP_SERVERS, "").strip()
+    if raw:
+        seen: list[ServerName] = []
+        for item in raw.split(","):
+            name = item.strip()
+            if not name:
+                continue
+            if name not in _ALL_MCP_SERVERS:
+                raise ConfigError(
+                    f"{_ENV_MCP_SERVERS} must contain only k8s, grafana, argocd, or github, not {name!r}"
+                )
+            if name not in seen:
+                seen.append(name)
+        if "k8s" not in seen:
+            raise ConfigError(f"{_ENV_MCP_SERVERS} must include k8s")
+        return tuple(seen)
+    if env.get(ENV_SANDBOX_OWNER) or env.get(ENV_SANDBOX_REPO):
+        return _ALL_MCP_SERVERS
+    if env.get(ENV_ARGOCD_APPLICATION, "").strip():
+        return ("k8s", "grafana", "argocd")
+    return ("k8s", "grafana")
+
+
+def __getattr__(name: str) -> str:
+    if name == "ENV_MCP_SERVERS":
+        return _ENV_MCP_SERVERS
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _http_endpoint(name: str, value: str) -> str:

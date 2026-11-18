@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -20,6 +21,8 @@ from pagerless_agent.bundle import (
 )
 from pagerless_agent.mcp import MCPTools, ToolPolicyError
 from pagerless_agent.settings import Target
+
+log = logging.getLogger(__name__)
 
 _MAX_PODS = 10
 _MAX_LOG_PODS = 3
@@ -123,12 +126,27 @@ class MCPContextSource:
                     lines = f"Logs unavailable: {error}"
                 logs.append(PodLogs(pod=name, container=container_name, lines=_text(lines)[:_MAX_TEXT]))
 
-        application = _object(await self._tools.read("argocd", "get_application", {}))
+        if self._tools.has_server("argocd"):
+            try:
+                application = _object(await self._tools.read("argocd", "get_application", {}))
+                argocd_status = _text(application.get("status", {}))[:_MAX_TEXT]
+            except (ToolPolicyError, ContextReadError) as error:
+                argocd_status = f"Argo CD status unavailable: {error}"[:_MAX_TEXT]
+        else:
+            argocd_status = "Argo CD integration is not enabled for this investigation."
+
         experiments = await self._experiments(target, _pod_labels(workload))
-        commits = [
-            _commit(c) for c in _items(await self._tools.read("github", "list_commits", {"perPage": 20}))
-        ]
-        commits.sort(key=lambda c: (c.time, c.sha), reverse=True)
+
+        commits: list[Commit] = []
+        if self._tools.has_server("github"):
+            try:
+                raw_commits = await self._tools.read("github", "list_commits", {"perPage": 20})
+                commits = [_commit(c) for c in _items(raw_commits)]
+                commits.sort(key=lambda c: (c.time, c.sha), reverse=True)
+            except (ToolPolicyError, ContextReadError) as error:
+                log.debug("skipping GitHub commit gathering: %s", error)
+                commits = []
+
         return ContextBundle(
             workload=WorkloadRef(kind=target.kind, namespace=target.namespace, name=target.name),
             gathered_at=gathered_at,
@@ -137,7 +155,7 @@ class MCPContextSource:
             pods=pods,
             events=events,
             logs=tuple(logs),
-            argocd_status=_text(application.get("status", {}))[:_MAX_TEXT],
+            argocd_status=argocd_status,
             experiments=experiments,
             commits=tuple(commits[:20]),
         )
@@ -153,12 +171,17 @@ class MCPContextSource:
         """
         found: list[Experiment] = []
         for kind in _EXPERIMENT_KINDS:
-            listed = await self._tools.read_objects(
-                "k8s",
-                "resources_list",
-                {"apiVersion": _EXPERIMENT_API_VERSION, "kind": kind, "namespace": target.namespace},
-            )
-            for item in _items(listed):
+            try:
+                listed = await self._tools.read_objects(
+                    "k8s",
+                    "resources_list",
+                    {"apiVersion": _EXPERIMENT_API_VERSION, "kind": kind, "namespace": target.namespace},
+                )
+                items = _items(listed)
+            except (ToolPolicyError, ContextReadError) as error:
+                log.debug("skipping %s experiment discovery in %s: %s", kind, target.namespace, error)
+                continue
+            for item in items:
                 spec = _object(item.get("spec", {}))
                 if not _matches(_object(spec.get("selector", {})), target.namespace, labels):
                     continue

@@ -116,8 +116,8 @@ class MCPTools:
         configs: tuple[MCPServerConfig, ...],
         *,
         namespace: str,
-        owner: str,
-        repository: str,
+        owner: str = "",
+        repository: str = "",
         application: str = "sandbox",
         client_factory: Callable[[MCPServerConfig], AbstractAsyncContextManager[Client]] = connect,
     ) -> None:
@@ -175,6 +175,10 @@ class MCPTools:
         await self._stack.aclose()
         self._tools.clear()
         self._specs.clear()
+
+    def has_server(self, server: ServerName) -> bool:
+        """Report whether the named MCP server is configured for this investigation."""
+        return any(config.name == server for config in self._configs)
 
     def specs(self) -> list[ToolSpec]:
         """Return deterministically ordered, explicitly allowlisted tools."""
@@ -236,6 +240,8 @@ class MCPTools:
                 raise ToolPolicyError("Kubernetes reads are restricted to the Workload's namespace")
             args["namespace"] = self._namespace
         elif server == "github":
+            if not self._owner or not self._repository:
+                raise ToolPolicyError("GitHub reads require a configured Sandbox repository")
             if (
                 args.get("owner", self._owner) != self._owner
                 or args.get("repo", self._repository) != self._repository
