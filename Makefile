@@ -123,5 +123,5 @@ cloud-check: ## Check formatting, validation and lint of every Terraform configu
 	bash hack/cloud-volume-sweep-test.sh
 	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/ec2nodeclass.yaml pagerless pagerless-karpenter-node >/dev/null
 	bash hack/render-cloud-manifest.sh deploy/cloud/karpenter/nodepool.yaml pagerless pagerless-karpenter-node >/dev/null
-	grep -q '__CLUSTER_NAME__' deploy/cloud/karpenter/nodepool.yaml
+	grep -q '__CLUSTER_NAME__' deploy/cloud/karpenter/ec2nodeclass.yaml
 	grep -q '__NODE_ROLE_NAME__' deploy/cloud/karpenter/ec2nodeclass.yaml
