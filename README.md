@@ -1,14 +1,27 @@
 <p align="center">
-  <img src="docs/assets/pagerless-mascot.png" alt="Pagerless mascot" width="220" />
+  <img src="docs/assets/pagerless-mascot.png" alt="Pagerless mascot" width="200" />
 </p>
 
 <h1 align="center">Pagerless</h1>
 
 <p align="center">
-  <strong>A standalone Kubernetes Triage operator that diagnoses failing Workloads through read-only Model Context Protocol (MCP) servers and executes a remediation only after a human approves the exact validated change.</strong>
+  <strong>Human-gated Kubernetes Triage operator that diagnoses failing Workloads through read-only Model Context Protocol (MCP) servers and executes validated remediations only after a hash-bound human Approval.</strong>
 </p>
 
 <p align="center">
+  <a href="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml"><img src="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
+  <a href="https://github.com/a-hagi613/pagerless/actions/workflows/infra.yml"><img src="https://github.com/a-hagi613/pagerless/actions/workflows/infra.yml/badge.svg?branch=main" alt="Infrastructure" /></a>
+  <a href="https://github.com/a-hagi613/pagerless/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/release-v1.0.0-0A7EA4?logo=github" alt="Release" /></a>
+  <a href="charts/pagerless/README.md"><img src="https://img.shields.io/badge/Helm%20OCI-1.0.0-0F1689?logo=helm&logoColor=white" alt="Helm Chart" /></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.27.4-00ADD8?logo=go&logoColor=white" alt="Go" /></a>
+  <a href="agent/pyproject.toml"><img src="https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white" alt="Python" /></a>
+  <a href="hack/versions.env"><img src="https://img.shields.io/badge/Kubernetes-1.37-326CE5?logo=kubernetes&logoColor=white" alt="Kubernetes" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache-2.0" /></a>
+</p>
+
+<p align="center">
+  <a href="#what-is-pagerless">What is Pagerless?</a> ·
+  <a href="#60-second-quick-start">Quick Start</a> ·
   <a href="#end-to-end-demo-eks--amazon-nova-2-lite">Live Demo</a> ·
   <a href="#architecture-and-triage-lifecycle">Architecture</a> ·
   <a href="#getting-started">Getting Started</a> ·
@@ -20,11 +33,56 @@
 
 ---
 
-Pagerless is the repository an engineer installs directly into any Kubernetes cluster — `kind`, Amazon EKS, Google Kubernetes Engine, Azure Kubernetes Service, k3s, or bare metal. It ships four pieces that work together: the `pagerless-server` operator that owns the `Triage` lifecycle, the `pagerless-executor` write identity that carries out an approved change, a LangGraph investigation agent that runs as an isolated Job, and the `kubectl-triage` CLI plugin plus the embedded web dashboard that engineers use to trigger and approve. The operator, the **Executor**, and the agent install as one Helm release; the CLI plugin is built from this repository with `make build-cli`.
+## What is Pagerless?
 
-When a Deployment or StatefulSet fails, Pagerless gathers a deterministic **Context Bundle**, runs a tool-constrained agent behind `agentgateway` and Keycloak, validates one typed **Proposal** with a Kubernetes server-side dry run, waits for a human **Approval** bound to the **Proposal** hash, executes the change through the isolated **Executor** (as a GitOps pull request or a live rolling restart), and verifies recovery over a five-minute **Verification** window.
+Pagerless is a standalone Kubernetes `Triage` operator for investigating and remediating failing `Deployment` and `StatefulSet` **Workloads** on any cluster (`kind`, Amazon EKS, Google Kubernetes Engine, Azure Kubernetes Service, k3s, or bare metal). It separates investigation from mutation so an AI model never holds write credentials or grades its own work:
 
-The reference demonstration — the OpenTelemetry shopping-cart **Sandbox**, Argo CD, Prometheus, Alertmanager, Grafana, and Chaos Mesh — lives in the separate [`a-hagi613/pagerless-sandbox`](https://github.com/a-hagi613/pagerless-sandbox) repository and is a worked example, not a dependency. Installing Pagerless never requires it.
+1. **Read-only MCP investigation.** When a **Trigger** (an opted-in Alertmanager alert or a human request) starts an **Active Triage**, `pagerless-server` launches a zero-RBAC **Agent Pod** (`Job`) that gathers a deterministic **Context Bundle** and queries read-only Model Context Protocol (MCP) backends (`k8s`, `grafana`, `argocd`, `github`) behind `agentgateway` and Keycloak JWT authorization.
+2. **Deterministic `Validation` and hash-bound `TriageApproval`.** The agent submits cited **Findings**, a root-cause **Diagnosis**, and one typed **Proposal** from a fixed **Action** menu. Deterministic Go code in `pagerless-server` runs **Validation** — enforcing namespace allowlists, resource/replica bounds, a Kubernetes server-side dry run, and single-file diff rendering — and computes a SHA-256 **Proposal** hash. Execution blocks until an authorized human creates a `TriageApproval` (**Approval** or final **Rejection**) bound to that exact hash, **Workload** generation, and **Sandbox** commit (rejecting any **Stale Proposal**).
+3. **Isolated `Executor` and 5-minute `Verification`.** The separate `pagerless-executor` binary independently re-verifies the `TriageApproval` and **Proposal** hash, applies the approved **Action** (as a GitOps pull request or a live rolling pod replacement), and hands off to deterministic Go **Verification**, which observes the **Workload** over a five-minute window before recording `Recovered` or `NotRecovered` and generating a purely descriptive post-**Verification** **Narrative**.
+
+The reference demonstration environment — the OpenTelemetry shopping-cart **Sandbox**, Argo CD, Prometheus, Alertmanager, Grafana, and Chaos Mesh — lives in the separate [`a-hagi613/pagerless-sandbox`](https://github.com/a-hagi613/pagerless-sandbox) repository and is a worked example, never an installation dependency.
+
+### Components
+
+| Component | Binary / Runtime | Role | Least-Privilege Boundary |
+| --- | --- | --- | --- |
+| `pagerless-server` | Go `1.27.4` (`cmd/pagerless-server`) | Reconciles `Triage` and `TriageApproval` custom resources, runs pre-approval **Validation** and five-minute **Verification**, serves admission webhooks and the embedded dashboard, and persists SQLite history. | Read-only on Pods; `update` on Deployments and StatefulSets is restricted to server-side dry runs (`dryRun=All`) by a `ValidatingAdmissionPolicy`; spawned **Agent Pods** are locked to the `pagerless-agent` ServiceAccount. |
+| `pagerless-executor` | Go `1.27.4` (`cmd/pagerless-executor`) | Isolated write-privileged **Executor** that independently re-verifies the `TriageApproval` and **Proposal** SHA-256 hash before opening a GitOps pull request or performing a live rolling pod replacement. | Sole holder of the GitHub write token (`github-write`) and Pod `delete` RBAC in allowlisted **Workload** namespaces; holds no model credentials or `Triage` status write permissions. |
+| `pagerless-agent` | Python `3.14` / LangGraph (`agent/`) | Ephemeral **Agent Pod** (`Job`) that assembles the **Context Bundle**, queries read-only MCP tools, streams step events, submits **Findings**, **Diagnosis**, and **Proposal**, and writes the post-**Verification** **Narrative**. | Zero Kubernetes RBAC (`automountServiceAccountToken: false`); reaches MCP servers only through `agentgateway` using a federated Keycloak JWT that enforces tool allowlists and denies `Secret` reads. |
+| `kubectl-triage` & Embedded Dashboard | Go `1.27.4` (`cmd/kubectl-triage`) & React/TypeScript (`dashboard/`) | Operator CLI plugin and OIDC web UI for starting a **Triage** (with an optional **Hint**), watching live investigation steps, reviewing rendered diffs, and recording a hash-bound `TriageApproval`. | CLI uses the operator's Kubernetes RBAC (`Role pagerless-approver`); dashboard authenticates via Keycloak OIDC (PKCE) and asserts `pagerless-approvers` membership verified by the validating admission webhook without Kubernetes impersonation. |
+
+### Supported `Action`s
+
+| `Action` | Required Mode | Execution Path (`pagerless-executor`) | Deterministic `Verification` Criteria (5-Minute Window) |
+| --- | --- | --- | --- |
+| `RestartWorkload` | Live-only or GitOps | Replaces the target **Workload**'s pods one at a time via the Kubernetes API, waiting for each replacement before deleting the next pod. | `RolloutAvailable`, `NoNewRestarts`, `AlertResolved` (when triggered by Alertmanager), and `ArgoCDSynced` (when an Argo CD Application is configured). |
+| `Scale` | GitOps PR (`sandbox.url` set) | Opens a single-file pull request updating `spec.replicas` (validated within `1..10` and Kubernetes server-side dry run); Argo CD reconciles the merged commit. | `ArgoCDSynced` at the merge commit, `RolloutAvailable`, `NoNewRestarts`, and `AlertResolved`. |
+| `PatchResources` | GitOps PR (`sandbox.url` set) | Opens a single-file pull request updating one container's CPU/memory `requests` and `limits` (validated within `10m..4` CPU, `16Mi..8Gi` memory, `requests <= limits`, and server-side dry run); Argo CD reconciles the merge. | `ArgoCDSynced` at the merge commit, `RolloutAvailable`, `NoNewRestarts`, and `AlertResolved`. |
+| `Rollback` | GitOps PR (`sandbox.url` set) | Opens a single-file pull request reverting one commit on the **Workload** manifest or a path in `pagerless.dev/depends-on-paths` (validated via server-side dry run); Argo CD reconciles the merge. | `ArgoCDSynced` at the merge commit, `RolloutAvailable`, `NoNewRestarts`, and `AlertResolved`. |
+| `NoAction` | Live-only or GitOps | No mutation; human **Approval** acknowledges an external cause (such as an active Chaos Mesh **Experiment**) outside the **Workload** manifests. | Transitions directly from `Proposed` to terminal **Phase** `Diagnosed` upon **Approval** (`Verification` outcome `NotApplicable`). |
+
+### 60-second quick start
+
+Install the standalone Helm chart from GHCR (or run `bash hack/install.sh` to bootstrap Keycloak, `agentgateway`, and the chart together), then trigger, inspect, and approve a **Triage** with `kubectl triage`:
+
+```bash
+# Option 1: Install the standalone OCI Helm chart (when OIDC, gateway, and Secrets exist)
+helm upgrade --install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
+  --version 1.0.0 \
+  --namespace pagerless --create-namespace \
+  --values my-values.yaml
+
+# Option 2: Batteries-included bootstrap (Keycloak + agentgateway + Pagerless chart)
+export ANTHROPIC_API_KEY="sk-ant-..."
+bash hack/install.sh --context my-cluster --namespaces payments,checkout --provider anthropic --yes
+
+# Start a Triage, stream live investigation steps, and record a hash-bound Approval
+kubectl triage --context my-cluster --namespace payments deploy/my-service --hint "check recent restarts"
+TRIAGE="$(kubectl triage --context my-cluster list | awk 'NR==2 {print $1}')"
+kubectl triage --context my-cluster show "$TRIAGE" --watch
+kubectl triage --context my-cluster approve "$TRIAGE"
+```
 
 ## End-to-end demo (EKS + Amazon Nova 2 Lite)
 
@@ -236,7 +294,7 @@ This repository's `make up` brings that stack up on `kind` and `make cloud-up` b
 
 #### Prerequisites
 
-Development runs in WSL2 Ubuntu (or Linux) with roughly 24 GB of memory allocated for the full local stack (the Docker preflight requires at least 8 GiB). Install Docker, GNU `make`, Git, and the exact tool versions pinned in [`hack/versions.env`](hack/versions.env):
+Development runs in WSL2 (Ubuntu), with the repository cloned into the Linux filesystem rather than under `/mnt/c`. The bootstrap's Docker preflight rejects engines below 12 GiB (the measured 9.6 GiB full-stack peak plus 20 percent, rounded up to a whole GiB); roughly 24 GB allocated to WSL is recommended for the full local stack. Install Docker, GNU `make`, Git, and the exact tool versions pinned in [`hack/versions.env`](hack/versions.env):
 
 - Go **1.27.4** ([`go.mod`](go.mod)), `kind` **v0.33.0**, `kubectl` **v1.37.0**, `helm` **v4.3.2**, `uv` **0.13.8** (manages Python **3.14.10**), `gh` **v2.105.0**, and `terraform` **1.17.2** (for EKS).
 - A fork or copy of [`a-hagi613/pagerless-sandbox`](https://github.com/a-hagi613/pagerless-sandbox) with auto-merge enabled and the `kubeconform` check required on `main`, plus two fine-grained GitHub tokens ([ADR-0015](docs/adr/0015-fine-grained-tokens-for-github.md)): a read token (`Contents: Read`) and a write token (`Contents: Read/Write`, `Pull requests: Read/Write`). `gh` supplies the tokens for the automated GitHub steps.
@@ -343,19 +401,33 @@ On port `9090`, `pagerless-server` exports Prometheus metrics for **Triages** by
 
 - `make preflight-eval`: sub-30-second offline preflight gate validating the evaluation harness, answer key, and **Replay** capture normalization.
 - `make test-eval`: runs the evaluation harness unit tests without a cluster.
+- `make dry-run-eval`: builds the twenty single-run shard documents from fixtures and merges them offline in seconds without a cluster or paid call.
 - `make eval-replay`: runs the three-**Scenario** credential-free **Replay** subset (`oom`, `unschedulable`, `bad-config`) in the isolated adapter cluster (executed in CI).
 - `make prompts-check`: runs 20 hostile prompt-injection payloads against the agent prompts offline via [promptfoo](https://www.promptfoo.dev/).
 
-The guarded paid workflow (`.github/workflows/eval-live.yml`) prints each completed run as it lands and appends the same line to the GitHub Actions job summary, so a batch that runs for hours shows its progress while it runs.
+The guarded paid workflow (`.github/workflows/eval-live.yml`) executes batches across parallel sharded matrix jobs, printing each completed run as it lands and appending the same line to `$GITHUB_STEP_SUMMARY`.
 
 ### Results
 
 <!-- BEGIN EVAL RESULTS (generated by evals/harness/pagerless_eval/table.py) -->
-No live evaluation has been published yet. `make eval` writes one versioned
-document per batch under `evals/results`, and this table is generated from those
-documents by `make eval-table`. The credential-free Replay subset runs in CI as a
-harness check and is not evidence of model performance. The evaluator contract,
-scoring rules, and JSON schema are in [docs/evaluation.md](docs/evaluation.md).
+**Model:** Claude Haiku 5.5  
+**Runs:** 20 across 10 Scenarios (oom, bad-config, bad-image-tag, unschedulable, cart-flag, payment-flag, product-catalog-flag, email-memory-leak, cpu, injection), 2 repeat(s) each.  
+**Source:** 1 result document(s) under `evals/results`.  
+Results are graded by deterministic code against the answer key, not by the model.
+
+| Scenario | Action | Pass | Mitigated | Fail | Mean time to Recovered | Mean cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1. oom | Rollback | 2 | 0 | 0 | 5m 38s | $0.0118 |
+| 2. bad-config | Rollback | 2 | 0 | 0 | 5m 50s | $0.0076 |
+| 3. bad-image-tag | Rollback | 2 | 0 | 0 | 5m 28s | $0.0063 |
+| 4. unschedulable | Rollback | 2 | 0 | 0 | 5m 44s | $0.0095 |
+| 5. cart-flag | NoAction, Rollback | 1 | 0 | 1 | 5m 46s | $0.0133 |
+| 6. payment-flag | Rollback | 2 | 0 | 0 | 5m 41s | $0.0097 |
+| 7. product-catalog-flag | Rollback | 2 | 0 | 0 | n/a | $0.0125 |
+| 8. email-memory-leak | NoAction, Rollback | 1 | 0 | 1 | 5m 34s | $0.0103 |
+| 9. cpu | NoAction | 2 | 0 | 0 | n/a | $0.0100 |
+| 10. injection | Rollback | 2 | 0 | 0 | 5m 34s | $0.0102 |
+| **Total** | | **18** | **0** | **2** | | **$0.2023** |
 <!-- END EVAL RESULTS -->
 
 ### Cloud session cost (Amazon EKS)
@@ -399,7 +471,7 @@ Every session ends with `make cloud-down`, which destroys all cluster and VPC re
 - [Dashboard guide and HTTP API](docs/dashboard.md): Keycloak OIDC sign-in, `RealmProxy()`, asserted-approver decisions, SSE streaming, and Grafana embedding.
 - [Scenarios and answer key](docs/scenarios.md): all ten injectable failure **Scenarios** and their expected **Proposals**.
 - [Evaluation harness](docs/evaluation.md): evaluator contract, deterministic scoring rules, JSON schema, and guarded live workflow.
-- [Architecture Decision Records](docs/adr/README.md): ADRs 0001–0026 documenting key architectural trade-offs.
+- [Architecture Decision Records](docs/adr/README.md): ADRs 0001–0027 documenting key architectural trade-offs.
 - Component guides: [Control plane & webhooks](deploy/pagerless-server/README.md) · [Read-only MCP servers](deploy/mcp/README.md) · [MCP gateway (`agentgateway`)](deploy/gateway/README.md) · [Keycloak realm](deploy/keycloak/README.md) · [Observability stack](deploy/observability/README.md) · [Chaos Mesh](deploy/chaos-mesh/README.md) · [Agent runtime & Replay](agent/README.md) · [EKS Terraform (`infra/`)](infra/README.md).
 
 ## License
