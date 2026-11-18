@@ -8,7 +8,7 @@
     {
       "stage": "investigate",
       "response": {
-        "text": "I'll check the latest commit's diff and the pod's resource config to confirm the OOM cause.",
+        "text": "I'll start by checking the Deployment manifest and the commit that changed it, since the bundle points to a memory-holder container being OOMKilled after the latest commit.",
         "tool_calls": [
           {
             "id": "call_1",
@@ -17,8 +17,7 @@
               "owner": "pagerless-test",
               "repo": "sandbox",
               "sha": "{{commit:0}}",
-              "perPage": 2,
-              "path": "workloads"
+              "perPage": 3
             }
           },
           {
@@ -34,60 +33,82 @@
         ],
         "structured": null,
         "usage": {
-          "input_tokens": 12729,
-          "output_tokens": 335
+          "input_tokens": 13358,
+          "output_tokens": 333
         }
       }
     },
     {
       "stage": "investigate",
       "response": {
-        "text": "The live Deployment's memory limit is 32Mi, while the container allocates a 48 MiB bytearray. The latest commit injected this. Let me record the findings and confirm the restart history with the previous-container logs.",
+        "text": "The manifest shows the memory-holder sidecar, which allocates 48 MiB inside a 32Mi memory limit. That is the OOM cause, and it was introduced by commit {{commit:0:7}}. I'll record the findings.",
         "tool_calls": [
           {
             "id": "call_3",
             "name": "record_finding",
             "arguments": {
-              "kind": "Commit",
-              "source": "github__list_commits (sha {{commit:0:10}}, path workloads)",
-              "summary": "Latest Sandbox commit {{commit:0:10}} \"Inject the oom Scenario into checkout\" ({{ts:-967.574345:T0:Z}}) is the only change since the prior healthy revision {{commit:1:8}}; it touches workloads/checkout."
+              "kind": "Event",
+              "source": "Context Bundle, Events and Pods",
+              "summary": "Pod {{pod:trigger}} has restarts 3 with last termination OOMKilled. Back-off is restarting the failed container memory-holder, and the Deployment has unavailableReplicas 1 with MinimumReplicasUnavailable."
             }
           },
           {
             "id": "call_4",
             "name": "record_finding",
             "arguments": {
-              "kind": "Event",
-              "source": "k8s__resources_get apps/v1 Deployment sandbox/checkout (last-applied-configuration and spec)",
-              "summary": "Deployment at generation 4 sets container checkout memory limit and request to 32Mi, and its command allocates bytearray(48 * 1024 * 1024), i.e. 48 MiB held in memory, which exceeds the 32Mi limit."
+              "kind": "Commit",
+              "source": "github__list_commits sha {{commit:0}}",
+              "summary": "Commit {{commit:0:7}} \"Inject the oom Scenario into checkout\" ({{ts:-88.616497:T0:Z}}) is the newest Sandbox commit, and Argo CD synced it at revision {{commit:0:7}} at 07:08:43Z, just before the failing pod was created."
             }
           },
           {
             "id": "call_5",
             "name": "record_finding",
             "arguments": {
-              "kind": "Event",
-              "source": "Context Bundle, Pods section",
-              "summary": "Pod {{pod:0}} has restarts 7, last termination OOMKilled, not ready; Deployment condition Available=False MinimumReplicasUnavailable."
+              "kind": "Log",
+              "source": "k8s__resources_get Deployment sandbox/checkout, spec.template.spec.containers[memory-holder]",
+              "summary": "The memory-holder container runs `python -c \"import time; held = bytearray(48 * 1024 * 1024); time.sleep(10 ** 9)\"` with resources limits memory 32Mi and requests memory 32Mi. It allocates 48 MiB against a 32 MiB limit, so the kernel OOM-kills it."
             }
           }
         ],
         "structured": null,
         "usage": {
-          "input_tokens": 14919,
-          "output_tokens": 634
+          "input_tokens": 17993,
+          "output_tokens": 712
         }
       }
     },
     {
       "stage": "investigate",
       "response": {
-        "text": "I have enough evidence to reach a conclusion, so I'll stop here.\n\n**Diagnosis**\n\nThe checkout Deployment is crash-looping with OOMKilled because the commit \"Inject the oom Scenario into checkout\" ({{commit:0:10}}) set the container's memory limit to 32Mi while its command allocates 48 MiB, so the kernel kills it on every start. The hint is correct: this commit is the only change since the last healthy revision. Rolling the commit back is the clean fix, but the narrowest action that addresses the cause is raising the memory limit and request above the 48 MiB allocation.\n\n**Proposal**\n\n- Action: **PatchResources**\n- Parameters: `container: checkout`, `requests.memory: 64Mi`, `limits.memory: 64Mi`\n\nThis gives the 48 MiB allocation headroom for the Python interpreter. It is the narrowest change that stops the OOMKill loop without reverting the commit. Note that the commit was described as an intentional \"oom Scenario\" injection, so if that failure was deliberate, a Rollback to {{commit:1}} may be the better choice; a human should confirm which intent applies. Also note that Argo CD will likely revert a direct patch to the live Deployment, so the change should also be made in the Git source (workloads/checkout/deployment.yaml) to persist.",
+        "text": "Root cause: the sidecar `memory-holder` was added by commit {{commit:0:7}} (\"Inject the oom Scenario into checkout\") and allocates 48 MiB against a 32Mi limit, so it is OOMKilled and the Deployment never becomes available. No chaos experiment is active, so this is a manifest change from a commit, not an injected chaos fault from outside.\n\n**Diagnosis**\n\nThe Deployment `sandbox/checkout` is unavailable because the `memory-holder` container in pod `{{pod:trigger}}` is OOMKilled. Its command allocates 48 MiB while its memory limit is 32Mi, which is below what the process needs. The container was introduced by Sandbox commit `{{commit:0:7}}` (\"Inject the oom Scenario into checkout\"), which Argo CD synced at 07:08:43Z just before this ReplicaSet was created. No active chaos experiment targets this Workload.\n\nSupporting evidence:\n- Events and pod status show OOMKilled, restarts 3, and back-off on `memory-holder`.\n- The Deployment manifest shows the 48 MiB allocation against the 32Mi limit.\n- The commit timeline matches the rollout.\n\n**Proposal**\n\nRollback to revert commit `{{commit:0}}`. The commit added the faulty OOM sidecar, so reverting it removes the cause. The alternative, PatchResources on `memory-holder`, would only raise the limit and leave the deliberate OOM injection in place.",
+        "tool_calls": [
+          {
+            "id": "call_6",
+            "name": "record_finding",
+            "arguments": {
+              "kind": "Trace",
+              "source": "Context Bundle, Active chaos experiments",
+              "summary": "No active chaos experiments are present, so the OOM is not caused by a chaos fault. The failure comes from the committed manifest change."
+            }
+          }
+        ],
+        "structured": null,
+        "usage": {
+          "input_tokens": 18963,
+          "output_tokens": 661
+        }
+      }
+    },
+    {
+      "stage": "investigate",
+      "response": {
+        "text": "",
         "tool_calls": [],
         "structured": null,
         "usage": {
-          "input_tokens": 15823,
-          "output_tokens": 462
+          "input_tokens": 19688,
+          "output_tokens": 1
         }
       }
     },
@@ -97,28 +118,33 @@
         "text": "",
         "tool_calls": [],
         "structured": {
-          "diagnosis": "The checkout Deployment in sandbox is failing because the container is OOMKilled on every start. Commit {{commit:0:10}} (\"Inject the oom Scenario into checkout\"), the only change since the last healthy revision {{commit:1:8}}, set the container's memory limit and request to 32Mi while its command allocates a 48 MiB bytearray. The kernel kills the container once that allocation is made, the pod restarts (7 restarts, last termination OOMKilled), the pod never becomes ready, and the Deployment reports Available=False with MinimumReplicasUnavailable.",
+          "diagnosis": "The Deployment sandbox/checkout is unavailable because the memory-holder sidecar container in pod {{pod:trigger}} is OOMKilled. Its command allocates 48 MiB while its memory limit is 32Mi, so the kernel kills it on every start and the pod never becomes ready. The sidecar was added by Sandbox commit {{commit:0}} (\"Inject the oom Scenario into checkout\"), which Argo CD synced at 07:08:43Z just before this ReplicaSet was created. No active chaos experiment targets this Workload, so the cause is the committed manifest change, not an external chaos fault.",
           "findings": [
             {
+              "kind": "Event",
+              "source": "Context Bundle, Events and Pods",
+              "summary": "Pod {{pod:trigger}} has restarts 3 with last termination OOMKilled. Back-off is restarting the failed container memory-holder, and the Deployment has unavailableReplicas 1 with MinimumReplicasUnavailable."
+            },
+            {
               "kind": "Commit",
-              "source": "github__list_commits (sha {{commit:0:10}}, path workloads)",
-              "summary": "Latest Sandbox commit {{commit:0:10}} \"Inject the oom Scenario into checkout\" ({{ts:-967.574345:T0:Z}}) is the only change since the prior healthy revision {{commit:1:8}}; it touches workloads/checkout."
+              "source": "github__list_commits sha {{commit:0}}",
+              "summary": "Commit {{commit:0:7}} \"Inject the oom Scenario into checkout\" ({{ts:-88.616497:T0:Z}}) is the newest Sandbox commit. Argo CD synced it at revision {{commit:0:7}} at 07:08:43Z, just before the failing pod was created."
             },
             {
-              "kind": "Event",
-              "source": "k8s__resources_get apps/v1 Deployment sandbox/checkout (last-applied-configuration and spec)",
-              "summary": "Deployment at generation 4 sets container checkout memory limit and request to 32Mi, and its command allocates bytearray(48 * 1024 * 1024), i.e. 48 MiB held in memory, which exceeds the 32Mi limit."
+              "kind": "Log",
+              "source": "k8s__resources_get Deployment sandbox/checkout, spec.template.spec.containers[memory-holder]",
+              "summary": "The memory-holder container runs `python -c \"import time; held = bytearray(48 * 1024 * 1024); time.sleep(10 ** 9)\"` with limits memory 32Mi and requests memory 32Mi. It allocates 48 MiB against a 32 MiB limit, so the kernel OOM-kills it."
             },
             {
-              "kind": "Event",
-              "source": "Context Bundle, Pods section",
-              "summary": "Pod {{pod:0}} has restarts 7, last termination OOMKilled, not ready; Deployment condition Available=False MinimumReplicasUnavailable."
+              "kind": "Trace",
+              "source": "Context Bundle, Active chaos experiments",
+              "summary": "No active chaos experiments are present, so the OOM is not caused by a chaos fault. The failure comes from the committed manifest change."
             }
           ]
         },
         "usage": {
-          "input_tokens": 8455,
-          "output_tokens": 603
+          "input_tokens": 11858,
+          "output_tokens": 798
         }
       }
     },
@@ -128,20 +154,14 @@
         "text": "",
         "tool_calls": [],
         "structured": {
-          "action": "PatchResources",
+          "action": "Rollback",
           "parameters": {
-            "container": "checkout",
-            "requests": {
-              "memory": "64Mi"
-            },
-            "limits": {
-              "memory": "64Mi"
-            }
+            "commit": "{{commit:0}}"
           }
         },
         "usage": {
-          "input_tokens": 9389,
-          "output_tokens": 99
+          "input_tokens": 13025,
+          "output_tokens": 87
         }
       }
     }
