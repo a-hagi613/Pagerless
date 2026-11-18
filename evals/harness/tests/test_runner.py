@@ -80,6 +80,37 @@ class HarnessTest(unittest.TestCase):
         self.assertEqual(record["approvedBy"], "eval-approver")
         self.assertEqual(record["timeToRecoveredSeconds"], 600.0)
 
+    def test_a_refused_attempt_is_recorded_with_its_action_and_errors(self) -> None:
+        record = self.harness._record(
+            scenario("oom"),
+            1,
+            oom_triage(
+                validation_attempts=1,
+                refusals=[
+                    "attempt 1: PatchResources container=checkout refused: "
+                    "proposal.parameters.patchResources.requests[memory]: "
+                    "the memory request 64Mi would exceed its limit 32Mi"
+                ],
+            ),
+            [],
+            self.evidence(),
+            "",
+        )
+        results.validate_run(record)
+        self.assertEqual(record["validationAttempts"], 1)
+        self.assertEqual(
+            record["refusals"],
+            [
+                {
+                    "attempt": 1,
+                    "action": "PatchResources",
+                    "parameters": "container=checkout",
+                    "errors": "proposal.parameters.patchResources.requests[memory]: "
+                    "the memory request 64Mi would exceed its limit 32Mi",
+                }
+            ],
+        )
+
     def test_a_nonterminal_triage_is_recorded_as_timed_out_and_failed(self) -> None:
         record = self.harness._record(
             scenario("oom"),

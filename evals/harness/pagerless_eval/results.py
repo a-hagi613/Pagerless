@@ -19,7 +19,8 @@ from typing import Any
 
 from .answer_key import parse_scenarios
 
-SCHEMA_VERSION = 1
+# Schema version 2 added validationAttempts, proposalAttempt, and refusals to each run.
+SCHEMA_VERSION = 2
 EVIDENCE_LIVE = "live"
 EVIDENCE_REPLAY = "replay"
 EVIDENCE = (EVIDENCE_LIVE, EVIDENCE_REPLAY)
@@ -238,6 +239,9 @@ def validate_run(run: dict[str, Any]) -> None:
         "phaseHistory",
         "approvedBy",
         "action",
+        "validationAttempts",
+        "proposalAttempt",
+        "refusals",
         "result",
         "score",
         "timeToRecoveredSeconds",
@@ -259,6 +263,28 @@ def validate_run(run: dict[str, Any]) -> None:
         raise ResultError(f"workload does not match Scenario {run['scenario']!r}")
     if not isinstance(run["repeat"], int) or run["repeat"] < 1:
         raise ResultError("repeat must be a positive integer")
+    attempts = run["validationAttempts"]
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0:
+        raise ResultError("validationAttempts must be a non-negative integer")
+    proposal_attempt = run["proposalAttempt"]
+    if proposal_attempt is not None and (
+        not isinstance(proposal_attempt, int)
+        or isinstance(proposal_attempt, bool)
+        or proposal_attempt < 1
+    ):
+        raise ResultError("proposalAttempt must be null or a positive integer")
+    if not isinstance(run["refusals"], list):
+        raise ResultError("refusals must be a list")
+    for refusal in run["refusals"]:
+        attempt = refusal.get("attempt") if isinstance(refusal, dict) else None
+        if (
+            not isinstance(refusal, dict)
+            or (attempt is not None and (not isinstance(attempt, int) or isinstance(attempt, bool)))
+            or not isinstance(refusal.get("action"), (str, type(None)))
+            or not isinstance(refusal.get("parameters"), (str, type(None)))
+            or not isinstance(refusal.get("errors"), str)
+        ):
+            raise ResultError("every refusal must record its attempt, action, parameters, and errors")
     if run["result"] not in RESULTS:
         raise ResultError(f"result must be one of {', '.join(RESULTS)}, not {run['result']!r}")
     score = run["score"]

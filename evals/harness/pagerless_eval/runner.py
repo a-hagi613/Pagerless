@@ -38,7 +38,7 @@ from .results import (
     utc_now,
     write_document,
 )
-from .score import GatewayEvidence, MemorySettings, RunEvidence, evaluate
+from .score import GatewayEvidence, MemorySettings, RunEvidence, evaluate, refusals
 
 TRIAGE_NAMESPACE = "pagerless"
 SANDBOX_NAMESPACE = "sandbox"
@@ -422,6 +422,12 @@ class Harness:
             "phaseHistory": phases,
             "approvedBy": decision.get("approver"),
             "action": action,
+            # A refused Proposal costs an extra model call and hides what the
+            # agent first got wrong, so the document records the count, the
+            # attempt of the accepted Proposal, and every refusal with its errors.
+            "validationAttempts": int(_number(status.get("validationAttempts")) or 0),
+            "proposalAttempt": proposal.get("attempt") if isinstance(proposal, dict) else None,
+            "refusals": refusals(triage),
             "result": score.result,
             "score": {
                 "rule": score.rule,

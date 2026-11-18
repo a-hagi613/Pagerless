@@ -21,6 +21,7 @@ def triage(
     diagnosis: str = "",
     steps: list[dict[str, Any]] | None = None,
     validation_attempts: int = 0,
+    refusals: list[str] | None = None,
     name: str = "triage-eval",
     uid: str = "uid-1",
     namespace: str = "pagerless",
@@ -47,6 +48,18 @@ def triage(
             {"name": "AlertResolved", "passed": True},
         ],
     }
+    if refusals:
+        # Each value is one line of the ProposalRefused condition, in the format
+        # internal/reportapi writes: "attempt N: <Action> <parameters> refused: <errors>".
+        status["conditions"] = [
+            {
+                "type": "ProposalRefused",
+                "status": "True",
+                "reason": "ValidationRefused",
+                "message": "\n".join(refusals),
+                "lastTransitionTime": STARTED,
+            }
+        ]
     if diagnosis:
         status["diagnosis"] = diagnosis
     if decision:
@@ -86,6 +99,9 @@ def run(*, scenario: str = "oom", number: int = 1, repeat: int = 1, result: str 
         "phaseHistory": [{"phase": "Proposed", "observedAt": STARTED}],
         "approvedBy": "eval-approver",
         "action": "PatchResources",
+        "validationAttempts": 0,
+        "proposalAttempt": 1,
+        "refusals": [],
         "result": result,
         "score": {
             "rule": "patch-resources-oom",

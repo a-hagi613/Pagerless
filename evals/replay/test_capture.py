@@ -107,6 +107,65 @@ def test_a_flat_proposal_is_validated_the_way_the_agent_validates_it(tmp_path: P
     assert len(recording.turns) == 3
 
 
+def oom_document(proposal: dict[str, Any]) -> dict[str, Any]:
+    """Build one live-shaped Scenario 1 recording with the given Proposal."""
+    return {
+        "format": "pagerless.dev/replay",
+        "version": 1,
+        "scenario": "oom",
+        "model": capture.ANTHROPIC_MODEL,
+        "workload": "checkout",
+        "turns": [
+            {"stage": "investigate", "response": {"usage": {"input_tokens": 10, "output_tokens": 5}}},
+            {
+                "stage": "diagnose",
+                "response": {
+                    "structured": {
+                        "diagnosis": "The memory limit is below the allocation.",
+                        "findings": [
+                            {
+                                "kind": "Log",
+                                "source": "k8s__resources_get apps/v1 Deployment sandbox/checkout",
+                                "summary": "The limit is 32Mi.",
+                            }
+                        ],
+                    },
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+            {
+                "stage": "propose",
+                "response": {"structured": proposal, "usage": {"input_tokens": 10, "output_tokens": 5}},
+            },
+        ],
+    }
+
+
+def test_either_root_cause_fix_can_be_published_for_scenario_one(tmp_path: Path) -> None:
+    # Spec #16 accepts a PatchResources inside the bound and a Rollback of exactly
+    # the injected commit, so a genuine recording of either Action is publishable.
+    artifact = tmp_path / "live.json"
+    for proposal in (
+        {
+            "action": "PatchResources",
+            "parameters": {"container": "memory-holder", "limits": {"memory": "64Mi"}},
+        },
+        {"action": "Rollback", "parameters": {"rollback": {"commit": "9eff68b"}}},
+    ):
+        artifact.write_text(json.dumps(oom_document(proposal)), encoding="utf-8")
+        recording = capture.validate_recording(artifact)
+        assert recording.turns[-1].response.structured["action"] == proposal["action"]
+
+    artifact.write_text(
+        json.dumps(
+            oom_document({"action": "Scale", "parameters": {"scale": {"replicas": 0}}})
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="PatchResources or a Rollback"):
+        capture.validate_recording(artifact)
+
+
 def test_synthetic_or_credential_containing_artifacts_cannot_be_promoted(
     tmp_path: Path,
 ) -> None:

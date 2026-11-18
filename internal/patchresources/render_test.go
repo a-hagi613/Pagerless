@@ -234,8 +234,12 @@ func TestRenderRefusesManifestsItCannotEditSafely(t *testing.T) {
 		wantErr   string
 		unsafe    bool
 	}{
-		{"not YAML", "a: [unclosed\n", "app", "not valid YAML", false},
-		{"no such Workload", "apiVersion: v1\nkind: Service\nmetadata:\n  name: checkout\n", "app", "does not define", false},
+		{"not YAML", "a: [unclosed\n", appName, "not valid YAML", false},
+		{
+			"no such Workload",
+			"apiVersion: v1\nkind: Service\nmetadata:\n  name: checkout\n",
+			appName, "does not define", false,
+		},
 		{"no such container", header + appContainer, "worker", "no container named worker", false},
 		{"defined twice", header + appContainer + "---\n" + header + appContainer, appName, "more than once", true},
 		{"carriage returns", strings.ReplaceAll(header+appContainer, "\n", "\r\n"), appName, "carriage returns", true},
