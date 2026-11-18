@@ -105,7 +105,7 @@ func TestFlagScenarioPatchesEnableTheirFlagInTheFlagdConfigMap(t *testing.T) {
 		{scenario: "cart-flag", flag: "cartFailure", variant: "100%"},
 		{scenario: "payment-flag", flag: "paymentFailure", variant: "100%"},
 		{scenario: "product-catalog-flag", flag: "productCatalogFailure", variant: "on"},
-		{scenario: "email-memory-leak", flag: "emailMemoryLeak", variant: "1000x"},
+		{scenario: "email-memory-leak", flag: "emailMemoryLeak", variant: "100x"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.scenario, func(t *testing.T) {

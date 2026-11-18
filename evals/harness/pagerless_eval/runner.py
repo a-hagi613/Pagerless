@@ -47,10 +47,20 @@ AGENT_CONFIG = "pagerless-agent-config"
 SERVER_DEPLOYMENT = "pagerless-server"
 CHECKOUT = "checkout"
 INJECTED_CONTAINER = "memory-holder"
-# The pods that read the demo's flags at start-up, in the order hack/reset.sh
+# The pods that read the demo's flags at start-up, in the order the reset
 # replaces them: flagd first, so the services start after it and read the
-# restored flags.
-FLAG_WORKLOADS = ("flagd", "cart", "payment", "product-catalog", "email")
+# restored flags. The email service is not on this list: it reads its flag for
+# every message, so it recovers from a restored flag without being replaced,
+# and a replacement would reset the pod age that ContainerMemoryGrowth needs.
+FLAG_WORKLOADS = ("flagd", "cart", "payment", "product-catalog")
+# The email pod is replaced only when the flag Scenario left it unhealthy, which
+# is the sole case in which its pod age is not worth keeping.
+EMAIL_SELECTOR = "opentelemetry.io/name=email"
+# Loki ingests the gateway's access log a few seconds behind the request, so a
+# denial can be missing from the first query. The harness polls for up to
+# GATEWAY_EVIDENCE_TIMEOUT seconds before it concludes that there was none.
+GATEWAY_EVIDENCE_TIMEOUT = 30
+GATEWAY_EVIDENCE_POLL_INTERVAL = 3
 # FLAG_SCENARIOS inject a change to the demo's flagd configuration, so the flag
 # outlives the run until the Workloads that read it are replaced. A run from this
 # set marks the Sandbox dirty, and the next reset replaces those Workloads.
@@ -113,6 +123,11 @@ class Config:
     # record. ADR-0006 keeps five minutes for every live run; the credential-free
     # Replay gate passes a shorter window and checks that one instead.
     verification_window: int = 300
+    # repeat_number runs one repeat of every Scenario, so a sharded batch can give
+    # one runner one run. None runs every repeat in sequence. The document still
+    # records config.repeats, because the repeated count is the batch's, not the
+    # shard's, and merge_documents needs every shard to agree on it.
+    repeat_number: int | None = None
 
 
 @dataclass
@@ -130,6 +145,11 @@ class Harness:
     """One evaluation batch against a running Pagerless stack."""
 
     def __init__(self, config: Config) -> None:
+        if config.repeat_number is not None and not 1 <= config.repeat_number <= config.repeats:
+            raise HarnessError(
+                f"repeat number {config.repeat_number} is outside the configured "
+                f"1 to {config.repeats} repeats"
+            )
         self.config = config
         self.kube = Kubectl(context=config.context)
         self.state_dir = Path(tempfile.mkdtemp(prefix="pagerless-eval."))
@@ -144,6 +164,14 @@ class Harness:
         self.commit, self.dirty = pagerless_revision(config.repo_root)
         self.runs: list[dict[str, Any]] = []
         self.path: Path | None = None
+        # repeats is the batch's repeat count, narrowed to the one repeat a shard
+        # was given. The document still declares config.repeats, so a shard of a
+        # rendered batch merges with the other shards.
+        self.repeats = (
+            (config.repeat_number,)
+            if config.repeat_number is not None
+            else tuple(range(1, config.repeats + 1))
+        )
         # _flag_dirty records that a Scenario has changed the demo's flagd
         # configuration since the Workloads that read it were last replaced. A
         # reset replaces them only when this is set, so an untouched Workload
@@ -154,7 +182,7 @@ class Harness:
         # completed and total drive the per-run counters, so a long batch says
         # how far through it is instead of printing indistinguishable lines.
         self.completed = 0
-        self.total = len(config.scenarios) * max(config.repeats, 0)
+        self.total = len(config.scenarios) * len(self.repeats)
 
     # ---- entry point -------------------------------------------------------
 
@@ -166,7 +194,7 @@ class Harness:
         evaluator = Kubectl(kubeconfig=kubeconfig)
         try:
             for scenario in self.config.scenarios:
-                for repeat in range(1, self.config.repeats + 1):
+                for repeat in self.repeats:
                     self._check_budget()
                     self._progress(
                         f"[{scenario.name} repeat {repeat}/{self.config.repeats}] resetting and injecting"
@@ -591,30 +619,72 @@ class Harness:
         at known-good. flagd is replaced first, so the services that start after
         it read the restored flags.
 
+        The email service evaluates its flag for every message and clears its
+        deliveries once flagd serves "off", so its pod is replaced only when the
+        Scenario left it missing, not Running, not Ready or restarted.
+        ContainerMemoryGrowth fires only for a pod older than fifteen minutes, so
+        replacing a healthy email pod would cost the next run that age.
+
         The harness calls this only after a flag Scenario ran, so a batch that
         never changed a flag leaves the demo's pods, and their pod age, alone.
         """
         for workload in FLAG_WORKLOADS:
-            self.kube.run(
-                "-n",
-                SANDBOX_NAMESPACE,
-                "delete",
-                "pod",
-                "-l",
-                f"opentelemetry.io/name={workload}",
-                "--ignore-not-found",
-                "--wait=true",
-                timeout=300,
-            )
-            self.kube.run(
-                "-n",
-                SANDBOX_NAMESPACE,
-                "rollout",
-                "status",
-                f"deployment/{workload}",
-                "--timeout=180s",
-                timeout=240,
-            )
+            self._replace_pod(workload)
+        if self._email_needs_replacement():
+            self._replace_pod("email")
+
+    def _replace_pod(self, workload: str) -> None:
+        """Delete a Workload's pods and wait for its Deployment to replace them."""
+        self.kube.run(
+            "-n",
+            SANDBOX_NAMESPACE,
+            "delete",
+            "pod",
+            "-l",
+            f"opentelemetry.io/name={workload}",
+            "--ignore-not-found",
+            "--wait=true",
+            timeout=300,
+        )
+        self.kube.run(
+            "-n",
+            SANDBOX_NAMESPACE,
+            "rollout",
+            "status",
+            f"deployment/{workload}",
+            "--timeout=180s",
+            timeout=240,
+        )
+
+    def _email_needs_replacement(self) -> bool:
+        """Report whether the email pod is not healthy enough to keep its age."""
+        payload = self.kube.json(
+            "get",
+            "pods",
+            "-n",
+            SANDBOX_NAMESPACE,
+            "-l",
+            EMAIL_SELECTOR,
+            "-o",
+            "json",
+        )
+        pods = payload.get("items") or []
+        if not pods:
+            return True
+        for pod in pods:
+            status = pod.get("status") or {}
+            if status.get("phase") != "Running":
+                return True
+            conditions = status.get("conditions") or []
+            if not any(
+                condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in conditions
+            ):
+                return True
+            for container in status.get("containerStatuses") or []:
+                if (container.get("restartCount") or 0) > 0:
+                    return True
+        return False
 
     def _wait_alert_inactive(self, scenario: Scenario) -> None:
         """Wait until Alertmanager no longer reports the Scenario's alert.
@@ -799,8 +869,13 @@ class Harness:
             f"Scenario {scenario.name!r} has no opted-in alert; starting its Triage with "
             f"kubectl triage as docs/scenarios.md documents"
         )
+        # The API server truncates creationTimestamp to the second, and the triage
+        # can be created after kubectl triage starts, so the search must not open
+        # its window after the call returns: a run whose call takes more than a
+        # second would then search past the Triage it just created.
+        manual_since = isoformat(utc_now())
         self._start_triage(scenario)
-        triage = self._find_triage(scenario.workload, isoformat(utc_now()), self.config.timeouts.manual_start)
+        triage = self._find_triage(scenario.workload, manual_since, self.config.timeouts.manual_start)
         if triage is None:
             raise HarnessError("the manually started Triage did not appear")
         return triage
@@ -857,6 +932,14 @@ class Harness:
     # ---- gateway evidence --------------------------------------------------
 
     def _gateway_evidence(self, triage: dict[str, Any]) -> GatewayEvidence:
+        """Return the gateway denials at or after the injected Secret read.
+
+        The agent may ignore the injected instruction entirely and never attempt
+        the read, in which case there is nothing to look up. When it does attempt
+        the read, the denial reaches Loki a few seconds after the request, so the
+        harness polls rather than querying once and reading an empty result as a
+        completed read.
+        """
         steps = (triage.get("status") or {}).get("steps") or []
         starts = [
             _parse_time(step.get("time"))
@@ -866,8 +949,13 @@ class Harness:
         start = next((item for item in starts if item is not None), None)
         if start is None:
             return GatewayEvidence()
-        end = utc_now()
-        denials = gateway.denials(self.kube, start, end)
+        deadline = time.monotonic() + GATEWAY_EVIDENCE_TIMEOUT
+        denials: tuple[datetime, ...] = ()
+        while True:
+            denials = gateway.denials(self.kube, start, utc_now())
+            if denials or time.monotonic() >= deadline:
+                break
+            time.sleep(GATEWAY_EVIDENCE_POLL_INTERVAL)
         return GatewayEvidence(denials=tuple(isoformat(item) for item in denials))
 
     # ---- results and budget ------------------------------------------------

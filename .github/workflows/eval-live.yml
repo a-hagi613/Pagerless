@@ -2,9 +2,9 @@ name: Paid evaluation
 
 # A manually dispatched, budgeted live run. It never triggers on a push or a
 # pull request, so a fork can never reach the model credential, and one run at
-# a time keeps the spend predictable. A full batch runs as five parallel shards
-# on separate runners, and one aggregate job merges their documents back into
-# the single batch document that a full run publishes.
+# a time keeps the spend predictable. A full batch runs as twenty parallel shards,
+# one run of one Scenario each, and one aggregate job merges their documents back
+# into the single batch document that a full run publishes.
 on:
   workflow_dispatch:
     inputs:
@@ -30,7 +30,7 @@ on:
         # One live investigation may use its full 100,000-input-token budget and
         # the harness fails a batch whose spend exceeds its own budget, so the
         # measured default must clear a single investigation. A full batch passes
-        # this budget to each of its five shards.
+        # this budget to each of its twenty single-run shards.
         default: 150000
       max_cost_usd:
         description: "Hard cost budget in USD for the whole batch"
@@ -59,19 +59,19 @@ jobs:
   evaluate:
     name: Live evaluation (${{ matrix.shard.id }})
     runs-on: ubuntu-24.04
-    # A shard runs at most three Scenarios twice. The memory-leak shard is the
-    # slowest: ContainerMemoryGrowth only fires for a pod older than 15 minutes,
-    # so each of its two runs spends roughly 17 minutes waiting for the alert.
-    timeout-minutes: 85
+    # One shard is one run of one Scenario, so the slowest shard is the
+    # memory-leak run: ContainerMemoryGrowth only fires for a pod older than 15
+    # minutes, and the harness must wait out whatever age the pod still lacks.
+    timeout-minutes: 50
     strategy:
       # One shard's failure must not cancel the others, so the aggregate job can
       # report every shard's outcome instead of only the first failure.
       fail-fast: false
       matrix:
-        # A full batch without an override runs every Scenario as five shards on
-        # five runners. Any other dispatch is a single shard over the Scenarios
-        # it names.
-        shard: ${{ fromJSON((inputs.phase == 'full' && inputs.scenarios == '') && '[{"id":"1-checkout-fast","scenarios":"oom,bad-config"},{"id":"2-checkout-spec","scenarios":"bad-image-tag,unschedulable"},{"id":"3-flags-a","scenarios":"cart-flag,payment-flag"},{"id":"4-flags-cpu-inj","scenarios":"product-catalog-flag,cpu,injection"},{"id":"5-memory-leak","scenarios":"email-memory-leak"}]' || format('[{{"id":"single","scenarios":"{0}"}}]', inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom'))) }}
+        # A full batch without an override runs every Scenario twice as twenty
+        # single-run shards on twenty runners. Any other dispatch is a single
+        # shard that runs every repeat of the Scenarios it names.
+        shard: ${{ fromJSON((inputs.phase == 'full' && inputs.scenarios == '') && '[{"id":"01-oom-r1","scenarios":"oom","repeat":"1"},{"id":"02-oom-r2","scenarios":"oom","repeat":"2"},{"id":"03-bad-config-r1","scenarios":"bad-config","repeat":"1"},{"id":"04-bad-config-r2","scenarios":"bad-config","repeat":"2"},{"id":"05-bad-image-tag-r1","scenarios":"bad-image-tag","repeat":"1"},{"id":"06-bad-image-tag-r2","scenarios":"bad-image-tag","repeat":"2"},{"id":"07-unschedulable-r1","scenarios":"unschedulable","repeat":"1"},{"id":"08-unschedulable-r2","scenarios":"unschedulable","repeat":"2"},{"id":"09-cart-flag-r1","scenarios":"cart-flag","repeat":"1"},{"id":"10-cart-flag-r2","scenarios":"cart-flag","repeat":"2"},{"id":"11-payment-flag-r1","scenarios":"payment-flag","repeat":"1"},{"id":"12-payment-flag-r2","scenarios":"payment-flag","repeat":"2"},{"id":"13-product-catalog-flag-r1","scenarios":"product-catalog-flag","repeat":"1"},{"id":"14-product-catalog-flag-r2","scenarios":"product-catalog-flag","repeat":"2"},{"id":"15-email-memory-leak-r1","scenarios":"email-memory-leak","repeat":"1"},{"id":"16-email-memory-leak-r2","scenarios":"email-memory-leak","repeat":"2"},{"id":"17-cpu-r1","scenarios":"cpu","repeat":"1"},{"id":"18-cpu-r2","scenarios":"cpu","repeat":"2"},{"id":"19-injection-r1","scenarios":"injection","repeat":"1"},{"id":"20-injection-r2","scenarios":"injection","repeat":"2"}]' || format('[{{"id":"single","scenarios":"{0}"}}]', inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom'))) }}
     steps:
       - name: Check the paid-run confirmation and budget
         env:
@@ -92,6 +92,7 @@ jobs:
           SHARD: ${{ matrix.shard.id }}
           SCENARIOS: ${{ matrix.shard.scenarios }}
           REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
+          REPEAT: ${{ matrix.shard.repeat }}
           MAX_TOKENS: ${{ inputs.max_tokens }}
           MAX_COST: ${{ inputs.max_cost_usd }}
         run: |
@@ -101,7 +102,7 @@ jobs:
             echo
             echo "- Phase: ${{ inputs.phase }} on ${{ inputs.model_provider }}"
             echo "- Shard: \`${SHARD}\`"
-            echo "- Scenarios: \`${SCENARIOS}\`, ${REPEATS} repeat(s) each"
+            echo "- Scenarios: \`${SCENARIOS}\`, repeat ${REPEAT:-all} of ${REPEATS}"
             echo "- Budget: ${MAX_TOKENS} tokens, USD ${MAX_COST}"
             echo
             echo "The harness appends one line per completed run below as it finishes."
@@ -141,6 +142,7 @@ jobs:
           PAGERLESS_E2E_MODEL_PROVIDER: ${{ inputs.model_provider }}
           PAGERLESS_E2E_SCENARIOS: ${{ matrix.shard.scenarios }}
           PAGERLESS_E2E_REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
+          PAGERLESS_E2E_REPEAT_NUMBER: ${{ matrix.shard.repeat }}
           PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
           PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
           PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && matrix.shard.id == 'single' && '1' || '0' }}
@@ -235,7 +237,21 @@ jobs:
           [ -s /tmp/shard-artifacts.tsv ] ||
             { echo "The run published no full-batch shard artifacts." >&2; exit 1; }
           while IFS=$'\t' read -r id name; do
-            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "/tmp/shards/${name}.zip"
+            # GitHub's artifact storage answers a transient HTTP 503 under load,
+            # so each download is retried with backoff and checked for a ZIP
+            # header before the next artifact starts.
+            for attempt in 1 2 3 4 5; do
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "/tmp/shards/${name}.zip" &&
+                [ "$(head -c 4 "/tmp/shards/${name}.zip" | od -An -tx1 | tr -d ' \n')" = "504b0304" ]; then
+                break
+              fi
+              if [ "$attempt" = 5 ]; then
+                echo "Downloading artifact ${name} (${id}) failed after ${attempt} attempts." >&2
+                exit 1
+              fi
+              echo "Retrying artifact ${name} (${id}) after attempt ${attempt}." >&2
+              sleep $((attempt * 3))
+            done
           done < /tmp/shard-artifacts.tsv
           uv run --no-project --python 3.14.10 python - <<'PY'
           import sys

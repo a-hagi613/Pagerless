@@ -78,6 +78,28 @@ def shards() -> list[dict[str, Any]]:
     return [shard(names) for names in SHARDS]
 
 
+def single_run_shard(name: str, repeat: int) -> dict[str, Any]:
+    """Build the document one single-run shard of a full batch publishes."""
+    item = scenario_by_name(name)
+    return results.build_document(
+        commit=COMMIT,
+        dirty=False,
+        provider="anthropic",
+        evidence="live",
+        scenarios=(name,),
+        repeats=2,
+        started_at=datetime.fromisoformat(STARTED.replace("Z", "+00:00")),
+        budget={
+            "maxTokens": 150_000,
+            "maxCostUSD": 1.0,
+            "spentTokens": 1100,
+            "spentCostUSD": 0.002,
+            "exhausted": False,
+        },
+        runs=[run(scenario=name, number=item.number, repeat=repeat, workload=item.workload)],
+    )
+
+
 class MergeDocumentsTest(unittest.TestCase):
     def test_five_shards_merge_into_one_twenty_run_document(self) -> None:
         merged = results.merge_documents(shards(), commit=COMMIT)
@@ -131,6 +153,45 @@ class MergeDocumentsTest(unittest.TestCase):
         self.assertEqual(len(merged["runs"]), 1)
         self.assertEqual(merged["scenarios"], ["oom"])
         self.assertEqual(merged["repeats"], 1)
+
+    def test_twenty_single_run_shards_merge_into_one_document(self) -> None:
+        # A full batch gives one runner one run of one Scenario, while every shard
+        # document still declares the batch's two repeats.
+        documents = [
+            single_run_shard(item.name, repeat) for item in SCENARIOS for repeat in (1, 2)
+        ]
+        merged = results.merge_documents(
+            documents,
+            commit=COMMIT,
+            scenarios=tuple(item.name for item in SCENARIOS),
+        )
+        results.validate_document(merged)
+        self.assertEqual(len(merged["runs"]), 20)
+        self.assertEqual(merged["repeats"], 2)
+        self.assertEqual(
+            [(item["scenario"], item["repeat"]) for item in merged["runs"]],
+            [(item.name, repeat) for item in SCENARIOS for repeat in (1, 2)],
+        )
+        self.assertEqual(merged["budget"]["maxTokens"], 20 * 150_000)
+        self.assertEqual(merged["budget"]["spentTokens"], 20 * 1100)
+
+    def test_a_single_run_shard_missing_from_the_batch_is_refused(self) -> None:
+        documents = [
+            single_run_shard(item.name, repeat) for item in SCENARIOS for repeat in (1, 2)
+        ]
+        with self.assertRaisesRegex(results.ResultError, "missing"):
+            results.merge_documents(
+                documents[:-1], commit=COMMIT, scenarios=tuple(item.name for item in SCENARIOS)
+            )
+
+    def test_a_single_run_shard_renders_as_the_published_table(self) -> None:
+        merged = results.merge_documents(
+            [single_run_shard(item.name, repeat) for item in SCENARIOS for repeat in (1, 2)],
+            commit=COMMIT,
+            scenarios=tuple(item.name for item in SCENARIOS),
+        )
+        rendered = table.render([merged])
+        self.assertIn("**Runs:** 20 across 10 Scenarios", rendered)
 
     def test_the_merged_document_renders_as_the_published_table(self) -> None:
         merged = results.merge_documents(shards(), commit=COMMIT)

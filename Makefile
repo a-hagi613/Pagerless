@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset cloud-up cloud-down cloud-check preflight-eval install dashboard-preview
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset cloud-up cloud-down cloud-check preflight-eval dry-run-eval install dashboard-preview
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -116,6 +116,9 @@ cloud-down: ## Destroy the EKS session and prove that nothing billable remains.
 
 preflight-eval: ## Run the sub-30s offline evaluation and Replay capture preflight gate.
 	bash hack/preflight-eval.sh
+
+dry-run-eval: ## Run the offline full-batch dry run: twenty fixture shards, no cluster.
+	bash hack/dry-run-eval.sh
 
 install: ## Install Pagerless into an existing Kubernetes cluster.
 	bash hack/install.sh
