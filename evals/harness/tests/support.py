@@ -86,11 +86,18 @@ def triage(
     }
 
 
-def run(*, scenario: str = "oom", number: int = 1, repeat: int = 1, result: str = "pass") -> dict[str, Any]:
+def run(
+    *,
+    scenario: str = "oom",
+    number: int = 1,
+    repeat: int = 1,
+    result: str = "pass",
+    workload: str = "checkout",
+) -> dict[str, Any]:
     return {
         "scenario": scenario,
         "scenarioNumber": number,
-        "workload": "checkout",
+        "workload": workload,
         "repeat": repeat,
         "triage": "triage-eval",
         "startedAt": STARTED,

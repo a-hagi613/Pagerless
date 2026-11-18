@@ -51,6 +51,10 @@ INJECTED_CONTAINER = "memory-holder"
 # replaces them: flagd first, so the services start after it and read the
 # restored flags.
 FLAG_WORKLOADS = ("flagd", "cart", "payment", "product-catalog", "email")
+# FLAG_SCENARIOS inject a change to the demo's flagd configuration, so the flag
+# outlives the run until the Workloads that read it are replaced. A run from this
+# set marks the Sandbox dirty, and the next reset replaces those Workloads.
+FLAG_SCENARIOS = ("cart-flag", "payment-flag", "product-catalog-flag", "email-memory-leak")
 # Alertmanager is reachable only inside the cluster, so the harness reads its
 # active alerts through the Kubernetes API service proxy, as gateway.py does for
 # Loki.
@@ -140,35 +144,50 @@ class Harness:
         self.commit, self.dirty = pagerless_revision(config.repo_root)
         self.runs: list[dict[str, Any]] = []
         self.path: Path | None = None
+        # _flag_dirty records that a Scenario has changed the demo's flagd
+        # configuration since the Workloads that read it were last replaced. A
+        # reset replaces them only when this is set, so an untouched Workload
+        # keeps its pod age: ContainerMemoryGrowth ignores a pod younger than 15
+        # minutes, and replacing it before every run would make that rule
+        # unreachable for a Scenario that starts from a fresh pod.
+        self._flag_dirty = False
+        # completed and total drive the per-run counters, so a long batch says
+        # how far through it is instead of printing indistinguishable lines.
+        self.completed = 0
+        self.total = len(config.scenarios) * max(config.repeats, 0)
 
     # ---- entry point -------------------------------------------------------
 
     def run(self) -> int:
         self._preflight()
-        print(f"Evaluation model: {self.provider}; evidence: {self.evidence_mode}")
-        print(f"Scenarios: {', '.join(item.name for item in self.config.scenarios)}")
+        self._progress(f"Evaluation model: {self.provider}; evidence: {self.evidence_mode}")
+        self._progress(f"Scenarios: {', '.join(item.name for item in self.config.scenarios)}")
         kubeconfig = provision(self.kube, self.state_dir)
         evaluator = Kubectl(kubeconfig=kubeconfig)
         try:
             for scenario in self.config.scenarios:
                 for repeat in range(1, self.config.repeats + 1):
                     self._check_budget()
-                    print(f"[{scenario.name} repeat {repeat}/{self.config.repeats}] resetting and injecting")
-                    record = self._run_once(scenario, repeat, evaluator)
+                    self._progress(
+                        f"[{scenario.name} repeat {repeat}/{self.config.repeats}] resetting and injecting"
+                    )
+                    record = self._run_with_context(scenario, repeat, evaluator)
                     self.runs = merge_run(self.runs, record)
                     self._write()
+                    self.completed += 1
                     self._print_run(record)
                     self._assert_ci_evidence(record)
                     self._add_spend(record)
         finally:
             self._write()
             try:
-                print("Resetting the Sandbox after the batch")
+                self._progress("Resetting the Sandbox after the batch")
                 self._reset()
             except (HarnessError, KubectlError) as error:
                 print(
                     f"warning: the Sandbox could not be reset after the batch: {error}",
                     file=sys.stderr,
+                    flush=True,
                 )
             shutil.rmtree(self.state_dir, ignore_errors=True)
         if self.budget_exhausted:
@@ -305,6 +324,22 @@ class Harness:
 
     # ---- one run -----------------------------------------------------------
 
+    def _run_with_context(self, scenario: Scenario, repeat: int, evaluator: Kubectl) -> dict[str, Any]:
+        """Run one Scenario, and say how long it took when it does not finish.
+
+        A live run can wait on a rollout, an alert, or a model call for many
+        minutes. Without the Scenario and the elapsed time, a failure deep inside
+        the run reads as a stall with no clue which step held it up.
+        """
+        started = time.monotonic()
+        try:
+            return self._run_once(scenario, repeat, evaluator)
+        except (HarnessError, KubectlError, subprocess.TimeoutExpired, OSError) as error:
+            elapsed = time.monotonic() - started
+            raise HarnessError(
+                f"Scenario {scenario.name!r} repeat {repeat} stopped after {elapsed:.0f}s: {error}"
+            ) from error
+
     def _run_once(self, scenario: Scenario, repeat: int, evaluator: Kubectl) -> dict[str, Any]:
         evidence = Evidence()
         triage: dict[str, Any] | None = None
@@ -316,6 +351,12 @@ class Harness:
         evidence.known_good = self._memory_settings()
         self._delete_triages()
         since = isoformat(utc_now())
+        # A flag Scenario changes the shared flagd configuration, and the change
+        # survives the reset of the Sandbox's Git state until the pods that read
+        # the flags are replaced. Mark that before injecting, so a break that
+        # fails after it committed the change is still cleaned up.
+        if scenario.name in FLAG_SCENARIOS:
+            self._flag_dirty = True
         self._break(scenario)
         evidence.injected_commit = self._sandbox_revision()
         evidence.injected = self._memory_settings()
@@ -517,9 +558,17 @@ class Harness:
                 check=False,
             )
             self._wait_sandbox_healthy()
+            # The adapter restores the Sandbox's Git state, but it cannot replace
+            # a pod, so the harness does that here. Only a flag Scenario leaves a
+            # flag behind, so only it needs the replacement.
+            if self._flag_dirty:
+                self._replace_flag_workloads()
         else:
+            # hack/reset.sh restores the Sandbox and replaces the flag Workloads
+            # itself, so a live reset always starts from the known-good flags.
             self._make("reset", timeout=self.config.timeouts.reset)
             self._wait_sandbox_healthy()
+        self._flag_dirty = False
         self.kube.run(
             "-n",
             SANDBOX_NAMESPACE,
@@ -529,8 +578,6 @@ class Harness:
             "--timeout=600s",
             timeout=660,
         )
-        if self.config.adapter:
-            self._replace_flag_workloads()
         if scenario is not None and scenario.alert is not None:
             self._wait_alert_inactive(scenario)
 
@@ -543,6 +590,9 @@ class Harness:
         step a Scenario's flag would outlive the reset even though the Sandbox is
         at known-good. flagd is replaced first, so the services that start after
         it read the restored flags.
+
+        The harness calls this only after a flag Scenario ran, so a batch that
+        never changed a flag leaves the demo's pods, and their pod age, alone.
         """
         for workload in FLAG_WORKLOADS:
             self.kube.run(
@@ -681,7 +731,10 @@ class Harness:
         )
 
     def _break(self, scenario: Scenario) -> None:
-        self._make("break", f"SCENARIO={scenario.name}", timeout=1500)
+        # hack/break.sh waits up to 22 minutes for an alert, and the flag
+        # Scenarios also wait for a pull request merge and an Argo CD sync, so the
+        # subprocess timeout leaves room for both.
+        self._make("break", f"SCENARIO={scenario.name}", timeout=1680)
 
     def _make(self, target: str, *arguments: str, timeout: int) -> None:
         command = ["make", "-C", str(self.config.repo_root), target, *arguments]
@@ -891,13 +944,45 @@ class Harness:
     def _print_run(self, record: dict[str, Any]) -> None:
         seconds = record["timeToRecoveredSeconds"]
         usage = record["usage"]
-        print(
-            f"  {record['scenario']} repeat {record['repeat']}: {record['action']} -> "
-            f"{record['result']} ({record['phase']}, "
-            f"{'n/a' if seconds is None else f'{seconds:.0f}s'} to Recovered, "
-            f"{usage.get('inputTokens') or 0}+{usage.get('outputTokens') or 0} tokens, "
-            f"${usage.get('costUSD') or 0:.4f})"
+        elapsed = "n/a to Recovered" if seconds is None else f"{seconds:.0f}s to Recovered"
+        tokens = f"{usage.get('inputTokens') or 0}+{usage.get('outputTokens') or 0}"
+        cost = f"{usage.get('costUSD') or 0:.4f}"
+        line = (
+            f"{record['scenario']} repeat {record['repeat']}: {record['action']} -> "
+            f"{record['result']} ({record['phase']}, {elapsed}, {tokens} tokens, ${cost})"
         )
+        self._progress(f"  {line}")
+        self._append_step_summary(f"[{self.completed}/{self.total}] {line}")
+
+    def _progress(self, message: str) -> None:
+        """Print one progress line immediately.
+
+        A full batch runs for hours inside one GitHub Actions job, and an
+        unflushed print can sit in a pipe buffer long enough to make a working
+        run look stalled.
+        """
+        print(message, flush=True)
+
+    def _append_step_summary(self, line: str) -> None:
+        """Append one Markdown line to the GitHub Actions job summary.
+
+        GitHub renders the file named by GITHUB_STEP_SUMMARY while the job runs,
+        so appending each completed run makes a long batch visible there instead
+        of only in the log after the job ends. Outside Actions the variable is
+        unset and this is a no-op.
+        """
+        path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if not path:
+            return
+        try:
+            with open(path, "a", encoding="utf-8") as summary:
+                summary.write(f"- {line}\n")
+        except OSError as error:
+            print(
+                f"warning: could not append to GITHUB_STEP_SUMMARY: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def _terminal() -> frozenset[str]:

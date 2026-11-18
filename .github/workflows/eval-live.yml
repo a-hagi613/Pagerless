@@ -2,7 +2,9 @@ name: Paid evaluation
 
 # A manually dispatched, budgeted live run. It never triggers on a push or a
 # pull request, so a fork can never reach the model credential, and one run at
-# a time keeps the spend predictable.
+# a time keeps the spend predictable. A full batch runs as five parallel shards
+# on separate runners, and one aggregate job merges their documents back into
+# the single batch document that a full run publishes.
 on:
   workflow_dispatch:
     inputs:
@@ -27,7 +29,8 @@ on:
         required: false
         # One live investigation may use its full 100,000-input-token budget and
         # the harness fails a batch whose spend exceeds its own budget, so the
-        # measured default must clear a single investigation.
+        # measured default must clear a single investigation. A full batch passes
+        # this budget to each of its five shards.
         default: 150000
       max_cost_usd:
         description: "Hard cost budget in USD for the whole batch"
@@ -54,11 +57,21 @@ permissions:
 
 jobs:
   evaluate:
-    name: Live evaluation
+    name: Live evaluation (${{ matrix.shard.id }})
     runs-on: ubuntu-24.04
-    # The measured phase finishes well inside this bound. The full phase runs ten
-    # Scenarios twice on one cluster and needs roughly two to three hours.
-    timeout-minutes: 240
+    # A shard runs at most three Scenarios twice. The memory-leak shard is the
+    # slowest: ContainerMemoryGrowth only fires for a pod older than 15 minutes,
+    # so each of its two runs spends roughly 17 minutes waiting for the alert.
+    timeout-minutes: 85
+    strategy:
+      # One shard's failure must not cancel the others, so the aggregate job can
+      # report every shard's outcome instead of only the first failure.
+      fail-fast: false
+      matrix:
+        # A full batch without an override runs every Scenario as five shards on
+        # five runners. Any other dispatch is a single shard over the Scenarios
+        # it names.
+        shard: ${{ fromJSON((inputs.phase == 'full' && inputs.scenarios == '') && '[{"id":"1-checkout-fast","scenarios":"oom,bad-config"},{"id":"2-checkout-spec","scenarios":"bad-image-tag,unschedulable"},{"id":"3-flags-a","scenarios":"cart-flag,payment-flag"},{"id":"4-flags-cpu-inj","scenarios":"product-catalog-flag,cpu,injection"},{"id":"5-memory-leak","scenarios":"email-memory-leak"}]' || format('[{{"id":"single","scenarios":"{0}"}}]', inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom'))) }}
     steps:
       - name: Check the paid-run confirmation and budget
         env:
@@ -73,6 +86,27 @@ jobs:
           if cost <= 0 or cost > 4.5:
               sys.exit("The batch cost budget must be positive and at most 4.5 USD inside the 5 USD mission cap.")
           PY
+
+      - name: Announce the batch in the job summary
+        env:
+          SHARD: ${{ matrix.shard.id }}
+          SCENARIOS: ${{ matrix.shard.scenarios }}
+          REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
+          MAX_TOKENS: ${{ inputs.max_tokens }}
+          MAX_COST: ${{ inputs.max_cost_usd }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Pagerless paid evaluation"
+            echo
+            echo "- Phase: ${{ inputs.phase }} on ${{ inputs.model_provider }}"
+            echo "- Shard: \`${SHARD}\`"
+            echo "- Scenarios: \`${SCENARIOS}\`, ${REPEATS} repeat(s) each"
+            echo "- Budget: ${MAX_TOKENS} tokens, USD ${MAX_COST}"
+            echo
+            echo "The harness appends one line per completed run below as it finishes."
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -105,11 +139,11 @@ jobs:
           PAGERLESS_E2E: "1"
           PAGERLESS_E2E_EVAL: "1"
           PAGERLESS_E2E_MODEL_PROVIDER: ${{ inputs.model_provider }}
-          PAGERLESS_E2E_SCENARIOS: ${{ inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom') }}
+          PAGERLESS_E2E_SCENARIOS: ${{ matrix.shard.scenarios }}
           PAGERLESS_E2E_REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
           PAGERLESS_E2E_MAX_TOKENS: ${{ inputs.max_tokens }}
           PAGERLESS_E2E_MAX_COST_USD: ${{ inputs.max_cost_usd }}
-          PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && '1' || '0' }}
+          PAGERLESS_E2E_CAPTURE: ${{ inputs.phase == 'measured' && matrix.shard.id == 'single' && '1' || '0' }}
           PAGERLESS_E2E_LIVE: "1"
           PAGERLESS_E2E_REQUIRE_PASS: "1"
           PAGERLESS_E2E_DIAGNOSTICS: ${{ github.workspace }}/e2e-diagnostics
@@ -127,12 +161,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: eval-results-${{ github.sha }}-${{ inputs.phase }}
+          name: eval-results-${{ github.sha }}-${{ inputs.phase }}-${{ matrix.shard.id }}
           path: evals/results
           if-no-files-found: ignore
 
       - name: Upload Replay recordings
-        if: always()
+        if: always() && inputs.phase == 'measured' && matrix.shard.id == 'single'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: replay-recordings-${{ github.sha }}
@@ -146,7 +180,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: memory-samples-${{ github.sha }}-${{ inputs.phase }}
+          name: memory-samples-${{ github.sha }}-${{ inputs.phase }}-${{ matrix.shard.id }}
           path: memory-samples.txt
           if-no-files-found: ignore
 
@@ -154,6 +188,100 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: paid-eval-diagnostics-${{ github.sha }}
+          name: paid-eval-diagnostics-${{ github.sha }}-${{ matrix.shard.id }}
           path: e2e-diagnostics
           if-no-files-found: ignore
+
+  aggregate:
+    name: Aggregate full evaluation
+    needs: [evaluate]
+    # Only a sharded full batch has documents to merge. A measured run and a
+    # single-Scenario override publish their one shard's artifacts as they are.
+    if: always() && inputs.phase == 'full' && inputs.scenarios == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Fail when a shard did not finish
+        if: needs.evaluate.result != 'success'
+        run: |
+          echo "The evaluation shards did not all succeed: ${{ needs.evaluate.result }}." >&2
+          echo "Inspect each shard's log and its paid-eval-diagnostics artifact before merging." >&2
+          exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.8"
+          python-version: "3.14.10"
+
+      - name: Download the shard artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/shards
+          # The artifact list is paginated, and each zip holds the paths its shard
+          # uploaded. Both are read through the API with the workflow token, so no
+          # third-party action downloads or extracts them.
+          gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            --jq '.artifacts[] | [.id, .name] | @tsv' > /tmp/artifacts.tsv
+          awk -F'\t' -v pattern="^(eval-results|memory-samples)-${GITHUB_SHA}-full-" \
+            '$2 ~ pattern { print }' /tmp/artifacts.tsv > /tmp/shard-artifacts.tsv
+          [ -s /tmp/shard-artifacts.tsv ] ||
+            { echo "The run published no full-batch shard artifacts." >&2; exit 1; }
+          while IFS=$'\t' read -r id name; do
+            gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}/zip" > "/tmp/shards/${name}.zip"
+          done < /tmp/shard-artifacts.tsv
+          uv run --no-project --python 3.14.10 python - <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          archives = sorted(Path("/tmp/shards").glob("*.zip"))
+          if not archives:
+              sys.exit("No shard archive was downloaded.")
+          for archive in archives:
+              target = archive.with_suffix("")
+              target.mkdir()
+              with zipfile.ZipFile(archive) as bundle:
+                  bundle.extractall(target)
+              print(f"Extracted {archive.name} into {target}")
+          PY
+
+      - name: Merge the shard results
+        run: |
+          set -euo pipefail
+          cd evals/harness
+          # The merge refuses a batch that misses a shard, covers the wrong
+          # Scenarios or repeats, comes from a dirty or foreign checkout, or
+          # records a failed run, so the published document is the whole batch.
+          uv run --no-project --python 3.14.10 python -m pagerless_eval.results merge \
+            --shards /tmp/shards \
+            --out-dir "$GITHUB_WORKSPACE/evals/results" \
+            --commit "$GITHUB_SHA" \
+            --scenarios all \
+            --summary "$GITHUB_STEP_SUMMARY"
+          : >"$GITHUB_WORKSPACE/memory-samples.txt"
+          find /tmp/shards -name memory-samples.txt -print0 |
+            sort -z | xargs -0 -r cat >>"$GITHUB_WORKSPACE/memory-samples.txt"
+          [ -s "$GITHUB_WORKSPACE/memory-samples.txt" ] ||
+            { echo "The shards published no memory samples." >&2; exit 1; }
+
+      - name: Upload the merged evaluation results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-results-${{ github.sha }}-full
+          path: evals/results
+          if-no-files-found: error
+
+      - name: Upload the merged memory samples
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: memory-samples-${{ github.sha }}-full
+          path: memory-samples.txt
+          if-no-files-found: error

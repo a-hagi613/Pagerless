@@ -8,10 +8,12 @@ is labelled as Replay so the README table can exclude it.
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -130,6 +132,116 @@ def merge_run(runs: list[dict[str, Any]], run: dict[str, Any]) -> list[dict[str,
     merged = [item for item in runs if (item.get("scenario"), item.get("repeat")) != key]
     merged.append(run)
     merged.sort(key=lambda item: (item.get("scenarioNumber", 0), item.get("repeat", 0)))
+    return merged
+
+
+def merge_documents(
+    documents: list[dict[str, Any]],
+    *,
+    commit: str,
+    scenarios: tuple[str, ...] | None = None,
+    repeats: int | None = None,
+) -> dict[str, Any]:
+    """Merge a batch's shard documents into the one document a batch publishes.
+
+    A full paid batch runs on several GitHub Actions runners at once, so each
+    runner writes a document that covers its own Scenarios, records its own
+    spend, and starts at its own time. The published record is still one batch,
+    so this merges the shards back together: it keeps one run per Scenario and
+    repeat, starts at the earliest shard, and sums the spend and the budgets the
+    shards were given.
+
+    It refuses a batch that cannot be published honestly: a shard from another
+    commit or evidence mode, a dirty worktree, two shards that record the same
+    run, an incomplete or extended Scenario/repeat set, and any failed run.
+    """
+    if not documents:
+        raise ResultError("no shard documents were merged")
+    for document in documents:
+        validate_document(document)
+        if document["pagerlessCommit"] != commit:
+            raise ResultError(
+                f"a shard document was written for {document['pagerlessCommit']}, not {commit}"
+            )
+        if document["evidence"] != EVIDENCE_LIVE:
+            raise ResultError(f"a shard document records {document['evidence']!r} evidence, not live")
+        if document["pagerlessDirty"]:
+            raise ResultError("a shard document came from a dirty Pagerless worktree")
+
+    model = documents[0]["model"]
+    for document in documents[1:]:
+        if document["model"] != model:
+            raise ResultError("the shard documents were not run with the same model")
+
+    declared = sorted({name for document in documents for name in document["scenarios"]})
+    requested = declared if scenarios is None else scenarios
+    expected = parse_scenarios(",".join(requested))
+    undeclared = sorted({item.name for item in expected} - set(declared))
+    if undeclared:
+        raise ResultError(f"no shard document covers {', '.join(undeclared)}")
+
+    observed_repeats = {document["repeats"] for document in documents}
+    if len(observed_repeats) != 1:
+        raise ResultError("the shard documents disagree on the repeat count")
+    batch_repeats = observed_repeats.pop()
+    if repeats is not None and repeats != batch_repeats:
+        raise ResultError(f"the shard documents record {batch_repeats} repeats, not {repeats}")
+
+    runs: list[dict[str, Any]] = []
+    recorded: set[tuple[str, int]] = set()
+    for document in documents:
+        for run in document["runs"]:
+            key = (run["scenario"], run["repeat"])
+            if key in recorded:
+                raise ResultError(
+                    f"more than one shard document records {run['scenario']} repeat {run['repeat']}"
+                )
+            recorded.add(key)
+            runs.append(run)
+
+    expected_runs = {
+        (item.name, repeat) for item in expected for repeat in range(1, batch_repeats + 1)
+    }
+    missing = sorted(expected_runs - recorded)
+    if missing:
+        raise ResultError(
+            "the merged batch is missing "
+            + ", ".join(f"{name} repeat {repeat}" for name, repeat in missing)
+        )
+    unexpected = sorted(recorded - expected_runs)
+    if unexpected:
+        raise ResultError(
+            "the merged batch carries runs it did not declare: "
+            + ", ".join(f"{name} repeat {repeat}" for name, repeat in unexpected)
+        )
+    failed = sorted({run["scenario"] for run in runs if run["result"] == "fail"})
+    if failed:
+        raise ResultError(f"the merged batch records failed runs for {', '.join(failed)}")
+
+    budget = {
+        "maxTokens": sum(document["budget"]["maxTokens"] for document in documents),
+        "maxCostUSD": round(sum(document["budget"]["maxCostUSD"] for document in documents), 6),
+        "spentTokens": sum(document["budget"]["spentTokens"] for document in documents),
+        "spentCostUSD": round(sum(document["budget"]["spentCostUSD"] for document in documents), 6),
+        "exhausted": any(document["budget"]["exhausted"] for document in documents),
+    }
+    if (budget["maxTokens"] and budget["spentTokens"] > budget["maxTokens"]) or (
+        budget["maxCostUSD"] and budget["spentCostUSD"] > budget["maxCostUSD"]
+    ):
+        budget["exhausted"] = True
+
+    merged = build_document(
+        commit=commit,
+        dirty=False,
+        provider=model["provider"],
+        evidence=EVIDENCE_LIVE,
+        scenarios=tuple(item.name for item in expected),
+        repeats=batch_repeats,
+        started_at=min(_iso_datetime(document["startedAt"]) for document in documents),
+        budget=budget,
+        runs=sorted(runs, key=lambda run: (run["scenarioNumber"], run["repeat"])),
+    )
+    validate_document(merged)
     return merged
 
 
@@ -335,9 +447,14 @@ def _validate_iso(value: Any, field: str) -> None:
     if not isinstance(value, str):
         raise ResultError(f"{field} must be an ISO timestamp")
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        _iso_datetime(value)
     except ValueError:
         raise ResultError(f"{field} must be an ISO timestamp") from None
+
+
+def _iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -381,3 +498,78 @@ def totals(documents: list[dict[str, Any]]) -> Totals:
         mean_seconds_to_recovered=(sum(recovered) / len(recovered)) if recovered else None,
         total_cost_usd=float(sum(costs)),
     )
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Merge the shard documents of one paid batch into the published document."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    merge = commands.add_parser("merge", help="merge the shard documents under a directory tree")
+    merge.add_argument(
+        "--shards",
+        type=Path,
+        required=True,
+        help="the directory tree holding the extracted shard artifacts",
+    )
+    merge.add_argument(
+        "--out-dir",
+        type=Path,
+        required=True,
+        help="the directory the single merged document is written to",
+    )
+    merge.add_argument("--commit", required=True, help="the full Pagerless commit the batch ran")
+    merge.add_argument(
+        "--scenarios",
+        default="",
+        help="all, or the comma-separated Scenarios the batch must cover; "
+        "empty uses the Scenarios the shards declare",
+    )
+    merge.add_argument(
+        "--summary",
+        type=Path,
+        default=None,
+        help="append the rendered result table to this file, as GITHUB_STEP_SUMMARY expects",
+    )
+    arguments = parser.parse_args(argv)
+
+    try:
+        paths = sorted(arguments.shards.rglob("*.json"))
+        if not paths:
+            raise ResultError(f"no shard documents were found under {arguments.shards}")
+        requested = (
+            tuple(item.name for item in parse_scenarios(arguments.scenarios))
+            if arguments.scenarios.strip()
+            else None
+        )
+        merged = merge_documents(
+            [load_document(path) for path in paths],
+            commit=arguments.commit,
+            scenarios=requested,
+        )
+        path = result_path(
+            arguments.out_dir,
+            _iso_datetime(merged["startedAt"]),
+            merged["pagerlessCommit"],
+            merged["evidence"],
+        )
+        write_document(path, merged)
+        if arguments.summary is not None:
+            # table.py imports this module, so the renderer is imported here.
+            from .table import render
+
+            arguments.summary.parent.mkdir(parents=True, exist_ok=True)
+            with arguments.summary.open("a", encoding="utf-8") as summary:
+                summary.write(render([merged]) + "\n")
+    except (OSError, ValueError) as error:
+        print(f"merging the evaluation shards failed: {error}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Merged {len(merged['runs'])} runs from {len(paths)} shard documents into {path}",
+        flush=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

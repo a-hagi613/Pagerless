@@ -218,8 +218,12 @@ wait_for_injected_log() {
 
 # wait_for_alert waits until Alertmanager carries the firing alert that the
 # Scenario expects, with the labels that pagerless-server's receiver reads.
+# The deadline is 22 minutes because ContainerMemoryGrowth only fires for a pod
+# that is already 15 minutes old and then holds its `for: 1m`, so a Scenario that
+# starts from a freshly replaced pod needs roughly 16.5 minutes before the alert
+# can fire, plus Prometheus's scrape and evaluation delay.
 wait_for_alert() {
-	local alertname="$1" deadline=$((SECONDS + 900)) alerts
+	local alertname="$1" deadline=$((SECONDS + 1320)) alerts
 	alerts_path="/api/v1/namespaces/monitoring/services/kube-prometheus-stack-alertmanager:http-web/proxy/api/v2/alerts?active=true"
 	while :; do
 		alerts="$(kc get --raw "$alerts_path" 2>/dev/null || true)"
@@ -229,7 +233,7 @@ wait_for_alert() {
 			grep -q '"namespace":"sandbox"' <<<"$alerts"; then
 			return 0
 		fi
-		[ "$SECONDS" -lt "$deadline" ] || die "the $alertname alert for $workload did not fire in Alertmanager within 15 minutes."
+		[ "$SECONDS" -lt "$deadline" ] || die "the $alertname alert for $workload did not fire in Alertmanager within 22 minutes."
 		sleep 5
 	done
 }

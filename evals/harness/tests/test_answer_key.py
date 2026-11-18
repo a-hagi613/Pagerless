@@ -15,6 +15,7 @@ from pagerless_eval.answer_key import (
     parse_scenarios,
     scenario,
 )
+from pagerless_eval.runner import FLAG_SCENARIOS
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -82,6 +83,19 @@ class AnswerKeyTest(unittest.TestCase):
                 None,
             )
             self.assertIsNotNone(recording, item.replay_recording)
+
+    def test_the_flag_scenarios_are_the_scenarios_that_change_the_flags(self) -> None:
+        # The harness replaces the flag Workloads after a run only when the run
+        # changed the demo's flagd configuration, so the list must match the
+        # patches. A new flag Scenario that this list missed would leave its flag
+        # in place for the next run.
+        flag_scenarios = {
+            item.name
+            for item in SCENARIOS
+            if (patch := REPO_ROOT / "scenarios" / item.name / "inject.patch").is_file()
+            and "workloads/configmaps/flagd-config.yaml" in patch.read_text(encoding="utf-8")
+        }
+        self.assertEqual(flag_scenarios, set(FLAG_SCENARIOS))
 
     def test_parse_and_lookup_errors_name_the_available_scenarios(self) -> None:
         self.assertEqual(parse_scenarios("all"), SCENARIOS)

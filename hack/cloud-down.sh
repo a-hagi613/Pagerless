@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Destroys one EKS session and proves that nothing billable remains.
 #
-# Two kinds of resource are outside Terraform's state and would survive a
-# `terraform destroy` while still billing: the EC2 instances Karpenter launched
-# and the EBS volumes the CSI driver provisioned. Both are removed first, by
-# deleting the NodePools and the claims and waiting for each to finish; the
-# volumes are then swept by tag, which also covers a cluster that is already
-# gone.
+# Resources are outside Terraform's state and would survive a `terraform
+# destroy` while still billing or blocking it: the EC2 instances Karpenter
+# launched, the EBS volumes the CSI driver provisioned, the leftover `instant`
+# fleets, and the detached `aws-K8S-*` network interfaces a terminated Spot node
+# leaves behind. The instances and volumes are removed first, by deleting the
+# NodePools and the claims and waiting for each to finish; the volumes, fleets,
+# and interfaces are then swept by tag, which also covers a cluster that is
+# already gone.
 #
 # The Terraform state bucket and the two GitHub Actions roles are the only
 # resources this command leaves behind, by design: the bucket outlives every
@@ -123,6 +125,71 @@ done
 # sweep needs no cluster: it finds the volumes by tag, so it also runs when the
 # control plane was lost before this command.
 bash "$REPO_ROOT/hack/cloud-volume-sweep.sh"
+
+# 2b. Delete the Karpenter fleets and the detached network interfaces a
+# terminated Spot node leaves behind. Neither is in Terraform's state: an
+# available `aws-K8S-*` interface keeps a security-group reference that blocks
+# the VPC destroy, and a Karpenter `instant` fleet keeps appearing in the
+# tagging index after its instances are gone. Both queries run without a
+# cluster, so they also cover a session whose control plane was lost.
+echo "Removing leftover Karpenter fleets and detached network interfaces."
+
+fleet_ids="$(
+	{
+		aws ec2 describe-fleets --region "$CLOUD_REGION" \
+			--filters "Name=tag:project,Values=pagerless" \
+			--query 'Fleets[].FleetId' --output text 2>/dev/null || true
+		aws resourcegroupstaggingapi get-resources --region "$CLOUD_REGION" \
+			--tag-filters Key=project,Values=pagerless \
+			--resource-type-filters ec2:fleet \
+			--query 'ResourceTagMappingList[].ResourceARN' --output text 2>/dev/null || true
+	} | tr -d '\r' | tr '\t' '\n' | sed 's#.*/##' | awk 'NF' | sort -u
+)"
+for fleet in $fleet_ids; do
+	echo "Deleting the EC2 fleet ${fleet}."
+	if ! aws ec2 delete-fleets --region "$CLOUD_REGION" --fleet-ids "$fleet" \
+		--terminate-instances >/dev/null 2>&1; then
+		echo "warning: the EC2 fleet ${fleet} could not be deleted; the teardown check will report it." >&2
+	fi
+done
+
+eni_ids="$(
+	{
+		aws ec2 describe-network-interfaces --region "$CLOUD_REGION" \
+			--filters "Name=status,Values=available" \
+			--query "NetworkInterfaces[?starts_with(Description, 'aws-K8S-')].NetworkInterfaceId" \
+			--output text 2>/dev/null || true
+		aws ec2 describe-network-interfaces --region "$CLOUD_REGION" \
+			--filters "Name=status,Values=available" "Name=tag:project,Values=pagerless" \
+			--query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null || true
+	} | tr -d '\r' | tr '\t' '\n' | awk 'NF' | sort -u
+)"
+for eni in $eni_ids; do
+	echo "Deleting the detached network interface ${eni}."
+	if ! aws ec2 delete-network-interface --region "$CLOUD_REGION" \
+		--network-interface-id "$eni" >/dev/null 2>&1; then
+		echo "warning: the network interface ${eni} could not be deleted; the teardown check will report it." >&2
+	fi
+done
+# AWS deletes an interface asynchronously and the VPC cannot be destroyed while
+# one still exists, so wait for the deletions to finish before the destroy.
+remaining=""
+for _ in $(seq 1 30); do
+	remaining=""
+	for eni in $eni_ids; do
+		if aws ec2 describe-network-interfaces --region "$CLOUD_REGION" \
+			--network-interface-ids "$eni" >/dev/null 2>&1; then
+			remaining="${remaining} ${eni}"
+		fi
+	done
+	if [ -z "$remaining" ]; then
+		break
+	fi
+	sleep 5
+done
+if [ -n "$remaining" ]; then
+	echo "warning: these network interfaces are still deleting:${remaining}" >&2
+fi
 
 # 3. Destroy the stack. An empty state is success: this is also what the nightly
 # teardown runs.

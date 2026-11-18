@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -242,6 +243,7 @@ class HarnessTest(unittest.TestCase):
 
     def test_adapter_reset_clears_stresschaos_and_replaces_flag_workloads(self) -> None:
         self.harness.kube = MagicMock()
+        self.harness._flag_dirty = True
         with (
             patch.object(self.harness, "_adapter_client") as adapter_reset,
             patch.object(self.harness, "_wait_sandbox_healthy") as healthy,
@@ -251,6 +253,7 @@ class HarnessTest(unittest.TestCase):
         adapter_reset.assert_called_once_with("reset")
         healthy.assert_called_once_with()
         wait_alert.assert_not_called()
+        self.assertFalse(self.harness._flag_dirty)
         calls = self.harness.kube.run.call_args_list
         self.assertIn(
             call(
@@ -303,13 +306,19 @@ class HarnessTest(unittest.TestCase):
     def test_a_live_reset_leaves_replacement_to_hack_reset(self) -> None:
         self.harness.config.adapter = False
         self.harness.kube = MagicMock()
+        # hack/reset.sh replaces the flag Workloads itself, so a live reset clears
+        # the dirty flags without a second replacement from the harness.
+        self.harness._flag_dirty = True
         with (
             patch.object(self.harness, "_make") as make,
             patch.object(self.harness, "_wait_sandbox_healthy"),
+            patch.object(self.harness, "_replace_flag_workloads") as replace,
             patch.object(self.harness, "_wait_alert_inactive"),
         ):
             self.harness._reset(scenario("cpu"))
         make.assert_called_once_with("reset", timeout=self.harness.config.timeouts.reset)
+        replace.assert_not_called()
+        self.assertFalse(self.harness._flag_dirty)
         self.harness.kube.run.assert_called_once_with(
             "-n",
             "sandbox",
@@ -319,6 +328,74 @@ class HarnessTest(unittest.TestCase):
             "--timeout=600s",
             timeout=660,
         )
+
+    def test_a_reset_without_a_flag_run_keeps_the_flag_workloads(self) -> None:
+        self.harness.kube = MagicMock()
+        with (
+            patch.object(self.harness, "_adapter_client"),
+            patch.object(self.harness, "_wait_sandbox_healthy"),
+            patch.object(self.harness, "_replace_flag_workloads") as replace,
+            patch.object(self.harness, "_wait_alert_inactive"),
+        ):
+            self.harness._reset(scenario("oom"))
+        replace.assert_not_called()
+        self.assertFalse(self.harness._flag_dirty)
+        for item in self.harness.kube.run.call_args_list:
+            self.assertNotEqual(item.args[:4], ("-n", "sandbox", "delete", "pod"))
+
+    def test_a_reset_after_a_flag_run_replaces_the_flag_workloads_once(self) -> None:
+        self.harness.kube = MagicMock()
+        self.harness._flag_dirty = True
+        with (
+            patch.object(self.harness, "_adapter_client"),
+            patch.object(self.harness, "_wait_sandbox_healthy"),
+            patch.object(self.harness, "_replace_flag_workloads") as replace,
+            patch.object(self.harness, "_wait_alert_inactive"),
+        ):
+            self.harness._reset(scenario("oom"))
+            self.assertFalse(self.harness._flag_dirty)
+            self.harness._reset(scenario("oom"))
+        replace.assert_called_once_with()
+
+    def test_a_flag_scenario_marks_the_flags_dirty_before_it_breaks(self) -> None:
+        item = scenario("email-memory-leak")
+        observed: list[bool] = []
+        with (
+            patch.object(self.harness, "_set_recording"),
+            patch.object(self.harness, "_reset"),
+            patch.object(self.harness, "_memory_settings", return_value=MemorySettings()),
+            patch.object(self.harness, "_delete_triages"),
+            patch.object(
+                self.harness,
+                "_break",
+                side_effect=lambda scenario: observed.append(self.harness._flag_dirty),
+            ),
+            patch.object(self.harness, "_sandbox_revision", return_value="a" * 40),
+            patch.object(self.harness, "_max_node_memory", return_value="1Gi"),
+            patch.object(self.harness, "_wait_for_triage", return_value=oom_triage()),
+            patch.object(self.harness, "_drive_triage", return_value=(oom_triage(), [])),
+            patch.object(self.harness, "_record", return_value={"usage": {}}),
+        ):
+            self.harness._run_once(item, 1, MagicMock())
+        self.assertEqual(observed, [True])
+        self.assertTrue(self.harness._flag_dirty)
+
+    def test_a_non_flag_scenario_leaves_the_flags_clean(self) -> None:
+        with (
+            patch.object(self.harness, "_set_recording"),
+            patch.object(self.harness, "_reset"),
+            patch.object(self.harness, "_memory_settings", return_value=MemorySettings()),
+            patch.object(self.harness, "_delete_triages"),
+            patch.object(self.harness, "_break") as break_,
+            patch.object(self.harness, "_sandbox_revision", return_value="a" * 40),
+            patch.object(self.harness, "_max_node_memory", return_value="1Gi"),
+            patch.object(self.harness, "_wait_for_triage", return_value=oom_triage()),
+            patch.object(self.harness, "_drive_triage", return_value=(oom_triage(), [])),
+            patch.object(self.harness, "_record", return_value={"usage": {}}),
+        ):
+            self.harness._run_once(scenario("bad-config"), 1, MagicMock())
+        break_.assert_called_once()
+        self.assertFalse(self.harness._flag_dirty)
 
     def test_the_reset_waits_for_the_scenarios_alert_to_clear(self) -> None:
         self.harness.kube = MagicMock()
@@ -373,6 +450,44 @@ class HarnessTest(unittest.TestCase):
         with patch("pagerless_eval.runner.time.sleep"), self.assertRaises(HarnessError) as context:
             self.harness._wait_alert_inactive(scenario("oom"))
         self.assertIn("Alertmanager", str(context.exception))
+
+    def test_a_completed_run_appends_a_progress_line_to_the_step_summary(self) -> None:
+        record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
+        self.harness.completed = 1
+        summary = Path(self.directory.name) / "summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+            self.harness._print_run(record)
+            self.harness.completed = 2
+            self.harness._print_run(record)
+        lines = summary.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(
+            lines[0],
+            "- [1/1] oom repeat 1: PatchResources -> pass "
+            "(Recovered, 600s to Recovered, 1000+100 tokens, $0.0020)",
+        )
+        self.assertTrue(lines[1].startswith("- [2/1] oom repeat 1: PatchResources -> pass"))
+
+    def test_no_step_summary_is_written_when_the_variable_is_unset(self) -> None:
+        record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
+        environment = {key: value for key, value in os.environ.items() if key != "GITHUB_STEP_SUMMARY"}
+        with patch.dict(os.environ, environment, clear=True):
+            self.harness._print_run(record)
+        self.assertFalse((Path(self.directory.name) / "summary.md").exists())
+
+    def test_a_run_failure_names_the_scenario_and_the_elapsed_time(self) -> None:
+        with (
+            patch.object(
+                self.harness,
+                "_run_once",
+                side_effect=HarnessError("the Triage did not reach Proposed within 720s"),
+            ),
+            self.assertRaises(HarnessError) as context,
+        ):
+            self.harness._run_with_context(scenario("oom"), 2, MagicMock())
+        message = str(context.exception)
+        self.assertIn("'oom' repeat 2 stopped after", message)
+        self.assertIn("did not reach Proposed", message)
 
 
 if __name__ == "__main__":
