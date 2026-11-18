@@ -35,7 +35,8 @@ test("an approver signs in, watches live steps, and approves", async ({ page }) 
 
   // Unauthenticated, the dashboard redirects to its sign-in route, which
   // redirects to Keycloak. The browser holds only the session cookie afterwards.
-  await page.goto("/");
+  // This branch's `/` is the ticket 83 prototype, so the v1 console starts here.
+  await page.goto("/start");
   await page.locator("#username").waitFor();
   await capture(page, "sign-in");
   await page.locator("#username").fill(user.username);

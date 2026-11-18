@@ -1,21 +1,135 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:is(.dark *));
+
 @theme {
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono:
-    ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+    "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo,
+    Consolas, "Liberation Mono", monospace;
 }
 
-:root {
+/*
+ * Pagerless v2 design tokens (Wayfinder ticket 83).
+ *
+ * Midnight #0F172A is the canvas; #111C33 and #16223B are the card and rail
+ * steps; Slate #334155 draws every border; Green #22C55E is the single primary
+ * action and healthy signal; Mint #A7F3D0 carries terminal accents, diffs and
+ * verified states. Dark is the default theme, and light stays complete so the
+ * dashboard can still follow a browser preference.
+ */
+:root,
+.light {
   color-scheme: light;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #16a34a;
+  --primary-foreground: #f7fef9;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #1e293b;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569;
+  --accent: #ecfdf5;
+  --accent-foreground: #065f46;
+  --mint: #047857;
+  --mint-surface: #ecfdf5;
+  --destructive: #b91c1c;
+  --warning: #b45309;
+  --border: #cbd5e1;
+  --border-subtle: #e2e8f0;
+  --input: #cbd5e1;
+  --ring: #16a34a;
+  --surface-rail: #f1f5f9;
 }
 
-body {
-  @apply bg-slate-50 font-sans text-slate-900 antialiased;
+.dark {
+  color-scheme: dark;
+  --background: #0f172a;
+  --foreground: #e8eef7;
+  --card: #111c33;
+  --card-foreground: #e8eef7;
+  --popover: #16223b;
+  --popover-foreground: #e8eef7;
+  --primary: #22c55e;
+  --primary-foreground: #06240f;
+  --secondary: #16223b;
+  --secondary-foreground: #cbd5e1;
+  --muted: #16223b;
+  --muted-foreground: #94a3b8;
+  --accent: #1b2a47;
+  --accent-foreground: #e8eef7;
+  --mint: #a7f3d0;
+  --mint-surface: #0c2b26;
+  --destructive: #f87171;
+  --warning: #fbbf24;
+  --border: #334155;
+  --border-subtle: #22304d;
+  --input: #334155;
+  --ring: #22c55e;
+  --surface-rail: #0b1324;
 }
 
-/* Keep focus visible on every interactive element, including the Radix selects. */
-:focus-visible {
-  @apply outline-2 outline-offset-2 outline-sky-600;
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-mint: var(--mint);
+  --color-mint-surface: var(--mint-surface);
+  --color-destructive: var(--destructive);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-surface-rail: var(--surface-rail);
+}
+
+@layer base {
+  * {
+    border-color: var(--border-subtle);
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+
+  /* Terminal chrome: pod names, YAML diffs, hashes and logs are monospaced. */
+  .font-mono {
+    font-variant-ligatures: none;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 35%, transparent);
+    color: var(--foreground);
+  }
+}
+
+@utility scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in oklab, var(--mint) 6%, transparent) 0px,
+    color-mix(in oklab, var(--mint) 6%, transparent) 1px,
+    transparent 1px,
+    transparent 4px
+  );
 }
