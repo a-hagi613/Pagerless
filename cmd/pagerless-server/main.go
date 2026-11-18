@@ -158,7 +158,8 @@ func run() error {
 		workloadNamespaces = flag.String("workload-namespaces", "sandbox",
 			"comma-separated namespaces whose Workloads the dashboard's Start Triage offers")
 		dashboardBaseURL = flag.String("dashboard-base-url", "http://localhost:8080",
-			"browser-facing base URL of the dashboard, used to build the OIDC redirect URI")
+			"browser-facing base URL of the dashboard, used to build the OIDC redirect URI "+
+				"(overridden by $PAGERLESS_DASHBOARD_BASE_URL)")
 		oidcIssuer = flag.String("oidc-issuer", "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
 			"Keycloak realm issuer that signs dashboard users in")
 		oidcClientID = flag.String("oidc-client-id", "pagerless-dashboard",
@@ -197,6 +198,9 @@ func run() error {
 	workloads, err := parseNamespaces(*workloadNamespaces)
 	if err != nil {
 		return err
+	}
+	if envDashboardBaseURL := strings.TrimSpace(os.Getenv("PAGERLESS_DASHBOARD_BASE_URL")); envDashboardBaseURL != "" {
+		*dashboardBaseURL = envDashboardBaseURL
 	}
 	dashboardAuth, err := dashboardauth.New(dashboardauth.Config{
 		Issuer:         *oidcIssuer,

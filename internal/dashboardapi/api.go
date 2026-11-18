@@ -74,6 +74,9 @@ type Auth interface {
 	Callback() http.Handler
 	// SignOut ends the session.
 	SignOut() http.Handler
+	// RealmProxy forwards browser requests for the Keycloak realm when the
+	// realm issuer is not directly reachable from the browser, or returns nil.
+	RealmProxy() http.Handler
 }
 
 // User is the signed-in dashboard user, as dashboardauth reports it.
@@ -118,6 +121,10 @@ func New(cfg Config) *Handler {
 	h.mux.Handle("GET /login", h.auth.SignIn())
 	h.mux.Handle("GET /auth/callback", h.auth.Callback())
 	h.mux.Handle("POST /logout", h.auth.SignOut())
+	if proxy := h.auth.RealmProxy(); proxy != nil {
+		h.mux.Handle("/realms/", proxy)
+		h.mux.Handle("/resources/", proxy)
+	}
 	h.mux.HandleFunc("GET /signed-out", h.signedOut)
 	h.mux.HandleFunc("GET /api/session", h.session)
 	h.mux.HandleFunc("GET /api/triages", h.list)
@@ -138,7 +145,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
-	if publicPath(r) {
+	if h.publicPath(r) {
 		h.mux.ServeHTTP(w, r)
 		return
 	}
@@ -156,11 +163,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // publicPath reports whether the request may proceed without a session. The
 // built assets are public because the browser fetches them before rendering
-// anything, and they contain no data.
-func publicPath(r *http.Request) bool {
+// anything, and they contain no data; proxied Keycloak realm routes are public
+// so the browser can complete the sign-in flow on the dashboard port.
+func (h *Handler) publicPath(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/login", "/auth/callback", "/signed-out":
 		return true
+	}
+	if h.auth != nil && h.auth.RealmProxy() != nil {
+		if strings.HasPrefix(r.URL.Path, "/realms/") || strings.HasPrefix(r.URL.Path, "/resources/") {
+			return true
+		}
 	}
 	return strings.HasPrefix(r.URL.Path, "/assets/")
 }

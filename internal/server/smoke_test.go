@@ -73,8 +73,9 @@ func TestDashboardSmoke(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	if result, err := agent.API.PostReport(t.Context(), noActionReport()); err != nil || result.StatusCode != http.StatusOK {
-		t.Fatalf("post the report: %+v, %v, want 200", result, err)
+	reportResult, err := agent.API.PostReport(t.Context(), noActionReport())
+	if err != nil || reportResult.StatusCode != http.StatusOK {
+		t.Fatalf("post the report: %+v, %v, want 200", reportResult, err)
 	}
 	env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
 
