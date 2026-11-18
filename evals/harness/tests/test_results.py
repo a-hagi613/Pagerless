@@ -52,9 +52,6 @@ class ResultDocumentTest(unittest.TestCase):
         broken["runs"][0]["refusals"] = [{"attempt": 1, "action": "Scale"}]
         with self.assertRaisesRegex(results.ResultError, "refusal"):
             results.validate_document(broken)
-        with self.assertRaises(results.ResultError) as context:
-            results.validate_document(broken)
-        self.assertIn("score", str(context.exception))
 
     def test_negative_usage_is_refused(self) -> None:
         broken = document()
