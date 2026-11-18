@@ -54,7 +54,8 @@ func resourceListLabel(list corev1.ResourceList) string {
 	names := slices.Sorted(maps.Keys(list))
 	parts := make([]string, 0, len(names))
 	for _, name := range names {
-		parts = append(parts, fmt.Sprintf("[%s]=%s", name, list[name].String()))
+		quantity := list[name]
+		parts = append(parts, fmt.Sprintf("[%s]=%s", name, quantity.String()))
 	}
 	return strings.Join(parts, ",")
 }
