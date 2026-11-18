@@ -56,6 +56,11 @@ module "eks" {
       max_size     = 2
       desired_size = 1
 
+      # access_entries.tf creates the node role's access entry explicitly, so the
+      # node group module must not create a second one for the same principal;
+      # EKS rejects the duplicate with ResourceInUseException.
+      create_access_entry = false
+
       # Karpenter and Argo CD run here. The node stays small because everything
       # that can move to a Karpenter node does.
       labels = {
