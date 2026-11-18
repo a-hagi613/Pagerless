@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from pagerless_agent.budget import MAX_INPUT_TOKENS, MAX_SECONDS, MAX_TOOL_CALLS
+from pagerless_agent.bundle import MAX_RENDERED_COMMITS, Commit, ContextBundle, PodState, WorkloadRef
 from pagerless_agent.contract import PROPOSED_ACTION, DiagnosisOutput, normalize_proposal
-from pagerless_agent.identifiers import ReplayError
+from pagerless_agent.identifiers import IdentifierMap, ReplayError
 from pagerless_agent.model import Stage
 from pagerless_agent.providers import ANTHROPIC_MODEL
 from pagerless_agent.replay import Recording
@@ -51,11 +52,7 @@ def read_api_key(path: Path) -> str:
         name, separator, raw = line.strip().partition("=")
         if separator and name == "ANTHROPIC_API_KEY":
             values = shlex.split(raw, comments=True, posix=True)
-            if (
-                len(values) == 1
-                and values[0]
-                and not any(c.isspace() for c in values[0])
-            ):
+            if len(values) == 1 and values[0] and not any(c.isspace() for c in values[0]):
                 return values[0]
     raise RuntimeError("the ignored configuration has no nonempty ANTHROPIC_API_KEY")
 
@@ -65,9 +62,7 @@ class Cluster:
 
     def __init__(self, context: str) -> None:
         if not context.startswith("kind-"):
-            raise RuntimeError(
-                "capture tooling is limited to an explicitly selected kind context"
-            )
+            raise RuntimeError("capture tooling is limited to an explicitly selected kind context")
         self.context = context
 
     def kubectl(self, *arguments: str, body: dict[str, Any] | None = None) -> bytes:
@@ -76,9 +71,7 @@ class Cluster:
             json.dumps(body).encode() if body is not None else None,
         )
 
-    def get(
-        self, kind: str, name: str | None = None, namespace: str = NAMESPACE
-    ) -> dict[str, Any]:
+    def get(self, kind: str, name: str | None = None, namespace: str = NAMESPACE) -> dict[str, Any]:
         arguments = ["get", kind, "-o", "json"]
         if namespace:
             arguments += ["-n", namespace]
@@ -106,9 +99,7 @@ def command(arguments: list[str], body: bytes | None = None) -> bytes:
     )
     if result.returncode:
         # Do not quote argv, stdin, or stderr: server errors may echo request bodies.
-        raise RuntimeError(
-            f"{Path(arguments[0]).name} command failed with exit code {result.returncode}"
-        )
+        raise RuntimeError(f"{Path(arguments[0]).name} command failed with exit code {result.returncode}")
     return result.stdout
 
 
@@ -126,9 +117,7 @@ def prepare(cluster: Cluster, key_file: Path) -> None:
     )
     nodes = cluster.get("nodes", namespace="")["items"]
     if len(nodes) != 1:
-        raise RuntimeError(
-            "the local capture volume requires a single-node kind cluster"
-        )
+        raise RuntimeError("the local capture volume requires a single-node kind cluster")
     node = nodes[0]["metadata"]["name"]
     directory = "/var/local/pagerless-replay-capture"
     command(["docker", "exec", node, "mkdir", "-p", directory])
@@ -191,6 +180,51 @@ def prepare(cluster: Cluster, key_file: Path) -> None:
 # and Scenario 10 inherits both. A genuine recording of either can be published.
 OOM_ACTIONS = ("PatchResources", "Rollback")
 
+_VALIDATION_PODS = (
+    "checkout-6bc7f8d9-x9k2m",
+    "checkout-7cd8g9f2-p4q7r",
+    "checkout-8df9h2g4-s5t8v",
+    "checkout-9fg2j4h5-w6x9z",
+    "checkout-2gh4k5j6-b2c4d",
+    "checkout-4hj5l6k7-f5g6h",
+    "checkout-5jk6m7l8-j7k8l",
+    "checkout-6kl7n8m9-m9n2p",
+)
+
+
+def _validation_bundle() -> ContextBundle:
+    """Build a deterministic Context Bundle whose indices bound normalized Replay placeholders."""
+    return ContextBundle(
+        workload=WorkloadRef(kind="Deployment", namespace="sandbox", name="checkout"),
+        gathered_at=datetime(2026, 1, 1, 1, 0, 0, tzinfo=UTC),
+        triggering_pod=_VALIDATION_PODS[0],
+        workload_status="Available=False",
+        pods=tuple(
+            PodState(
+                name=name,
+                phase="Running",
+                ready=False,
+                restarts=3,
+                last_termination_reason="OOMKilled",
+                created_at=datetime(2026, 1, 1, 0, index, 0, tzinfo=UTC),
+            )
+            for index, name in enumerate(_VALIDATION_PODS)
+        ),
+        events=(),
+        logs=(),
+        argocd_status="Synced / Degraded",
+        experiments=(),
+        commits=tuple(
+            Commit(
+                sha=f"{index + 1:040x}",
+                message=f"commit {index}",
+                author="e2e",
+                time=datetime(2026, 1, 1, 0, 59 - index, 0, tzinfo=UTC),
+            )
+            for index in range(MAX_RENDERED_COMMITS)
+        ),
+    )
+
 
 def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
     """Require a normalized live Scenario 1 investigation within the configured budgets."""
@@ -198,39 +232,32 @@ def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
     if len(payload) > _MAX_ARTIFACT_BYTES:
         raise RuntimeError("the recording exceeds the capture size limit")
     for secret in secrets:
-        if secret and (
-            secret.encode() in payload or base64.b64encode(secret.encode()) in payload
-        ):
-            raise RuntimeError(
-                "the recording contains a credential and must not be published"
-            )
+        if secret and (secret.encode() in payload or base64.b64encode(secret.encode()) in payload):
+            raise RuntimeError("the recording contains a credential and must not be published")
     recording = Recording.load(path)
     if (recording.model, recording.scenario, recording.workload) != (
         ANTHROPIC_MODEL,
         "oom",
         "checkout",
     ):
-        raise RuntimeError(
-            "the artifact is not a live Haiku OOMKilled recording for checkout"
-        )
+        raise RuntimeError("the artifact is not a live Haiku OOMKilled recording for checkout")
     if not recording.turns or recording.turns[0].stage != Stage.INVESTIGATE:
         raise RuntimeError("the recording does not begin with investigation")
+    identifiers = IdentifierMap(_validation_bundle())
+    for turn in recording.turns:
+        identifiers.resolve_json(turn.response.model_dump(mode="json"))
     diagnoses = [t for t in recording.turns if t.stage == Stage.DIAGNOSE]
     proposals = [t for t in recording.turns if t.stage == Stage.PROPOSE]
     if len(diagnoses) != 1 or not proposals:
         raise RuntimeError("the recording has no complete Diagnosis and Proposal")
-    DiagnosisOutput.model_validate(diagnoses[0].response.structured)
-    proposal = PROPOSED_ACTION.validate_python(normalize_proposal(proposals[-1].response.structured))
-    if proposal.action not in OOM_ACTIONS:
-        raise RuntimeError(
-            "the live OOMKilled investigation did not propose PatchResources or a Rollback"
-        )
-    tokens = sum(t.response.usage.input_tokens for t in recording.turns)
-    calls = sum(
-        c.name != "record_finding"
-        for t in recording.turns
-        for c in t.response.tool_calls
+    DiagnosisOutput.model_validate(identifiers.resolve_json(diagnoses[0].response.structured))
+    proposal = PROPOSED_ACTION.validate_python(
+        normalize_proposal(identifiers.resolve_json(proposals[-1].response.structured))
     )
+    if proposal.action not in OOM_ACTIONS:
+        raise RuntimeError("the live OOMKilled investigation did not propose PatchResources or a Rollback")
+    tokens = sum(t.response.usage.input_tokens for t in recording.turns)
+    calls = sum(c.name != "record_finding" for t in recording.turns for c in t.response.tool_calls)
     if tokens > MAX_INPUT_TOKENS or calls > MAX_TOOL_CALLS:
         raise RuntimeError("the live recording exceeds an investigation budget")
     return recording
@@ -242,12 +269,8 @@ def validate_narrative_recording(path: Path, secrets: tuple[str, ...] = ()) -> R
     if len(payload) > _MAX_ARTIFACT_BYTES:
         raise RuntimeError("the recording exceeds the capture size limit")
     for secret in secrets:
-        if secret and (
-            secret.encode() in payload or base64.b64encode(secret.encode()) in payload
-        ):
-            raise RuntimeError(
-                "the recording contains a credential and must not be published"
-            )
+        if secret and (secret.encode() in payload or base64.b64encode(secret.encode()) in payload):
+            raise RuntimeError("the recording contains a credential and must not be published")
     recording = Recording.load(path)
     if (recording.model, recording.scenario) != (ANTHROPIC_MODEL, NARRATIVE_SCENARIO):
         raise RuntimeError("the artifact is not a live Haiku Narrative recording")
@@ -258,9 +281,7 @@ def validate_narrative_recording(path: Path, secrets: tuple[str, ...] = ()) -> R
     return recording
 
 
-def volume_command(
-    cluster: Cluster, image: str, program: str, *, read_only: bool
-) -> bytes:
+def volume_command(cluster: Cluster, image: str, program: str, *, read_only: bool) -> bytes:
     """Run an unprivileged storage probe or retrieval without mounting a service account token."""
     helper = "pagerless-replay-read-" + uuid.uuid4().hex[:8]
     cluster.apply(
@@ -396,18 +417,14 @@ def retrieve_narrative(
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_bytes(payload)
-        recording = validate_narrative_recording(
-            temporary, (read_api_key(key_file),)
-        )
+        recording = validate_narrative_recording(temporary, (read_api_key(key_file),))
         temporary.replace(destination)
         return recording
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def write_provenance(
-    cluster: Cluster, triage: str, artifact: Path, revision: str
-) -> None:
+def write_provenance(cluster: Cluster, triage: str, artifact: Path, revision: str) -> None:
     """Bind the artifact digest to the live Job and the server-validated Proposal."""
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise RuntimeError("source revision must be the full Git commit SHA")
@@ -419,9 +436,7 @@ def write_provenance(
     # terminal phase is valid evidence as long as the Job succeeded and the
     # server-validated Proposal is still recorded.
     if phase not in _TERMINAL or job.get("status", {}).get("succeeded") != 1:
-        raise RuntimeError(
-            "capture provenance requires a succeeded live Job and a finished Triage"
-        )
+        raise RuntimeError("capture provenance requires a succeeded live Job and a finished Triage")
     proposal = status.get("proposal")
     if not proposal:
         raise RuntimeError("the finished Triage has no server-validated Proposal")
@@ -444,7 +459,9 @@ def write_provenance(
         "scenario": recording.scenario,
         "source_revision_at_capture": revision,
         "captured_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "environment": "kind with the isolated local Git/GitHub Sandbox adapter and original read-only MCP servers",
+        "environment": (
+            "kind with the isolated local Git/GitHub Sandbox adapter and original read-only MCP servers"
+        ),
         "triage": {
             "name": tr["metadata"]["name"],
             "uid": tr["metadata"]["uid"],
@@ -462,19 +479,17 @@ def write_provenance(
         },
         "usage": {
             "model_calls": len(recording.turns),
-            "input_tokens_including_cache": sum(
-                t.response.usage.input_tokens for t in recording.turns
-            ),
-            "output_tokens": sum(
-                t.response.usage.output_tokens for t in recording.turns
-            ),
+            "input_tokens_including_cache": sum(t.response.usage.input_tokens for t in recording.turns),
+            "output_tokens": sum(t.response.usage.output_tokens for t in recording.turns),
         },
         "limits": {
             "tool_calls": MAX_TOOL_CALLS,
             "seconds": MAX_SECONDS,
             "input_tokens": MAX_INPUT_TOKENS,
         },
-        "normalization": "Recording.load validates every placeholder and refuses unresolved volatile identifiers",
+        "normalization": (
+            "Recording.load validates every placeholder and refuses unresolved volatile identifiers"
+        ),
     }
     artifact.with_suffix(".provenance.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
@@ -490,9 +505,7 @@ def main() -> int:
     parser.add_argument("--context", default="kind-pagerless")
     parser.add_argument("--key-file", type=Path, default=Path(".env"))
     parser.add_argument("--artifact", type=Path, default=Path("evals/replay/oom.json"))
-    parser.add_argument(
-        "--narrative-artifact", type=Path, default=Path("evals/replay/narrative.json")
-    )
+    parser.add_argument("--narrative-artifact", type=Path, default=Path("evals/replay/narrative.json"))
     parser.add_argument("--image", default="ghcr.io/a-hagi613/pagerless-agent:0.1.0")
     parser.add_argument("--triage")
     parser.add_argument("--source-revision")
@@ -504,16 +517,10 @@ def main() -> int:
         print("Prepared the inference Secret and durable local recording volume.")
     elif args.stage == "retrieve":
         recording = retrieve(cluster, args.image, args.artifact, args.key_file)
-        print(
-            f"Retrieved and validated {len(recording.turns)} genuine model responses."
-        )
+        print(f"Retrieved and validated {len(recording.turns)} genuine model responses.")
     elif args.stage == "retrieve-narrative":
-        recording = retrieve_narrative(
-            cluster, args.image, args.narrative_artifact, args.key_file
-        )
-        print(
-            f"Retrieved and validated {len(recording.turns)} genuine Narrative response."
-        )
+        recording = retrieve_narrative(cluster, args.image, args.narrative_artifact, args.key_file)
+        print(f"Retrieved and validated {len(recording.turns)} genuine Narrative response.")
     elif args.stage == "provenance":
         if not args.triage or not args.source_revision:
             parser.error("provenance requires --triage and --source-revision")
@@ -540,6 +547,7 @@ if __name__ == "__main__":
     ) as error:
         # Raw validation errors may include model output or tool-returned data.
         print(
-            f"Replay capture stage failed ({type(error).__name__}). No credential or raw response was printed."
+            f"Replay capture stage failed ({type(error).__name__}). "
+            "No credential or raw response was printed."
         )
         raise SystemExit(1) from None
