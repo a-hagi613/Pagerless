@@ -35,7 +35,7 @@ Install the published chart, or the chart from a checkout:
 
 ```bash
 helm upgrade --install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
-  --version 0.2.1 \
+  --version 1.0.0 \
   --namespace pagerless \
   --create-namespace \
   --values my-values.yaml
