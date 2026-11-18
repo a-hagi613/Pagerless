@@ -9,6 +9,7 @@ help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
 
 CRD_DIR := deploy/pagerless-server/crds
+CHART_CRD_DIR := charts/pagerless/crds
 ENVTEST_K8S_VERSION := 1.37.0
 
 # Evaluation defaults. The paid evaluation runs each Scenario twice (ADR-0010);
@@ -25,6 +26,9 @@ generate: ## Generate the deepcopy methods for the API types.
 manifests: ## Generate the CustomResourceDefinitions.
 	# Cost is an estimate in USD, so the status carries a bounded JSON number for it.
 	go tool controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=$(CRD_DIR)
+	# charts/pagerless ships the same CRDs so a standalone installation does not
+	# depend on the kustomize bases. Copying here keeps the two copies identical.
+	cp $(CRD_DIR)/pagerless.dev_triages.yaml $(CRD_DIR)/pagerless.dev_triageapprovals.yaml $(CHART_CRD_DIR)/
 
 build-cli: ## Build the kubectl-triage plugin into bin/.
 	go build -o bin/kubectl-triage ./cmd/kubectl-triage

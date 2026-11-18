@@ -1,0 +1,101 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: triageapprovals.pagerless.dev
+spec:
+  group: pagerless.dev
+  names:
+    kind: TriageApproval
+    listKind: TriageApprovalList
+    plural: triageapprovals
+    shortNames:
+    - tra
+    singular: triageapproval
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.triage
+      name: Triage
+      type: string
+    - jsonPath: .spec.decision
+      name: Decision
+      type: string
+    - jsonPath: .spec.approver
+      name: Approver
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: TriageApproval is a human decision to approve or reject one specific
+          Proposal, bound to its hash (ADR-0004).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: TriageApprovalSpec is a human decision on one Proposal. It
+              is immutable after creation.
+            properties:
+              approver:
+                description: |-
+                  Approver is the identity of the requester. A mutating admission webhook sets it from the admission
+                  request; the one requester that may do otherwise is pagerless-server's service account, which asserts
+                  the dashboard user it verified through Keycloak, and the validating webhook accepts that only for a
+                  member of the Keycloak approvers group (ADR-0020).
+                maxLength: 253
+                type: string
+              decision:
+                description: Decision is the human decision.
+                enum:
+                - Approved
+                - Rejected
+                type: string
+              proposalHash:
+                description: ProposalHash is the hash of the one Proposal that this
+                  decision binds to.
+                pattern: ^[0-9a-f]{64}$
+                type: string
+              reason:
+                description: Reason is the optional reason the human gave.
+                maxLength: 1000
+                type: string
+              triage:
+                description: Triage names the Triage, in the same namespace, whose
+                  Proposal this decision is about.
+                maxLength: 253
+                minLength: 1
+                type: string
+            required:
+            - decision
+            - proposalHash
+            - triage
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

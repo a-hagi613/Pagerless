@@ -1,0 +1,96 @@
+{{- /*
+Executions are serialized inside one process (ADR-0005), so the Executor runs
+one replica and replaces it only after the old one has stopped. It holds the
+only write credentials: its own ServiceAccount and the write-scoped GitHub
+token.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerless-executor
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pagerless-executor
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 8 }}
+    spec:
+      serviceAccountName: pagerless-executor
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: {{ include "pagerless.image" (dict "context" $ "image" .Values.images.executor) }}
+          imagePullPolicy: {{ .Values.images.executor.pullPolicy }}
+          args:
+            - --github-token-file=/var/run/pagerless/github/token
+            - --sandbox-branch={{ .Values.sandbox.branch }}
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # The Sandbox is the operator's repository, so its URL is not fixed in the manifest.
+            - name: SANDBOX_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: pagerless-sandbox
+                  key: url
+            - name: PAGERLESS_GITHUB_REPOSITORY
+              valueFrom:
+                configMapKeyRef:
+                  name: pagerless-sandbox
+                  key: githubRepository
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: github-write
+              mountPath: /var/run/pagerless/github
+              readOnly: true
+            # Each execution clones the Sandbox into a temporary directory.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: github-write
+          secret:
+            secretName: {{ .Values.sandbox.writeSecretName }}
+            items:
+              - key: token
+                path: token
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi

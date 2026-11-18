@@ -212,8 +212,8 @@ jobs:
 
   publish-images:
     name: Publish versioned runtime images
-    needs: [go, agent]
-    if: startsWith(github.ref, 'refs/tags/v') && needs.go.result == 'success' && needs.agent.result == 'success'
+    needs: [go, agent, manifests]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.go.result == 'success' && needs.agent.result == 'success' && needs.manifests.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -221,6 +221,17 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Helm
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
       - name: Build and publish GHCR images
         env:
           GH_TOKEN: ${{ github.token }}
@@ -235,3 +246,14 @@ jobs:
           docker push "ghcr.io/a-hagi613/pagerless-server:$tag"
           docker push "ghcr.io/a-hagi613/pagerless-executor:$tag"
           docker push "ghcr.io/a-hagi613/pagerless-agent:$tag"
+      - name: Package and publish the Helm chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${IMAGE_TAG#v}"
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/pagerless --version "$tag" --app-version "$tag"
+          helm push "pagerless-${tag}.tgz" oci://ghcr.io/a-hagi613/charts
+

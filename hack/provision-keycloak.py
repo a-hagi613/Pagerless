@@ -27,7 +27,7 @@ CREDENTIALS_SECRET = "keycloak-credentials"
 DASHBOARD_SECRET = "pagerless-keycloak-dashboard"
 OPERATOR_SECRET = "pagerless-dashboard-operator"
 REALM = "pagerless"
-KUBERNETES_ISSUER = "https://kubernetes.default.svc.cluster.local"
+DEFAULT_KUBERNETES_ISSUER = "https://kubernetes.default.svc.cluster.local"
 AGENT_CLIENT = "pagerless-agent"
 AGENT_SERVICE_ACCOUNT = "pagerless-agent"
 DASHBOARD_CLIENT = "pagerless-dashboard"
@@ -65,6 +65,22 @@ def kubectl(*args, data=None):
         detail = "the API rejected a Secret" if data and data.get("kind") == "Secret" else result.stderr.strip()
         raise RuntimeError("kubectl failed while provisioning the Keycloak realm: " + detail)
     return json.loads(result.stdout) if result.stdout.strip().startswith("{") else None
+
+
+def kubernetes_issuer():
+    """Return the cluster's ServiceAccount OIDC issuer, read at runtime.
+
+    The issuer of a projected service account token is a property of the cluster:
+    kind, EKS, GKE, AKS and clusters with a custom service account issuer each
+    publish their own. Keycloak's federated JWT exchange must validate against
+    that issuer, so it is discovered here rather than assumed.
+    """
+    override = os.environ.get("PAGERLESS_KUBERNETES_ISSUER", "").strip()
+    if override:
+        return override
+    discovery = kubectl("get", "--raw", "/.well-known/openid-configuration") or {}
+    discovered = str(discovery.get("issuer") or "").strip()
+    return discovered or DEFAULT_KUBERNETES_ISSUER
 
 
 def existing_secret(name, namespace):
@@ -224,17 +240,18 @@ def ensure_operator_user(admin, group_id):
 
 
 def ensure_kubernetes_identity_provider(admin):
+    issuer = kubernetes_issuer()
     path = f"/admin/realms/{REALM}/identity-provider/instances/kubernetes"
     status, provider = admin.call("GET", path)
     if status == 200:
-        provider["config"] = {**(provider.get("config") or {}), "issuer": KUBERNETES_ISSUER}
+        provider["config"] = {**(provider.get("config") or {}), "issuer": issuer}
         admin.require("PUT", path, provider)
         return
     admin.require("POST", f"/admin/realms/{REALM}/identity-provider/instances", {
         "alias": "kubernetes",
         "providerId": "kubernetes",
         "enabled": True,
-        "config": {"issuer": KUBERNETES_ISSUER},
+        "config": {"issuer": issuer},
     })
 
 

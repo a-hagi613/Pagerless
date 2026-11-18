@@ -2,6 +2,12 @@
 # Installs the standalone Pagerless operator and investigation stack into any
 # Kubernetes cluster without deploying the OpenTelemetry shopping-cart demo,
 # Chaos Mesh, or the Argo CD app-of-apps bootstrap.
+#
+# The control plane, the Executor, and the MCP servers come from the
+# charts/pagerless chart. Keycloak, agentgateway, the gateway routes, and the
+# integration Secrets are provisioned beside it, because they are shared
+# platform services or operator credentials rather than part of the Pagerless
+# release.
 set -euo pipefail
 
 # shellcheck source=hack/lib.sh
@@ -18,6 +24,10 @@ INSTALL_SANDBOX_URL="${SANDBOX_URL:-}"
 INSTALL_MCP_SERVERS="${PAGERLESS_MCP_SERVERS:-}"
 INSTALL_ARGOCD_APP="${ARGOCD_APPLICATION:-${PAGERLESS_ARGOCD_APPLICATION:-}}"
 INSTALL_GRAFANA_URL="${GRAFANA_URL:-http://kube-prometheus-stack-grafana.monitoring.svc}"
+
+RELEASE_NAME=pagerless
+RELEASE_NAMESPACE=pagerless
+CHART_DIR="$REPO_ROOT/charts/pagerless"
 
 usage() {
 	cat <<'EOF'
@@ -242,222 +252,70 @@ if [ -z "$KUBE_CONTEXT" ]; then
 	fi
 fi
 
+# The rendered values are written to a private temporary directory and removed
+# on exit. They hold configuration only; every credential stays in a Secret.
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pagerless-install.XXXXXXXX")"
+chmod 700 "$WORK_DIR"
+trap 'rm -rf "$WORK_DIR"' EXIT
+CHART_VALUES="$WORK_DIR/values.yaml"
+
+# Quotes one YAML string. Single quotes are doubled, so a value can never end
+# the scalar or start a new key.
+yaml_string() {
+	printf "'%s'" "${1//\'/\'\'}"
+}
+
+write_chart_values() {
+	local ns
+	cat >"$CHART_VALUES" <<EOF
+workloadNamespaces:
+$(for ns in "${NAMESPACES[@]}"; do printf '  - %s\n' "$(yaml_string "$ns")"; done)
+agent:
+  provider: $(yaml_string "$INSTALL_PROVIDER")
+  awsRegion: $(yaml_string "${AWS_REGION:-}")
+sandbox:
+  url: $(yaml_string "$INSTALL_SANDBOX_URL")
+  branch: $(yaml_string "${SANDBOX_BRANCH:-main}")
+  owner: $(yaml_string "$SANDBOX_OWNER")
+  repo: $(yaml_string "$SANDBOX_REPO")
+  githubRepository: $(yaml_string "${PAGERLESS_GITHUB_REPOSITORY:-}")
+argocd:
+  application: $(yaml_string "$INSTALL_ARGOCD_APP")
+  url: $(yaml_string "${ARGOCD_SERVER_URL:-http://argocd-server.argocd.svc}")
+alertmanager:
+  url: $(yaml_string "${ALERTMANAGER_URL:-http://kube-prometheus-stack-alertmanager.monitoring.svc:9093}")
+grafana:
+  browserUrl: $(yaml_string "${BROWSER_GRAFANA_URL:-http://localhost:3000}")
+  mcpUrl: $(yaml_string "$INSTALL_GRAFANA_URL")
+dashboard:
+  baseUrl: $(yaml_string "${DASHBOARD_BASE_URL:-http://localhost:8080}")
+  cookieSecure: ${DASHBOARD_COOKIE_SECURE:-false}
+mcp:
+  servers: $(yaml_string "$INSTALL_MCP_SERVERS")
+  githubHost: $(yaml_string "${PAGERLESS_MCP_GITHUB_HOST:-}")
+  bundled:
+    enabled: true
+EOF
+}
+
+write_chart_values
+
 kctl() {
 	kubectl --context "$KUBE_CONTEXT" "$@"
 }
 
-render_namespace_rbac() {
-	local ns
-	for ns in "${NAMESPACES[@]}"; do
-		cat <<EOF
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: "${ns}"
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-server-validation
-  namespace: "${ns}"
-rules:
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [get, list, update]
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-server-validation
-  namespace: "${ns}"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-server-validation
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-server
-    namespace: pagerless
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-executor-restart
-  namespace: "${ns}"
-rules:
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list, watch, delete]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-executor-restart
-  namespace: "${ns}"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-executor-restart
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-executor
-    namespace: pagerless
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-mcp-read
-  namespace: "${ns}"
-rules:
-  - apiGroups: [""]
-    resources: [pods, events]
-    verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets, replicasets]
-    verbs: [get, list, watch]
-  - apiGroups: [events.k8s.io]
-    resources: [events]
-    verbs: [get, list, watch]
-  - apiGroups: [chaos-mesh.org]
-    resources: [stresschaos]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-mcp-read
-  namespace: "${ns}"
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-mcp-read
-subjects:
-  - kind: ServiceAccount
-    name: mcp-kubernetes
-    namespace: pagerless
-EOF
-	done
-}
-
-render_configmaps() {
-	cat <<EOF
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pagerless-sandbox
-  namespace: pagerless
-data:
-  url: "${INSTALL_SANDBOX_URL}"
-  githubRepository: "${PAGERLESS_GITHUB_REPOSITORY:-}"
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: pagerless-agent-config
-  namespace: pagerless
-data:
-  PAGERLESS_MODEL_PROVIDER: "${INSTALL_PROVIDER}"
-  PAGERLESS_MCP_GATEWAY_URL: "http://mcp-gateway.agentgateway-system.svc.cluster.local"
-  PAGERLESS_MCP_SERVERS: "${INSTALL_MCP_SERVERS}"
-  PAGERLESS_KEYCLOAK_ISSUER: "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
-  PAGERLESS_KEYCLOAK_TOKEN_URL: "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless/protocol/openid-connect/token"
-  PAGERLESS_KEYCLOAK_CLIENT_ID: "pagerless-agent"
-  PAGERLESS_REPLAY_FILE: "${PAGERLESS_REPLAY_FILE:-/app/recordings/oom.json}"
-  PAGERLESS_NARRATIVE_REPLAY_FILE: "${PAGERLESS_NARRATIVE_REPLAY_FILE:-/app/recordings/narrative.json}"
-  PAGERLESS_SANDBOX_OWNER: "${SANDBOX_OWNER}"
-  PAGERLESS_SANDBOX_REPO: "${SANDBOX_REPO}"
-  PAGERLESS_ARGOCD_APPLICATION: "${INSTALL_ARGOCD_APP}"
-  PAGERLESS_ALLOWED_NAMESPACES: "${WORKLOAD_NAMESPACES}"
-  PAGERLESS_SANDBOX_URL: "${INSTALL_SANDBOX_URL}"
-EOF
-	if [ -n "${AWS_REGION:-}" ]; then
-		printf '  AWS_REGION: "%s"\n' "$AWS_REGION"
-	fi
-}
-
-render_mcp_manifests() {
-	helm template mcp "$REPO_ROOT/deploy/mcp" \
-		--namespace pagerless \
-		--set "allowedNamespaces={${WORKLOAD_NAMESPACES}}" \
-		--set-string "githubHost=${PAGERLESS_MCP_GITHUB_HOST:-}" |
-		sed "s|http://kube-prometheus-stack-grafana.monitoring.svc|${INSTALL_GRAFANA_URL}|g"
-}
-
+# Renders the complete release for --dry-run: the CRDs that the installer
+# applies directly, the platform charts, and the Pagerless chart.
 render_core_manifests() {
-	cat <<'EOF'
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: pagerless
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: keycloak
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: agentgateway-system
-EOF
-	render_namespace_rbac
-	render_configmaps
+	cat "$CHART_DIR"/crds/*.yaml
 	echo "---"
 	helm template keycloak "$REPO_ROOT/deploy/keycloak" --namespace keycloak
 	echo "---"
 	helm template mcp-gateway "$REPO_ROOT/deploy/gateway" --namespace agentgateway-system
 	echo "---"
-	render_mcp_manifests
-	echo "---"
-	kubectl kustomize "$REPO_ROOT/deploy/pagerless-server"
-	echo "---"
-	kubectl kustomize "$REPO_ROOT/deploy/pagerless-executor"
-}
-
-patch_server_deployment_json() {
-	cat <<EOF
-[
-  {"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": [
-    "--agent-image=${PAGERLESS_AGENT_IMAGE}",
-    "--report-url=http://pagerless-server.pagerless.svc:8080",
-    "--metrics-bind-address=:9090",
-    "--dashboard-bind-address=:8082",
-    "--grafana-url=${BROWSER_GRAFANA_URL:-http://localhost:3000}",
-    "--dashboard-base-url=${DASHBOARD_BASE_URL:-http://localhost:8080}",
-    "--dashboard-cookie-secure=${DASHBOARD_COOKIE_SECURE:-false}",
-    "--oidc-issuer=http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
-    "--oidc-client-id=pagerless-dashboard",
-    "--oidc-client-secret-file=/var/run/pagerless/keycloak/client-secret",
-    "--keycloak-base-url=http://keycloak.keycloak.svc.cluster.local:8080",
-    "--keycloak-admin-client-id=pagerless-server",
-    "--keycloak-admin-client-secret-file=/var/run/pagerless/keycloak/server-client-secret",
-    "--approvers-group=pagerless-approvers",
-    "--workload-namespaces=${WORKLOAD_NAMESPACES}",
-    "--alert-namespaces=${WORKLOAD_NAMESPACES}",
-    "--patch-namespaces=${WORKLOAD_NAMESPACES}",
-    "--argocd-application=${INSTALL_ARGOCD_APP:-sandbox}",
-    "--sandbox-url=${INSTALL_SANDBOX_URL}",
-    "--history-path=/var/lib/pagerless/history.db",
-    "--executor-url=http://pagerless-executor.pagerless.svc:8080",
-    "--argocd-url=${ARGOCD_SERVER_URL:-http://argocd-server.argocd.svc}",
-    "--alertmanager-url=${ALERTMANAGER_URL:-http://kube-prometheus-stack-alertmanager.monitoring.svc:9093}",
-    "--alertmanager-token-file=/var/run/pagerless/alertmanager/token",
-    "--sandbox-read-token-file=/var/run/pagerless/github-read/token"
-  ]}
-]
-EOF
+	helm template "$RELEASE_NAME" "$CHART_DIR" \
+		--namespace "$RELEASE_NAMESPACE" \
+		--values "$CHART_VALUES"
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -472,8 +330,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
 # Grafana MCP URL:     ${INSTALL_GRAFANA_URL}
 EOF
 	render_core_manifests
-	echo "# Planned deployment/pagerless-server JSON patch:"
-	patch_server_deployment_json | sed 's/^/# /'
 	exit 0
 fi
 
@@ -505,13 +361,15 @@ if [ "$ASSUME_YES" -eq 0 ]; then
 	esac
 fi
 
-# 1. Namespaces and CRDs.
-for ns in pagerless keycloak agentgateway-system sandbox "${NAMESPACES[@]}"; do
+# 1. Namespaces and CRDs. The Sandbox namespace is created only when it is one
+# of the Workload namespaces; a bare cluster gets no empty one.
+BOOTSTRAP_NAMESPACES=(pagerless keycloak agentgateway-system "${NAMESPACES[@]}")
+for ns in "${BOOTSTRAP_NAMESPACES[@]}"; do
 	kctl create namespace "$ns" --dry-run=client -o yaml | kctl apply -f -
 done
 
-kctl apply -f "$REPO_ROOT/deploy/pagerless-server/crds/pagerless.dev_triages.yaml"
-kctl apply -f "$REPO_ROOT/deploy/pagerless-server/crds/pagerless.dev_triageapprovals.yaml"
+kctl apply -f "$CHART_DIR/crds/pagerless.dev_triages.yaml"
+kctl apply -f "$CHART_DIR/crds/pagerless.dev_triageapprovals.yaml"
 kctl apply --server-side -f "$REPO_ROOT/deploy/gateway-api-crds/standard-install.yaml"
 
 # 2. Keycloak deployment and realm provisioning.
@@ -556,7 +414,8 @@ helm upgrade --install agentgateway oci://cr.agentgateway.dev/charts/agentgatewa
 	--kube-context "$KUBE_CONTEXT" \
 	--wait --timeout 5m
 
-# 4. Idempotent Secrets and ConfigMaps.
+# 4. Idempotent Secrets. They exist before the release starts, so every pod that
+# mounts one can be scheduled by the chart's first rollout.
 PAGERLESS_KUBE_CONTEXT="$KUBE_CONTEXT" uv run --no-project --python "$PYTHON_VERSION" \
 	"$REPO_ROOT/hack/provision-authorization.py" alerts
 
@@ -600,9 +459,7 @@ kctl -n pagerless create secret generic pagerless-agent-credentials \
 	${agent_cred_args[@]+"${agent_cred_args[@]}"} \
 	--dry-run=client -o yaml | kctl apply -f -
 
-render_configmaps | kctl apply -f -
-
-# 5. MCP gateway, MCP servers, and per-namespace RBAC.
+# 5. MCP gateway routes and policies.
 helm template mcp-gateway "$REPO_ROOT/deploy/gateway" --namespace agentgateway-system |
 	kctl -n agentgateway-system apply -f -
 if kctl -n agentgateway-system get deployment mcp-gateway >/dev/null 2>&1; then
@@ -610,16 +467,16 @@ if kctl -n agentgateway-system get deployment mcp-gateway >/dev/null 2>&1; then
 	kctl -n agentgateway-system rollout status deployment/mcp-gateway --timeout=300s
 fi
 
-render_mcp_manifests | kctl -n pagerless apply -f -
+# 6. Pagerless release: control plane, Executor, MCP servers, RBAC, admission
+# policies, webhooks, ConfigMaps, and the history claim. The chart renders the
+# exact container flags, so no post-render patch is needed. The CRDs were
+# applied in step 1, which keeps their removal outside the release lifecycle.
+helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
+	--namespace "$RELEASE_NAMESPACE" \
+	--kube-context "$KUBE_CONTEXT" \
+	--values "$CHART_VALUES" \
+	--skip-crds
 
-render_namespace_rbac | kctl apply -f -
-
-# 6. Pagerless control plane and Executor.
-kubectl kustomize "$REPO_ROOT/deploy/pagerless-server" | kctl apply -f -
-kubectl kustomize "$REPO_ROOT/deploy/pagerless-executor" | kctl apply -f -
-
-kctl -n pagerless patch deployment pagerless-server --type=json \
-	--patch "$(patch_server_deployment_json)"
 kctl -n pagerless rollout status deployment/pagerless-server --timeout=300s
 kctl -n pagerless rollout status deployment/pagerless-executor --timeout=300s
 

@@ -18,9 +18,10 @@ is healthy. It is idempotent and provisions, through the Admin REST API:
 
 - realm `pagerless`;
 - group `pagerless-approvers`;
-- identity provider `kubernetes` (`providerId: kubernetes`, issuer
-  `https://kubernetes.default.svc.cluster.local`), which authenticates a
-  projected service account token;
+- identity provider `kubernetes` (`providerId: kubernetes`), which authenticates
+  a projected service account token. `hack/provision-keycloak.py` discovers the
+  cluster's ServiceAccount OIDC issuer from `/.well-known/openid-configuration`
+  and falls back to `https://kubernetes.default.svc.cluster.local`;
 - confidential client `pagerless-agent` with
   `clientAuthenticatorType: federated-jwt`,
   `jwt.credential.issuer=kubernetes` and

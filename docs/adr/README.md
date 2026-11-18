@@ -29,3 +29,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0023](0023-bedrock-uses-amazon-nova-2-lite.md) | Bedrock uses Amazon Nova 2 Lite through Converse |
 | [0024](0024-budget-guardrail-stays-outside-terraform.md) | The budget guardrail stays outside Terraform |
 | [0025](0025-the-agent-job-admits-the-pod-identity-token.md) | The agent Job admits the EKS Pod Identity token |
+| [0026](0026-standalone-helm-chart.md) | A standalone Helm chart installs Pagerless without the reference Sandbox stack |
