@@ -5,6 +5,7 @@ The evidence the README shows, and the tools that produce it. Nothing here is ha
 | Asset | Produced by | Pinned |
 | --- | --- | --- |
 | `pagerless.gif` | `vhs docs/demo/pagerless.tape` against a live session | VHS 0.12.1, ttyd 1.7.7, ffmpeg |
+| `pagerless.mp4` | the same VHS recording, rendered at full resolution | VHS 0.12.1, ttyd 1.7.7, ffmpeg |
 | `dashboard-*.png` | `dashboard/e2e/run.sh` with `CAPTURE=1` | the Playwright version in `dashboard/package-lock.json` |
 
 ## The terminal demo
