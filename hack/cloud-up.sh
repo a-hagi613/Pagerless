@@ -64,12 +64,16 @@ done
 # credentials, so the chart needs the cluster name and the interruption queue
 # rather than a role annotation.
 helm registry logout public.ecr.aws >/dev/null 2>&1 || true
+# One controller: the chart defaults to two replicas that each request a CPU, and
+# the single t3.large system node cannot schedule both, so the install never
+# becomes ready. A session runs one controller.
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
 	--version "$KARPENTER_CHART_VERSION" \
 	--namespace kube-system \
 	--kube-context "$CLOUD_CONTEXT" \
 	--set "settings.clusterName=$CLOUD_CLUSTER" \
 	--set "settings.interruptionQueue=$(terraform -chdir="$REPO_ROOT/infra" output -raw karpenter_interruption_queue_name)" \
+	--set replicas=1 \
 	--set controller.resources.requests.cpu=1 \
 	--set controller.resources.requests.memory=1Gi \
 	--set controller.resources.limits.cpu=1 \
