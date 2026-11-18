@@ -2,7 +2,7 @@
 
 **An AI agent that diagnoses failing Kubernetes Workloads and remediates them only after a human approves the exact change.**
 
-> **Project status:** Phase 1 is complete and was validated locally: a fresh kind run and CI both reached Recovered from an injected OOMKilled Workload, and `evals/replay/oom.json` is a genuine live recording with provenance. The `v0.1.0` runtime images are published to GHCR and publicly pullable. The dashboard's Triage list and detail views are implemented, and agentgateway with Keycloak now fronts every MCP tool call. `make eval` now scores every Scenario by deterministic code and records versioned results, and the credential-free Replay subset runs in CI; no live measured evaluation has been published yet. Start Triage, dashboard sign-in and approvals, and the EKS deployment are later work.
+> **Project status:** Phase 1 and Phase 2 are merged. A fresh kind run and CI both reach Recovered from an injected OOMKilled Workload, `evals/replay/oom.json` is a genuine live recording with provenance, the `v0.1.0` runtime images are published and public, and Phase 2 adds the dashboard with Keycloak sign-in, approvals and Start Triage, agentgateway in front of every MCP tool, the RestartWorkload, Scale and Rollback Actions, ten Scenarios, permanent history with Pagerless's own metrics, the post-Verification Narrative, and the evaluation harness with its credential-free Replay subset in CI. Phase 3 is merged as well: Terraform, EKS with Karpenter and Pod Identity, keyless CI, the nightly teardown, `make cloud-up` and `make cloud-down`, and the demo and cost-measurement tooling. Not yet published: the measured evaluation, the one billable live EKS session and its cost, the recorded demo and dashboard evidence, and the `v1.0.0` tag.
 
 ## The Phase 1 loop
 
@@ -29,7 +29,7 @@ The [Sandbox](https://github.com/a-hagi613/pagerless-sandbox) is a separate repo
 - **Dashboard:** a Vite, React, TypeScript, Tailwind CSS and shadcn/ui application that `pagerless-server` serves from its binary, with a Triage list, a Triage detail view that streams live steps over Server-Sent Events, and embedded Grafana panels for the Workload's metrics and logs.
 - **Development checks:** Go envtest integration tests, Python agent tests, a synthetic Replay kind harness and a tagged GHCR publication workflow.
 
-The Start Triage view, dashboard sign-in and approvals, the remaining Actions and Scenarios, and the published live evaluation results are remaining Phase 2 work. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and release measurements are Phase 3 work.
+The Start Triage view, dashboard sign-in and approvals, the remaining Actions and Scenarios, permanent history and the evaluation harness are implemented in Phase 2. What remains there is the published measured evaluation. Terraform for EKS, Karpenter, Pod Identity, cloud teardown and the release measurements are implemented in Phase 3. What remains there is the one billable live session, its measured cost, the recorded evidence, and the release tag.
 
 ## History, retention and metrics
 
@@ -238,8 +238,8 @@ suite is `evals/prompts/promptfooconfig.yaml`, and running it is the lead's deci
 ## Roadmap
 
 1. **Phase 1: core loop locally.** Complete: the genuine live OOMKilled capture, free Replay validation through Recovered on kind, credential-free end-to-end CI, and the public `v0.1.0` runtime images. The operator, CLI, agent, MCP integrations, Validation, Approval, Executor and Verification form this phase.
-2. **Phase 2: complete the local product.** Finish the React/shadcn dashboard with Start Triage, Keycloak sign-in and approvals, add RestartWorkload/Scale/Rollback, the remaining Scenarios, agentgateway, and the evaluation and prompt-injection suites. `make eval` and its credential-free Replay subset are available; the live measured results are not yet published.
-3. **Phase 3: cloud and release.** Add Terraform for EKS, Karpenter, Pod Identity, short-lived cloud sessions with teardown and budget controls, then publish the demonstration video, evaluation results and measured operating costs.
+2. **Phase 2: complete the local product.** Merged: the React/shadcn dashboard with Start Triage, Keycloak sign-in and approvals, RestartWorkload/Scale/Rollback, ten Scenarios, agentgateway, permanent history, and the evaluation and prompt-injection suites. The measured evaluation is the only outstanding item.
+3. **Phase 3: cloud and release.** Merged: Terraform, EKS with Karpenter and Pod Identity, the keyless CI identity and nightly teardown, `make cloud-up` and `make cloud-down`, and the demo and cost-measurement tooling. What remains is the one billable live session, its measured cost, the recorded evidence and the `v1.0.0` tag.
 
 ## Documentation
 

@@ -163,7 +163,11 @@ CI runs `make eval-replay`, which reuses the isolated adapter cluster from
 | `bad-config` | `synthetic-bad-config.json` | Rollback of the exact injected commit. |
 
 The three recordings are synthetic test fixtures, not live evidence
-([ADR-0016](adr/0016-replay-recordings-normalize-volatile-identifiers.md)).
+([ADR-0016](adr/0016-replay-recordings-normalize-volatile-identifiers.md)). A
+Scenario names its recording, and the harness resolves that name in
+`evals/e2e/fixtures` first and then in `evals/replay`, so a Scenario can point at
+a genuine capture without moving it out of the directory that
+`evals/replay/capture.py` writes to.
 The subset is chosen to exercise the three scoring rules and a manual Trigger;
 the flag Scenarios and the injection Scenario need longer alert and log windows.
 The job makes no paid call, needs no GitHub Sandbox credential, and keeps the
@@ -230,12 +234,12 @@ Exact commands, from a checkout at the commit under test:
 
 ```bash
 # The measured run: one oom Scenario, the genuine recordings, at most 1 USD.
-gh workflow run eval-live.yml --ref integration/phase-2 \
+gh workflow run eval-live.yml --ref main \
   -f phase=measured -f confirm_paid_run=yes \
   -f max_tokens=40000 -f max_cost_usd=1
 
 # The full run, only after the measured run's cost is accepted.
-gh workflow run eval-live.yml --ref integration/phase-2 \
+gh workflow run eval-live.yml --ref main \
   -f phase=full -f confirm_paid_run=yes \
   -f max_tokens=2000000 -f max_cost_usd=4.5
 
