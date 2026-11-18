@@ -94,13 +94,53 @@ kc apply -f "$REPO_ROOT/deploy/cloud/storage"
 echo "The cluster is ready. Running the shared stack bootstrap."
 bash "$REPO_ROOT/hack/bootstrap-stack.sh"
 
+if [ -n "${PAGERLESS_DASHBOARD_BASE_URL:-}" ] || [ -n "${PAGERLESS_GRAFANA_URL:-}" ]; then
+	kc -n argocd patch application root --type=merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}' >/dev/null 2>&1 || true
+	kc -n argocd patch application pagerless-server --type=merge \
+		-p '{"spec":{"syncPolicy":{"automated":{"selfHeal":false}}}}' >/dev/null 2>&1 || true
+	server_args_patch="$(
+		kc -n pagerless get deployment pagerless-server -o json |
+			uv run --no-project --python "$PYTHON_VERSION" -c '
+import json, os, sys
+dep = json.load(sys.stdin)
+args = dep["spec"]["template"]["spec"]["containers"][0]["args"]
+dashboard_url = os.environ.get("PAGERLESS_DASHBOARD_BASE_URL", "")
+grafana_url = os.environ.get("PAGERLESS_GRAFANA_URL", "")
+updated = []
+for arg in args:
+    if dashboard_url and arg.startswith("--dashboard-base-url="):
+        updated.append(f"--dashboard-base-url={dashboard_url}")
+    elif grafana_url and arg.startswith("--grafana-url="):
+        updated.append(f"--grafana-url={grafana_url}")
+    else:
+        updated.append(arg)
+print(json.dumps({"spec": {"template": {"spec": {"containers": [{"name": "server", "args": updated}]}}}}))
+'
+	)"
+	kc -n pagerless patch deployment pagerless-server --type=strategic --patch "$server_args_patch"
+	kc -n pagerless rollout status deployment/pagerless-server --timeout=180s
+fi
+
 cat <<EOF
 
 The EKS session is up in ${CLOUD_REGION}. Every Argo CD Application is Synced and Healthy.
 
-The dashboard and Grafana are not exposed; reach them with a port-forward:
-  kubectl --context ${CLOUD_CONTEXT} -n pagerless port-forward svc/pagerless-server 8080:8080
+The dashboard and Grafana are not exposed; reach them locally with a port-forward:
+  kubectl --context ${CLOUD_CONTEXT} -n pagerless port-forward svc/pagerless-server 8080:8082
   kubectl --context ${CLOUD_CONTEXT} -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+
+For Tailscale access from another device (for example http://devbox:8080 and http://devbox:3000):
+  kubectl --context ${CLOUD_CONTEXT} -n pagerless port-forward --address 0.0.0.0 svc/pagerless-server 8080:8082
+  kubectl --context ${CLOUD_CONTEXT} -n monitoring port-forward --address 0.0.0.0 svc/kube-prometheus-stack-grafana 3000:80
+
+Read the provisioned Dashboard operator credentials from Secret pagerless/pagerless-dashboard-operator:
+  kubectl --context ${CLOUD_CONTEXT} -n pagerless get secret pagerless-dashboard-operator -o jsonpath='{.data.username}' | base64 --decode; echo
+  kubectl --context ${CLOUD_CONTEXT} -n pagerless get secret pagerless-dashboard-operator -o jsonpath='{.data.password}' | base64 --decode; echo
+
+List node instance IDs and open a shell inside an EKS node via AWS Systems Manager Session Manager:
+  kubectl --context ${CLOUD_CONTEXT} get nodes -o custom-columns=NAME:.metadata.name,INSTANCE:.spec.providerID
+  AWS_PROFILE=pagerless aws ssm start-session --target <instance-id> --region ${CLOUD_REGION}
 
 Break the Sandbox, and drive the CLI, against this cluster by exporting the context:
   export PAGERLESS_KUBE_CONTEXT=${CLOUD_CONTEXT}

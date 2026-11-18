@@ -61,6 +61,13 @@ module "eks" {
       # EKS rejects the duplicate with ResourceInUseException.
       create_access_entry = false
 
+      # Outbound Systems Manager Session Manager gives interactive shell access to
+      # the node without an SSH key or an inbound port-22 rule on the node security
+      # group.
+      iam_role_additional_policies = {
+        AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      }
+
       # Karpenter and Argo CD run here. The node stays small because everything
       # that can move to a Karpenter node does.
       labels = {

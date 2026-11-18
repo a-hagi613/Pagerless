@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset cloud-up cloud-down cloud-check
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent test-eval lint lint-go lint-agent validate up dev e2e eval eval-replay eval-table eval-table-check prompts-check down break reset cloud-up cloud-down cloud-check preflight-eval install dashboard-preview
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-14s %s\n", $$1, $$2}'
@@ -109,6 +109,15 @@ cloud-up: ## Create the EKS session, deploy the stack, and wait for it to be hea
 
 cloud-down: ## Destroy the EKS session and prove that nothing billable remains.
 	bash hack/cloud-down.sh
+
+preflight-eval: ## Run the sub-30s offline evaluation and Replay capture preflight gate.
+	bash hack/preflight-eval.sh
+
+install: ## Install Pagerless into an existing Kubernetes cluster.
+	bash hack/install.sh
+
+dashboard-preview: ## Start the live Dashboard preview on port 8080.
+	bash hack/dashboard-preview.sh start
 
 cloud-check: ## Check formatting, validation and lint of every Terraform configuration.
 	terraform -chdir=infra fmt -check -recursive

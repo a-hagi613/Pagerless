@@ -27,6 +27,13 @@ module "karpenter" {
   node_iam_role_name            = "${var.cluster_name}-karpenter-node"
   node_iam_role_use_name_prefix = false
 
+  # Outbound Systems Manager Session Manager gives interactive shell access to
+  # Karpenter-provisioned nodes without an SSH key or an inbound port-22 rule on
+  # the node security group.
+  node_iam_role_additional_policies = {
+    AmazonSSMManagedInstanceCore = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
   tags = {
     Name = "${var.cluster_name}-karpenter"
   }
