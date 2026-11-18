@@ -1,4 +1,4 @@
-"""Tests for the versioned result documents and their summary."""
+"""Tests for the versioned result documents, the sharded merge, and their summary."""
 
 from __future__ import annotations
 
@@ -7,10 +7,191 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
-from pagerless_eval import results
+from pagerless_eval import results, table
+from pagerless_eval.answer_key import SCENARIOS
+from pagerless_eval.answer_key import scenario as scenario_by_name
 
-from tests.support import document, run
+from tests.support import STARTED, document, run
+
+# The shard matrix that the full paid workflow dispatches, in its order.
+SHARDS: tuple[tuple[str, ...], ...] = (
+    ("oom", "bad-config"),
+    ("bad-image-tag", "unschedulable"),
+    ("cart-flag", "payment-flag"),
+    ("product-catalog-flag", "cpu", "injection"),
+    ("email-memory-leak",),
+)
+COMMIT = "f" * 40
+
+
+def shard(
+    names: tuple[str, ...],
+    *,
+    repeats: int = 2,
+    started: str = STARTED,
+    result: str = "pass",
+    commit: str = COMMIT,
+    evidence: str = "live",
+    dirty: bool = False,
+    max_tokens: int = 400_000,
+    max_cost_usd: float = 0.9,
+) -> dict[str, Any]:
+    """Build one shard document that records every repeat of its Scenarios."""
+    runs: list[dict[str, Any]] = []
+    for name in names:
+        item = scenario_by_name(name)
+        for repeat in range(1, repeats + 1):
+            runs.append(
+                run(
+                    scenario=item.name,
+                    number=item.number,
+                    repeat=repeat,
+                    result=result,
+                    workload=item.workload,
+                )
+            )
+    spent_tokens = sum(
+        item["usage"]["inputTokens"] + item["usage"]["outputTokens"] for item in runs
+    )
+    return results.build_document(
+        commit=commit,
+        dirty=dirty,
+        provider="anthropic",
+        evidence=evidence,
+        scenarios=names,
+        repeats=repeats,
+        started_at=datetime.fromisoformat(started.replace("Z", "+00:00")),
+        budget={
+            "maxTokens": max_tokens,
+            "maxCostUSD": max_cost_usd,
+            "spentTokens": spent_tokens,
+            "spentCostUSD": round(sum(item["usage"]["costUSD"] for item in runs), 6),
+            "exhausted": False,
+        },
+        runs=runs,
+    )
+
+
+def shards() -> list[dict[str, Any]]:
+    return [shard(names) for names in SHARDS]
+
+
+class MergeDocumentsTest(unittest.TestCase):
+    def test_five_shards_merge_into_one_twenty_run_document(self) -> None:
+        merged = results.merge_documents(shards(), commit=COMMIT)
+        results.validate_document(merged)
+        self.assertEqual(len(merged["runs"]), 20)
+        self.assertEqual(merged["evidence"], "live")
+        self.assertFalse(merged["pagerlessDirty"])
+        self.assertEqual(
+            [(item["scenario"], item["repeat"]) for item in merged["runs"]],
+            [(item.name, repeat) for item in SCENARIOS for repeat in (1, 2)],
+        )
+        self.assertEqual([item.name for item in SCENARIOS], merged["scenarios"])
+        self.assertEqual(merged["repeats"], 2)
+
+    def test_the_merge_starts_at_the_earliest_shard(self) -> None:
+        documents = shards()
+        documents[2]["startedAt"] = "2026-11-17T11:41:00Z"
+        merged = results.merge_documents(documents, commit=COMMIT)
+        self.assertEqual(merged["startedAt"], "2026-11-17T11:41:00Z")
+
+    def test_the_merge_sums_the_spend_and_the_shard_budgets(self) -> None:
+        merged = results.merge_documents(shards(), commit=COMMIT)
+        self.assertEqual(merged["budget"]["maxTokens"], 5 * 400_000)
+        self.assertAlmostEqual(merged["budget"]["maxCostUSD"], 4.5)
+        # Every run in the fixtures records 1000 input + 100 output tokens and $0.002.
+        self.assertEqual(merged["budget"]["spentTokens"], 20 * 1100)
+        self.assertAlmostEqual(merged["budget"]["spentCostUSD"], 20 * 0.002)
+        self.assertFalse(merged["budget"]["exhausted"])
+
+    def test_an_exhausted_shard_marks_the_merged_budget(self) -> None:
+        documents = shards()
+        documents[4]["budget"]["exhausted"] = True
+        merged = results.merge_documents(documents, commit=COMMIT)
+        self.assertTrue(merged["budget"]["exhausted"])
+
+    def test_a_spend_above_the_shard_budgets_marks_the_merged_budget(self) -> None:
+        documents = shards()
+        for item in documents:
+            item["budget"]["maxTokens"] = 0
+            item["budget"]["maxCostUSD"] = 0.0
+        merged = results.merge_documents(documents, commit=COMMIT)
+        self.assertFalse(merged["budget"]["exhausted"])
+        documents = shards()
+        for item in documents:
+            item["budget"]["maxTokens"] = 1000
+        merged = results.merge_documents(documents, commit=COMMIT)
+        self.assertTrue(merged["budget"]["exhausted"])
+
+    def test_a_single_shard_merges_by_itself(self) -> None:
+        merged = results.merge_documents([shard(("oom",), repeats=1)], commit=COMMIT)
+        self.assertEqual(len(merged["runs"]), 1)
+        self.assertEqual(merged["scenarios"], ["oom"])
+        self.assertEqual(merged["repeats"], 1)
+
+    def test_the_merged_document_renders_as_the_published_table(self) -> None:
+        merged = results.merge_documents(shards(), commit=COMMIT)
+        rendered = table.render([merged])
+        self.assertIn("**Runs:** 20 across 10 Scenarios", rendered)
+        self.assertIn("**Source:** 1 result document(s)", rendered)
+        for item in SCENARIOS:
+            with self.subTest(scenario=item.name):
+                self.assertIn(f"{item.number}. {item.name}", rendered)
+
+    def test_the_merge_refuses_a_shard_from_another_commit(self) -> None:
+        documents = shards()
+        documents[1]["pagerlessCommit"] = "e" * 40
+        with self.assertRaisesRegex(results.ResultError, "not ffff"):
+            results.merge_documents(documents, commit=COMMIT)
+
+    def test_the_merge_refuses_a_replay_shard(self) -> None:
+        with self.assertRaisesRegex(results.ResultError, "not live"):
+            results.merge_documents([shard(("oom",), repeats=1, evidence="replay")], commit=COMMIT)
+
+    def test_the_merge_refuses_a_dirty_shard(self) -> None:
+        documents = shards()
+        documents[0]["pagerlessDirty"] = True
+        with self.assertRaisesRegex(results.ResultError, "dirty"):
+            results.merge_documents(documents, commit=COMMIT)
+
+    def test_the_merge_refuses_a_batch_that_misses_a_shard(self) -> None:
+        with self.assertRaisesRegex(results.ResultError, "no shard document covers"):
+            results.merge_documents(
+                shards()[:4], commit=COMMIT, scenarios=tuple(item.name for item in SCENARIOS)
+            )
+        incomplete = shards()
+        incomplete[0]["runs"] = [item for item in incomplete[0]["runs"] if item["repeat"] == 1]
+        with self.assertRaisesRegex(results.ResultError, "missing"):
+            results.merge_documents(incomplete, commit=COMMIT)
+
+    def test_the_merge_refuses_a_failed_run(self) -> None:
+        documents = shards()
+        documents[4] = shard(("email-memory-leak",), result="fail")
+        with self.assertRaisesRegex(results.ResultError, "failed runs"):
+            results.merge_documents(documents, commit=COMMIT)
+
+    def test_the_merge_refuses_two_shards_for_the_same_run(self) -> None:
+        documents = shards()
+        documents[1] = shard(("oom", "bad-image-tag", "unschedulable"))
+        with self.assertRaisesRegex(results.ResultError, "more than one shard"):
+            results.merge_documents(documents, commit=COMMIT)
+
+    def test_the_merge_refuses_disagreeing_repeat_counts(self) -> None:
+        documents = shards()
+        documents[4] = shard(("email-memory-leak",), repeats=1)
+        with self.assertRaisesRegex(results.ResultError, "repeat count"):
+            results.merge_documents(documents, commit=COMMIT)
+
+    def test_the_merge_refuses_a_different_repeat_count(self) -> None:
+        with self.assertRaisesRegex(results.ResultError, "not 1"):
+            results.merge_documents(shards(), commit=COMMIT, repeats=1)
+
+    def test_the_merge_refuses_no_documents(self) -> None:
+        with self.assertRaisesRegex(results.ResultError, "no shard documents"):
+            results.merge_documents([], commit=COMMIT)
 
 
 class ResultDocumentTest(unittest.TestCase):
@@ -113,6 +294,62 @@ class ResultDocumentTest(unittest.TestCase):
         self.assertEqual(results.model_label("anthropic"), ("claude-haiku-5-5", "Claude Haiku 5.5"))
         with self.assertRaises(results.ResultError):
             results.model_label("someone-else")
+
+
+class MergeCommandTest(unittest.TestCase):
+    """The `python -m pagerless_eval.results merge` command the workflow runs."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.directory.name)
+        self.shards = self.root / "shards"
+        # Each artifact extracts into its own directory that mirrors the upload.
+        for index, names in enumerate(SHARDS, start=1):
+            artifact = self.shards / f"eval-results-{COMMIT}-full-{index}-shard"
+            document = shard(names)
+            started = datetime.fromisoformat(document["startedAt"].replace("Z", "+00:00"))
+            path = results.result_path(
+                artifact / "evals" / "results", started, COMMIT, "live"
+            )
+            results.write_document(path, document)
+
+    def tearDown(self) -> None:
+        self.directory.cleanup()
+
+    def test_the_command_writes_the_merged_document_and_the_summary(self) -> None:
+        out = self.root / "out"
+        summary = self.root / "summary.md"
+        exit_code = results.main(
+            [
+                "merge",
+                "--shards",
+                str(self.shards),
+                "--out-dir",
+                str(out),
+                "--commit",
+                COMMIT,
+                "--scenarios",
+                "all",
+                "--summary",
+                str(summary),
+            ]
+        )
+        self.assertEqual(exit_code, 0)
+        written = sorted(out.glob("*.json"))
+        self.assertEqual([path.name for path in written], ["2026-11-17-ffffffffffff-live.json"])
+        stored = results.load_document(written[0])
+        self.assertEqual(len(stored["runs"]), 20)
+        self.assertIn("**Runs:** 20 across 10 Scenarios", summary.read_text(encoding="utf-8"))
+
+    def test_the_command_refuses_a_directory_without_a_shard(self) -> None:
+        empty = self.root / "empty"
+        empty.mkdir()
+        self.assertEqual(
+            results.main(
+                ["merge", "--shards", str(empty), "--out-dir", str(self.root / "out"), "--commit", COMMIT]
+            ),
+            1,
+        )
 
 
 class RevisionTest(unittest.TestCase):

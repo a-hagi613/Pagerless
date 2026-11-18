@@ -51,6 +51,10 @@ INJECTED_CONTAINER = "memory-holder"
 # replaces them: flagd first, so the services start after it and read the
 # restored flags.
 FLAG_WORKLOADS = ("flagd", "cart", "payment", "product-catalog", "email")
+# FLAG_SCENARIOS inject a change to the demo's flagd configuration, so the flag
+# outlives the run until the Workloads that read it are replaced. A run from this
+# set marks the Sandbox dirty, and the next reset replaces those Workloads.
+FLAG_SCENARIOS = ("cart-flag", "payment-flag", "product-catalog-flag", "email-memory-leak")
 # Alertmanager is reachable only inside the cluster, so the harness reads its
 # active alerts through the Kubernetes API service proxy, as gateway.py does for
 # Loki.
@@ -140,6 +144,13 @@ class Harness:
         self.commit, self.dirty = pagerless_revision(config.repo_root)
         self.runs: list[dict[str, Any]] = []
         self.path: Path | None = None
+        # _flag_dirty records that a Scenario has changed the demo's flagd
+        # configuration since the Workloads that read it were last replaced. A
+        # reset replaces them only when this is set, so an untouched Workload
+        # keeps its pod age: ContainerMemoryGrowth ignores a pod younger than 15
+        # minutes, and replacing it before every run would make that rule
+        # unreachable for a Scenario that starts from a fresh pod.
+        self._flag_dirty = False
         # completed and total drive the per-run counters, so a long batch says
         # how far through it is instead of printing indistinguishable lines.
         self.completed = 0
@@ -340,6 +351,12 @@ class Harness:
         evidence.known_good = self._memory_settings()
         self._delete_triages()
         since = isoformat(utc_now())
+        # A flag Scenario changes the shared flagd configuration, and the change
+        # survives the reset of the Sandbox's Git state until the pods that read
+        # the flags are replaced. Mark that before injecting, so a break that
+        # fails after it committed the change is still cleaned up.
+        if scenario.name in FLAG_SCENARIOS:
+            self._flag_dirty = True
         self._break(scenario)
         evidence.injected_commit = self._sandbox_revision()
         evidence.injected = self._memory_settings()
@@ -541,9 +558,17 @@ class Harness:
                 check=False,
             )
             self._wait_sandbox_healthy()
+            # The adapter restores the Sandbox's Git state, but it cannot replace
+            # a pod, so the harness does that here. Only a flag Scenario leaves a
+            # flag behind, so only it needs the replacement.
+            if self._flag_dirty:
+                self._replace_flag_workloads()
         else:
+            # hack/reset.sh restores the Sandbox and replaces the flag Workloads
+            # itself, so a live reset always starts from the known-good flags.
             self._make("reset", timeout=self.config.timeouts.reset)
             self._wait_sandbox_healthy()
+        self._flag_dirty = False
         self.kube.run(
             "-n",
             SANDBOX_NAMESPACE,
@@ -553,8 +578,6 @@ class Harness:
             "--timeout=600s",
             timeout=660,
         )
-        if self.config.adapter:
-            self._replace_flag_workloads()
         if scenario is not None and scenario.alert is not None:
             self._wait_alert_inactive(scenario)
 
@@ -567,6 +590,9 @@ class Harness:
         step a Scenario's flag would outlive the reset even though the Sandbox is
         at known-good. flagd is replaced first, so the services that start after
         it read the restored flags.
+
+        The harness calls this only after a flag Scenario ran, so a batch that
+        never changed a flag leaves the demo's pods, and their pod age, alone.
         """
         for workload in FLAG_WORKLOADS:
             self.kube.run(
@@ -705,7 +731,10 @@ class Harness:
         )
 
     def _break(self, scenario: Scenario) -> None:
-        self._make("break", f"SCENARIO={scenario.name}", timeout=1500)
+        # hack/break.sh waits up to 22 minutes for an alert, and the flag
+        # Scenarios also wait for a pull request merge and an Argo CD sync, so the
+        # subprocess timeout leaves room for both.
+        self._make("break", f"SCENARIO={scenario.name}", timeout=1680)
 
     def _make(self, target: str, *arguments: str, timeout: int) -> None:
         command = ["make", "-C", str(self.config.repo_root), target, *arguments]

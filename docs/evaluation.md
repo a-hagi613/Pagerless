@@ -15,8 +15,10 @@ For each Scenario and repeat, the harness:
 2. Resets the Sandbox to `known-good` and waits for the Argo CD `sandbox`
    Application to be Synced and Healthy and for `deployment/checkout` to roll
    out. In the adapter subset it also deletes any leftover StressChaos
-   experiment and replaces the pods that read the demo's flags, as
-   `hack/reset.sh` does, so a previous Scenario's flag cannot outlive the reset.
+   experiment, and it replaces the pods that read the demo's flags, as
+   `hack/reset.sh` does, but only after a Scenario changed those flags, so a
+   previous Scenario's flag cannot outlive the reset without restarting pods
+   that never read one. `hack/reset.sh` replaces them itself in a live run.
    When the Scenario has an opted-in alert, it then waits until Alertmanager no
    longer reports that alert for the Workload, so the next run starts from a
    quiet Alertmanager.
@@ -227,8 +229,8 @@ credential:
 | `phase` | choice `measured`, `full` | `measured` | `measured` runs `oom` once to confirm cost and writes the genuine recordings; `full` runs all ten Scenarios twice and samples the stack's memory. |
 | `scenarios` | string | empty | Overrides the phase's Scenario list; empty uses the phase default. |
 | `repeats` | number | 1 | Repeats per Scenario. |
-| `max_tokens` | number | 150000 | The hard token budget passed to the harness. One live investigation may use its full 100,000-input-token budget and the harness fails a batch that outspends its own budget, so the default clears a single investigation. |
-| `max_cost_usd` | number | 1 | The hard cost budget passed to the harness. The job rejects a budget above 4.5 USD, which keeps one batch inside the 5 USD mission cap. |
+| `max_tokens` | number | 150000 | The hard token budget passed to the harness. One live investigation may use its full 100,000-input-token budget and the harness fails a batch that outspends its own budget, so the default clears a single investigation. A full batch passes it to each of its five shards and the merged document records their sum. |
+| `max_cost_usd` | number | 1 | The hard cost budget passed to the harness. The job rejects a budget above 4.5 USD, which keeps one batch inside the 5 USD mission cap. A full batch passes it to each shard and the merged document records their sum. |
 | `confirm_paid_run` | string | empty | Must be exactly `yes`; anything else fails the job before a model call. |
 | `model_provider` | choice `anthropic`, `bedrock` | `anthropic` | The measured provider. |
 
@@ -250,6 +252,36 @@ credential-free CI subset cannot spend money. A `full` run leaves the agent in
 Replay and samples the kind node container's memory every five seconds, so the
 published requirement in [README.md](../README.md) can equal a measured peak plus
 a margin instead of an estimate.
+
+A `full` run without a `scenarios` override is dispatched as five shards on five
+runners, each with its own kind cluster and its own Scenarios:
+
+| Shard | Scenarios |
+| --- | --- |
+| `1-checkout-fast` | `oom`, `bad-config` |
+| `2-checkout-spec` | `bad-image-tag`, `unschedulable` |
+| `3-flags-a` | `cart-flag`, `payment-flag` |
+| `4-flags-cpu-inj` | `product-catalog-flag`, `cpu`, `injection` |
+| `5-memory-leak` | `email-memory-leak` |
+
+Each shard publishes its own result document and memory samples. The `aggregate`
+job then downloads every shard artifact, and
+`python -m pagerless_eval.results merge` recombines them into the single
+document a batch publishes: it refuses a shard from another commit, another
+evidence mode, or a dirty worktree, a batch that misses a Scenario or repeat,
+two shards that record the same run, and any failed run. It starts the document
+at the earliest shard, sums the spend and the shard budgets, writes
+`evals/results/<date>-<commit>-live.json`, renders the result table into the job
+summary, and concatenates the memory samples. A `measured` run and a
+`scenarios` override run one shard named `single`, and publish its artifacts
+directly.
+
+A shard waits out one deadline that is longer than the rest:
+`ContainerMemoryGrowth` fires only for a pod older than 15 minutes and then
+holds its `for: 1m`, so `hack/break.sh` allows 22 minutes for that alert and the
+harness allows 28 minutes for the whole injection. The harness also replaces the
+flag-driven pods only after a Scenario changed the demo's flags, so a batch that
+never changed them does not restart pods it does not need to.
 
 Exact commands, from a checkout at the commit under test:
 
@@ -273,9 +305,10 @@ The workflow uploads these artifacts, with `if: always()`:
 
 | Artifact | Path | Contents |
 | --- | --- | --- |
-| `eval-results-<commit>-<phase>` | `evals/results/` | The versioned result documents, including failed and timed-out runs. |
-| `replay-recordings-<commit>` | `evals/replay/` | Any recording captured with `evals/replay/capture.py` for the run, when the workflow sets `PAGERLESS_RECORDING_PVC` and retrieves it. |
-| `memory-samples-<commit>-<phase>` | `memory-samples.txt` | The raw `docker stats` memory samples that the measured requirement is read from. |
+| `eval-results-<commit>-<phase>-<shard>` | `evals/results/` | One shard's versioned result document, including failed and timed-out runs. A `full` shard uploads this name, and the `aggregate` job publishes the merged document as `eval-results-<commit>-full`. |
+| `replay-recordings-<commit>` | `evals/replay/` | Any recording captured with `evals/replay/capture.py` for the run, when the workflow sets `PAGERLESS_RECORDING_PVC` and retrieves it. A measured run's `single` shard uploads it. |
+| `memory-samples-<commit>-<phase>-<shard>` | `memory-samples.txt` | The raw `docker stats` memory samples that the measured requirement is read from. The `aggregate` job concatenates the shards' samples as `memory-samples-<commit>-full`. |
+| `paid-eval-diagnostics-<commit>-<shard>` | `e2e-diagnostics/` | The diagnostics a failing shard collected. |
 
 The job never uploads `.env`, a kubeconfig, the eval-approver certificate or
 key, the agent credentials Secret, or the Loki query response. The agent's
