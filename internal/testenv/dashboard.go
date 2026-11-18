@@ -102,6 +102,11 @@ func (a *fakeAuth) SignOut() http.Handler {
 	})
 }
 
+// RealmProxy implements dashboardapi.Auth.
+func (a *fakeAuth) RealmProxy() http.Handler {
+	return nil
+}
+
 // fakeApprovers is a stand-in for the Keycloak group check.
 type fakeApprovers struct {
 	mu      sync.Mutex

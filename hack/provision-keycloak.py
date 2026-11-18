@@ -20,11 +20,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-CONTEXT = "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
+CONTEXT = os.environ.get("PAGERLESS_KUBE_CONTEXT") or "kind-" + os.environ.get("KIND_CLUSTER_NAME", "pagerless")
 KEYCLOAK_NAMESPACE = "keycloak"
 PAGERLESS_NAMESPACE = "pagerless"
 CREDENTIALS_SECRET = "keycloak-credentials"
 DASHBOARD_SECRET = "pagerless-keycloak-dashboard"
+OPERATOR_SECRET = "pagerless-dashboard-operator"
 REALM = "pagerless"
 KUBERNETES_ISSUER = "https://kubernetes.default.svc.cluster.local"
 AGENT_CLIENT = "pagerless-agent"
@@ -32,7 +33,25 @@ AGENT_SERVICE_ACCOUNT = "pagerless-agent"
 DASHBOARD_CLIENT = "pagerless-dashboard"
 SERVER_CLIENT = "pagerless-server"
 APPROVERS_GROUP = "pagerless-approvers"
-DASHBOARD_REDIRECTS = ["http://localhost:8080/*", "http://127.0.0.1:8080/*"]
+OPERATOR_USER = os.environ.get("PAGERLESS_DASHBOARD_USER", "").strip() or "pagerless-approver"
+
+
+def dashboard_redirects():
+    redirects = [
+        "http://localhost:8080/*",
+        "http://127.0.0.1:8080/*",
+        "http://devbox:8080/*",
+        "http://100.75.231.118:8080/*",
+    ]
+    custom = os.environ.get("PAGERLESS_DASHBOARD_BASE_URL", "").strip().rstrip("/")
+    if custom:
+        candidate = custom + "/*"
+        if candidate not in redirects:
+            redirects.append(candidate)
+    return redirects
+
+
+DASHBOARD_REDIRECTS = dashboard_redirects()
 
 
 def kubectl(*args, data=None):
@@ -159,6 +178,50 @@ def ensure_group(admin):
     _, groups = admin.call("GET", f"/admin/realms/{REALM}/groups?search={APPROVERS_GROUP}&exact=true")
     if not groups:
         admin.require("POST", f"/admin/realms/{REALM}/groups", {"name": APPROVERS_GROUP})
+        _, groups = admin.call("GET", f"/admin/realms/{REALM}/groups?search={APPROVERS_GROUP}&exact=true")
+    if not groups:
+        raise RuntimeError(f"Keycloak did not create the {APPROVERS_GROUP} group")
+    return groups[0]["id"]
+
+
+def ensure_operator_user(admin, group_id):
+    saved = existing_secret(OPERATOR_SECRET, PAGERLESS_NAMESPACE)
+    username = OPERATOR_USER
+    password = saved.get("password") or secrets.token_urlsafe(18)
+    query = urllib.parse.quote(username)
+    _, found = admin.call("GET", f"/admin/realms/{REALM}/users?username={query}&exact=true")
+    user = found[0] if found else {
+        "username": username,
+        "enabled": True,
+        "emailVerified": True,
+        "firstName": "Pagerless",
+        "lastName": "Approver",
+        "email": f"{username}@pagerless.local",
+        "requiredActions": [],
+    }
+    user.update({
+        "enabled": True,
+        "emailVerified": True,
+        "firstName": user.get("firstName") or "Pagerless",
+        "lastName": user.get("lastName") or "Approver",
+        "email": user.get("email") or f"{username}@pagerless.local",
+        "requiredActions": [],
+    })
+    if found:
+        admin.require("PUT", f"/admin/realms/{REALM}/users/{user['id']}", user)
+    else:
+        admin.require("POST", f"/admin/realms/{REALM}/users", user)
+        _, created = admin.call("GET", f"/admin/realms/{REALM}/users?username={query}&exact=true")
+        if not created:
+            raise RuntimeError(f"Keycloak did not create the {username} user")
+        user = created[0]
+    admin.require(
+        "PUT",
+        f"/admin/realms/{REALM}/users/{user['id']}/reset-password",
+        {"type": "password", "value": password, "temporary": False},
+    )
+    admin.require("PUT", f"/admin/realms/{REALM}/users/{user['id']}/groups/{group_id}")
+    return username, password
 
 
 def ensure_kubernetes_identity_provider(admin):
@@ -340,11 +403,12 @@ def main():
     with forward(KEYCLOAK_NAMESPACE, "keycloak", 8080) as base:
         admin = Admin(base, admin_token(base, credentials["admin-password"]))
         ensure_realm(admin)
-        ensure_group(admin)
+        group_id = ensure_group(admin)
         ensure_kubernetes_identity_provider(admin)
         ensure_agent_client(admin, subject)
         client_secret = ensure_dashboard_client(admin)
         server_secret = ensure_server_client(admin)
+        operator_username, operator_password = ensure_operator_user(admin, group_id)
         issuer = f"http://keycloak.{KEYCLOAK_NAMESPACE}.svc.cluster.local:8080/realms/{REALM}"
     apply_secret(DASHBOARD_SECRET, PAGERLESS_NAMESPACE, {
         "client-id": DASHBOARD_CLIENT,
@@ -353,7 +417,14 @@ def main():
         "server-client-secret": server_secret,
         "issuer": issuer,
     })
-    print(f"Provisioned realm {REALM}, group {APPROVERS_GROUP}, and the agent, dashboard, and server clients.")
+    apply_secret(OPERATOR_SECRET, PAGERLESS_NAMESPACE, {
+        "username": operator_username,
+        "password": operator_password,
+    })
+    print(
+        f"Provisioned realm {REALM}, group {APPROVERS_GROUP}, operator {operator_username}, "
+        "and the agent, dashboard, and server clients."
+    )
 
 
 if __name__ == "__main__":

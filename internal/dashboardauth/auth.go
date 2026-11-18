@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,9 +82,12 @@ type User struct {
 // Auth performs the Keycloak flow and resolves session cookies.
 type Auth struct {
 	issuer       string
+	issuerBase   string
+	realmPath    string
 	clientID     string
 	clientSecret func() (string, error)
 	redirectURL  string
+	browserBase  string
 	group        string
 	sessionTTL   time.Duration
 	secure       bool
@@ -110,7 +114,12 @@ func New(cfg Config) (*Auth, error) {
 	case cfg.RedirectURL == "":
 		return nil, errors.New("an OIDC redirect URL is required")
 	}
-	if _, err := url.Parse(cfg.RedirectURL); err != nil {
+	issuerURL, err := url.Parse(cfg.Issuer)
+	if err != nil || issuerURL.Scheme == "" || issuerURL.Host == "" {
+		return nil, fmt.Errorf("the OIDC issuer URL is invalid: %w", err)
+	}
+	redirectURL, err := url.Parse(cfg.RedirectURL)
+	if err != nil || redirectURL.Scheme == "" || redirectURL.Host == "" {
 		return nil, fmt.Errorf("the OIDC redirect URL is invalid: %w", err)
 	}
 	group := cfg.ApproversGroup
@@ -131,9 +140,12 @@ func New(cfg Config) (*Auth, error) {
 	}
 	return &Auth{
 		issuer:       cfg.Issuer,
+		issuerBase:   issuerURL.Scheme + "://" + issuerURL.Host,
+		realmPath:    strings.TrimSuffix(issuerURL.Path, "/"),
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		redirectURL:  cfg.RedirectURL,
+		browserBase:  redirectURL.Scheme + "://" + redirectURL.Host,
 		group:        group,
 		sessionTTL:   ttl,
 		secure:       cfg.SecureCookies,
@@ -194,8 +206,9 @@ func (a *Auth) SignIn() http.Handler {
 			a.fail(w, r, err)
 			return
 		}
-		http.Redirect(w, r, oauth.AuthCodeURL(
-			state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
+		target := oauth.AuthCodeURL(
+			state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
+		http.Redirect(w, r, a.browserAuthURL(target), http.StatusFound)
 	})
 }
 

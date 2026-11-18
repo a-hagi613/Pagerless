@@ -35,13 +35,35 @@ Sessions live in memory for `DefaultSessionTTL` (eight hours). `pagerless-server
 restart ends every session; users sign in again.
 
 Every write repeats the session's CSRF token in the `X-CSRF-Token` header. `GET /api/session` returns the signed-in
-username, groups, whether the user may approve, and that token. The sign-in routes and the `/assets/` bundle are the
-only paths served without a session; an unauthenticated API request is answered with `401` and a page request is
+username, groups, whether the user may approve, and that token. The sign-in routes, the `/assets/` bundle, and (when
+the realm issuer differs from the browser origin) the proxied `/realms/<realm>/` and `/resources/` paths are the only
+routes served without a session; an unauthenticated API request is answered with `401` and a page request is
 redirected to `/login`.
+
+### Single-port Keycloak realm proxy
+
+In kind and EKS, `pagerless-server` discovers and talks to Keycloak over the cluster DNS name
+`http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless`, which a browser on an operator's laptop cannot
+resolve over `kubectl port-forward` (`http://localhost:8080`) or Tailscale (`http://devbox:8080`). When the origin of
+`--oidc-issuer` differs from `--dashboard-base-url` (or `$PAGERLESS_DASHBOARD_BASE_URL`), `dashboardauth.RealmProxy()`
+proxies `/realms/<realm>/...` and `/resources/...` on the dashboard listener itself:
+
+- `GET /login` rewrites the authorization redirect origin to `--dashboard-base-url` while keeping the PKCE challenge,
+  nonce, and state.
+- Browser requests to `/realms/<realm>/...` and `/resources/...` are forwarded to the issuer origin with `Location`
+  headers and text response bodies rewritten to `--dashboard-base-url`, and `Secure` cookie attributes stripped when
+  `--dashboard-cookie-secure=false`. Administrative routes such as `/admin/` and other realms are refused with `404`.
+- Backchannel OpenID Connect discovery, JWKS retrieval, expected `iss` verification, and authorization-code exchange
+  continue talking directly to `--oidc-issuer` inside the cluster.
+
+`hack/provision-keycloak.py` registers redirect URIs and web origins for `http://localhost:8080/*`,
+`http://127.0.0.1:8080/*`, `http://devbox:8080/*`, `http://100.75.231.118:8080/*`, and `$PAGERLESS_DASHBOARD_BASE_URL/*`
+(when set), and idempotently provisions the operator user (`$PAGERLESS_DASHBOARD_USER`, default `pagerless-approver`)
+in `pagerless-approvers`, storing the credentials in the `pagerless/pagerless-dashboard-operator` Secret.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--dashboard-base-url` | `http://localhost:8080` | The browser-facing base URL; the callback is this URL plus `/auth/callback`. |
+| `--dashboard-base-url` | `http://localhost:8080` | The browser-facing base URL (overridden by `$PAGERLESS_DASHBOARD_BASE_URL`); the callback is this URL plus `/auth/callback`. |
 | `--dashboard-cookie-secure` | `true` | Mark cookies `Secure`. The supplied manifests set it to `false` because the local port-forward is plain HTTP. |
 | `--oidc-issuer` | `http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless` | The realm issuer. |
 | `--oidc-client-id` | `pagerless-dashboard` | The confidential client that completes sign-in. |
@@ -192,6 +214,25 @@ During development, run the server's dashboard listener on port 8082 (for exampl
 and `npm run dev` in `dashboard/`; Vite proxies `/api` to `127.0.0.1:8082`. Sign-in still redirects the browser to
 the realm's issuer, so use the local stack's port-forward on port 8080 rather than the Vite dev server when the
 flow itself is what you are testing.
+
+### Live devbox preview
+
+To inspect and interact with the dashboard on the devbox without standing up a full kind or EKS cluster,
+`hack/dashboard-preview.sh` starts a detached Keycloak container on `127.0.0.1:18180`, provisions the `pagerless`
+realm and an approver user, and runs `pagerless-server` via `TestDashboardPreview` (`internal/server/preview_test.go`,
+`//go:build preview`) bound to `0.0.0.0:8080` with `PAGERLESS_PREVIEW_BASE_URL=http://devbox:8080`. It exercises the
+single-port `RealmProxy()` flow and seeds a `Proposed` OOMKilled Triage on `Deployment sandbox/checkout` (with
+Findings, Diagnosis, a `PatchResources` Proposal, and its rendered diff ready for interactive Approval or Rejection)
+alongside a `Recovered` Triage on `Deployment sandbox/cart` (with Verification checks and Narrative).
+
+```bash
+bash hack/dashboard-preview.sh start    # start Keycloak + preview server and print the mode-0600 credentials file path
+bash hack/dashboard-preview.sh status   # report whether the preview server and Keycloak container are running
+bash hack/dashboard-preview.sh stop     # stop the preview server and remove the Keycloak container
+```
+
+All runtime state and generated credentials are kept under `/tmp/pagerless-dashboard-preview` (`chmod 700` directory,
+`chmod 600` files) and never written into the repository or printed to standard output.
 
 ## Tests
 
