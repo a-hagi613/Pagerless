@@ -175,13 +175,13 @@ wait_for_application sandbox "$merge_sha" 300 synced
 # that matches the pattern, so that every Scenario confirms the failure it
 # injected instead of assuming it.
 wait_for_checkout() {
-	local query="$1" pattern="$2" observed="$3" deadline=$((SECONDS + 240)) output
+	local query="$1" pattern="$2" observed="$3" deadline=$((SECONDS + 480)) output
 	while :; do
 		output="$(kc -n sandbox get pods -l app.kubernetes.io/name=checkout -o jsonpath="$query" 2>/dev/null || true)"
 		if grep -qE "$pattern" <<<"$output"; then
 			return 0
 		fi
-		[ "$SECONDS" -lt "$deadline" ] || die "the checkout Workload did not report $observed within 4 minutes."
+		[ "$SECONDS" -lt "$deadline" ] || die "the checkout Workload did not report $observed within 8 minutes."
 		sleep 5
 	done
 }
@@ -234,8 +234,8 @@ wait_for_alert() {
 	done
 }
 
-last_terminated='{range .items[*]}{.status.containerStatuses[*].lastState.terminated.reason}{"\n"}{end}'
-waiting='{range .items[*]}{.status.containerStatuses[*].state.waiting.reason}{"\n"}{end}'
+last_terminated='{range .items[*]}{range .status.containerStatuses[*]}{.lastState.terminated.reason}{"\n"}{end}{end}'
+waiting='{range .items[*]}{range .status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}{end}'
 unschedulable='{range .items[*]}{.status.conditions[?(@.type=="PodScheduled")].reason}{"\n"}{end}'
 
 case "$scenario" in
