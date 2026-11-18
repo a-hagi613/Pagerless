@@ -25,7 +25,10 @@ on:
         description: "Hard token budget for the whole batch"
         type: number
         required: false
-        default: 40000
+        # One live investigation may use its full 100,000-input-token budget and
+        # the harness fails a batch whose spend exceeds its own budget, so the
+        # measured default must clear a single investigation.
+        default: 150000
       max_cost_usd:
         description: "Hard cost budget in USD for the whole batch"
         type: number

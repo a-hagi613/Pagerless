@@ -187,8 +187,13 @@ def prepare(cluster: Cluster, key_file: Path) -> None:
     )
 
 
+# OOM_ACTIONS are the two root-cause fixes that spec #16 accepts for Scenario 1,
+# and Scenario 10 inherits both. A genuine recording of either can be published.
+OOM_ACTIONS = ("PatchResources", "Rollback")
+
+
 def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
-    """Require a normalized live PatchResources investigation within the configured budgets."""
+    """Require a normalized live Scenario 1 investigation within the configured budgets."""
     payload = path.read_bytes()
     if len(payload) > _MAX_ARTIFACT_BYTES:
         raise RuntimeError("the recording exceeds the capture size limit")
@@ -216,9 +221,9 @@ def validate_recording(path: Path, secrets: tuple[str, ...] = ()) -> Recording:
         raise RuntimeError("the recording has no complete Diagnosis and Proposal")
     DiagnosisOutput.model_validate(diagnoses[0].response.structured)
     proposal = PROPOSED_ACTION.validate_python(normalize_proposal(proposals[-1].response.structured))
-    if proposal.action != "PatchResources":
+    if proposal.action not in OOM_ACTIONS:
         raise RuntimeError(
-            "the live OOMKilled investigation did not propose PatchResources"
+            "the live OOMKilled investigation did not propose PatchResources or a Rollback"
         )
     tokens = sum(t.response.usage.input_tokens for t in recording.turns)
     calls = sum(
@@ -420,8 +425,8 @@ def write_provenance(
     proposal = status.get("proposal")
     if not proposal:
         raise RuntimeError("the finished Triage has no server-validated Proposal")
-    if proposal["action"] != "PatchResources":
-        raise RuntimeError("the server did not validate a PatchResources Proposal")
+    if proposal["action"] not in OOM_ACTIONS:
+        raise RuntimeError("the server did not validate a PatchResources or Rollback Proposal")
     container = job["spec"]["template"]["spec"]["containers"][0]
     environment = {entry["name"]: entry.get("value") for entry in container["env"]}
     if environment.get("PAGERLESS_MODEL_PROVIDER") != "anthropic":

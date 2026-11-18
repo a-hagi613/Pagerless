@@ -38,6 +38,20 @@ class ResultDocumentTest(unittest.TestCase):
     def test_a_missing_field_is_named(self) -> None:
         broken = document()
         del broken["runs"][0]["score"]
+        with self.assertRaisesRegex(results.ResultError, "score"):
+            results.validate_document(broken)
+
+    def test_a_run_without_its_attempts_is_refused(self) -> None:
+        broken = document()
+        del broken["runs"][0]["validationAttempts"]
+        with self.assertRaisesRegex(results.ResultError, "validationAttempts"):
+            results.validate_document(broken)
+
+    def test_a_refusal_must_record_its_errors(self) -> None:
+        broken = document()
+        broken["runs"][0]["refusals"] = [{"attempt": 1, "action": "Scale"}]
+        with self.assertRaisesRegex(results.ResultError, "refusal"):
+            results.validate_document(broken)
         with self.assertRaises(results.ResultError) as context:
             results.validate_document(broken)
         self.assertIn("score", str(context.exception))

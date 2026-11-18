@@ -162,7 +162,22 @@ func (r *renderer) DryRun(
 	ctx context.Context, live *remediation.LiveWorkload,
 ) ([]agentapi.ValidationError, error) {
 	container := findLiveContainer(live.PodSpec, r.params.Container)
-	container.Resources = overlay(container.Resources, r.params.Requests, r.params.Limits)
+	if container == nil {
+		return []agentapi.ValidationError{{
+			Field:   fieldPrefix + ".container",
+			Message: fmt.Sprintf("the Workload has no container named %s", r.params.Container),
+		}}, nil
+	}
+	merged := overlay(container.Resources, r.params.Requests, r.params.Limits)
+	// checkMerged validated the Sandbox's copy of the manifest. The API server
+	// validates the live Workload instead, and the two can differ while Argo CD
+	// has not applied a change yet. Checking the live merge here reports the
+	// precise rule the Proposal breaks, instead of the dry run's less useful
+	// refusal.
+	if errs := checkMerged(merged); len(errs) > 0 {
+		return errs, nil
+	}
+	container.Resources = merged
 	// The dry run asks whether the patched object is acceptable, not whether nothing changed since it was read;
 	// a later change makes the Proposal stale, which is checked separately.
 	live.Object.SetResourceVersion("")

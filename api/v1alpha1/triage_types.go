@@ -94,9 +94,16 @@ const (
 	ConditionInvalid = "Invalid"
 	// ConditionProposalRevalidated records that a Stale Proposal was re-validated under a new hash.
 	ConditionProposalRevalidated = "ProposalRevalidated"
+	// ConditionProposalRefused records every Proposal that failed Validation. Its
+	// message carries one line per refused attempt with the Action, the parameters
+	// the agent proposed, and the Validation errors, so a refusal stays with the
+	// Triage after the agent replaces the Proposal with a revision.
+	ConditionProposalRefused = "ProposalRefused"
 
 	// ReasonValidationFailedTwice means the agent's second Proposal also failed Validation.
 	ReasonValidationFailedTwice = "ValidationFailedTwice"
+	// ReasonValidationRefused means a Proposal failed Validation and the agent may submit one revision.
+	ReasonValidationRefused = "ValidationRefused"
 	// ReasonStaleProposalInvalid means a Stale Proposal failed re-validation.
 	ReasonStaleProposalInvalid = "StaleProposalInvalid"
 

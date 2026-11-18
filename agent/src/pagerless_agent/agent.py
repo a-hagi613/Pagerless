@@ -277,6 +277,10 @@ class Agent:
         answer = await self._server.post_report(report)
         if answer.accepted:
             return {"outcome": Outcome("reported", "The report was accepted.", phase=answer.phase)}
+        # The server also records the refusal on the Triage; the Job log keeps it
+        # beside the model calls that produced it for failure diagnostics.
+        reasons = "; ".join(f"{error.field}: {error.message}" for error in answer.errors)
+        log.warning("the server refused Proposal attempt %d: %s", state["attempt"], reasons)
         return {"errors": answer.errors, "proposal": None}
 
     def _after_submit(self, state: _State) -> str:

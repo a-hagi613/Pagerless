@@ -2,14 +2,18 @@ package server_test
 
 import (
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/yaml"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
@@ -125,6 +129,16 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 				d.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceCPU] = resource.MustParse("500m")
 			}},
 			wantField: workloadField, wantText: "dry run"},
+		// Argo CD may not have applied the manifest yet, so the live Workload can
+		// differ from the Sandbox copy. Validation must judge the resources the
+		// API server will see and name the rule the Proposal breaks.
+		{name: "live Workload request above the proposed limit", limits: quantities("memory", "384Mi"),
+			workload: workload{mutateLive: func(d *appsv1.Deployment) {
+				c := &d.Spec.Template.Spec.Containers[0]
+				c.Resources.Requests = quantities("memory", "512Mi")
+				c.Resources.Limits = quantities("memory", "512Mi")
+			}},
+			wantField: "requests[memory]", wantText: "exceed"},
 	}
 	for i, tc := range tests {
 		tc.workload.name = "refused-" + strings.ReplaceAll(strings.ToLower(tc.name), " ", "-")
@@ -169,6 +183,131 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 			}
 		})
 	}
+}
+
+// TestValidFirstPatchResourcesOnMemoryHolderIsAccepted guards the shape a live
+// OOMKilled investigation submits: the first Proposal names the container that
+// OOMs and raises its memory limit, and Validation must accept it without a
+// refusal or a revision.
+func TestValidFirstPatchResourcesOnMemoryHolderIsAccepted(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources())
+	ns := &corev1.Namespace{Name: sandboxNamespace}
+	if err := env.Client.Create(t.Context(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create namespace: %v", err)
+	}
+	manifest := oomInjectedCheckout(t)
+	env.Sandbox.Commit(checkoutManifestPath, manifest, "Inject the oom Scenario into checkout")
+	var live appsv1.Deployment
+	if err := yaml.UnmarshalStrict([]byte(manifest), &live); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.Client.Create(t.Context(), &live); err != nil {
+		t.Fatalf("create the injected Deployment: %v", err)
+	}
+
+	name, agent := startTriage(t, env, checkout)
+	result, err := agent.API.PostReport(t.Context(), patchReport("memory-holder",
+		quantities("memory", "64Mi"), quantities("memory", "64Mi")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.StatusCode != http.StatusOK || result.Report == nil || !result.Report.Accepted {
+		t.Fatalf("answer = %+v, want the first Proposal accepted", result)
+	}
+	tr := env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
+	if tr.Status.ValidationAttempts != 0 {
+		t.Errorf("validationAttempts = %d, want 0 for a first-attempt acceptance", tr.Status.ValidationAttempts)
+	}
+	if tr.Status.Proposal == nil || tr.Status.Proposal.Attempt != 1 {
+		t.Fatalf("proposal = %+v, want the first attempt", tr.Status.Proposal)
+	}
+	if condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionProposalRefused); condition != nil {
+		t.Errorf("an accepted Proposal left a %s condition: %+v", v1alpha1.ConditionProposalRefused, condition)
+	}
+	change := tr.Status.Proposal.RenderedChange
+	if change == nil {
+		t.Fatal("the accepted Proposal carries no rendered change")
+	}
+	for _, want := range []string{"-            memory: 32Mi", "+            memory: 64Mi"} {
+		if !strings.Contains(change.Patch, want) {
+			t.Errorf("patch lacks %q:\n%s", want, change.Patch)
+		}
+	}
+}
+
+// TestEveryRefusedProposalIsRecordedOnTheTriage keeps the refused Action, its
+// parameters, and its Validation errors on the Triage after the agent replaces
+// it, so an operator can see what the agent first got wrong.
+func TestEveryRefusedProposalIsRecordedOnTheTriage(t *testing.T) {
+	t.Parallel()
+	env := testenv.Start(t, withPatchResources())
+	deploy(t, env, workload{name: "recorded"})
+	name, agent := startTriage(t, env, "recorded")
+
+	first, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "1Ti")))
+	if err != nil || first.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("first report: %+v, %v, want 422", first, err)
+	}
+	condition := func() string {
+		tr := env.Get(t, name)
+		found := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionProposalRefused)
+		if found == nil {
+			t.Fatalf("the Triage records no %s condition", v1alpha1.ConditionProposalRefused)
+		}
+		if found.Status != metav1.ConditionTrue || found.Reason != v1alpha1.ReasonValidationRefused {
+			t.Errorf("refusal condition = %+v, want status True and reason %s",
+				found, v1alpha1.ReasonValidationRefused)
+		}
+		return found.Message
+	}
+	message := condition()
+	for _, want := range []string{"attempt 1: PatchResources", "container=app", "limits[memory]=1Ti", "permitted range"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the refusal message lacks %q:\n%s", want, message)
+		}
+	}
+
+	// A second refusal of a different Action keeps the first line, so both
+	// attempts stay visible after the Triage ends as Invalid.
+	second, err := agent.API.PostReport(t.Context(), agentapi.Report{
+		Diagnosis: "A replica count of zero would stop the traffic.",
+		Findings:  []v1alpha1.Finding{logFinding},
+		Proposal: v1alpha1.ProposedAction{
+			Action:     v1alpha1.ActionScale,
+			Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 0}},
+		},
+	})
+	if err != nil || second.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("second report: %+v, %v, want 422", second, err)
+	}
+	message = condition()
+	for _, want := range []string{"attempt 1: PatchResources", "attempt 2: Scale replicas=0", "not accepted"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the refusal message lacks %q:\n%s", want, message)
+		}
+	}
+}
+
+// checkoutManifestPath is where the demo's checkout Deployment lives in the Sandbox.
+const checkoutManifestPath = "workloads/deployments/checkout.yaml"
+
+// oomInjectedCheckout returns the rendered checkout manifest with the oom
+// Scenario's injection applied, so Validation renders against the file the live
+// Scenario would hold.
+func oomInjectedCheckout(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../sandbox/testdata/known-good-checkout.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	knownGood := "            memory: 128Mi\n          requests:\n            memory: 64Mi"
+	injected := "            memory: 32Mi\n          requests:\n            memory: 32Mi"
+	manifest := strings.Replace(string(raw), knownGood, injected, 1)
+	if manifest == string(raw) {
+		t.Fatal("the known-good manifest does not carry the memory-holder resources the oom Scenario lowers")
+	}
+	return manifest
 }
 
 func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {

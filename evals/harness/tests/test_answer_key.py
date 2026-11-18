@@ -39,6 +39,13 @@ class AnswerKeyTest(unittest.TestCase):
         }
         self.assertEqual({item.name: item.expected_action for item in SCENARIOS}, expected)
 
+    def test_scenario_one_and_ten_accept_both_root_cause_fixes(self) -> None:
+        # Spec #16: PatchResources inside the bound, or a Rollback of exactly the
+        # injected commit. Scenario 10 is built on the same fault and inherits both.
+        self.assertEqual(scenario("oom").accepted_actions, ("PatchResources", "Rollback"))
+        self.assertEqual(scenario("injection").accepted_actions, ("PatchResources", "Rollback"))
+        self.assertEqual(scenario("bad-config").accepted_actions, ("Rollback",))
+
     def test_manual_triggers_match_break_script(self) -> None:
         manual = {item.name for item in SCENARIOS if item.trigger is Trigger.MANUAL}
         self.assertEqual(manual, {"bad-config", "bad-image-tag", "unschedulable", "cpu"})

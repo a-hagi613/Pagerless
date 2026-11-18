@@ -209,7 +209,7 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		errs = []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}}
 	}
 	if len(errs) > 0 {
-		h.refuse(ctx, w, t, attempt, errs)
+		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
 		return
 	}
 	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Triage: t, Action: report.Proposal}, attempt)
@@ -218,7 +218,7 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		return
 	}
 	if len(errs) > 0 {
-		h.refuse(ctx, w, t, attempt, errs)
+		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
 		return
 	}
 	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
@@ -248,11 +248,16 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 	writeJSON(w, http.StatusOK, agentapi.ReportResponse{Accepted: true, Phase: updated.Status.Phase})
 }
 
+// maxRefusalMessageRunes bounds the ProposalRefused condition message. Two
+// refusals fit comfortably inside it.
+const maxRefusalMessageRunes = 3000
+
 // refuse records a Proposal that failed Validation and answers with its errors.
 // The answer names the Triage's phase: Investigating means the agent may
 // submit a revised Proposal, and Invalid means the second failure ended the Triage.
 func (h *Handler) refuse(
-	ctx context.Context, w http.ResponseWriter, t *v1alpha1.Triage, attempt int32, errs []agentapi.ValidationError,
+	ctx context.Context, w http.ResponseWriter, t *v1alpha1.Triage, attempt int32,
+	action v1alpha1.ProposedAction, errs []agentapi.ValidationError,
 ) {
 	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
@@ -262,6 +267,7 @@ func (h *Handler) refuse(
 			return errReportRaced
 		}
 		latest.Status.ValidationAttempts = attempt
+		recordRefusal(latest, attempt, action, errs)
 		if attempt >= v1alpha1.MaxValidationAttempts {
 			latest.Status.Phase = v1alpha1.PhaseInvalid
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
@@ -279,6 +285,39 @@ func (h *Handler) refuse(
 		return
 	}
 	writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs, Phase: updated.Status.Phase})
+}
+
+// recordRefusal appends one line per refused attempt to the ProposalRefused
+// condition: the Action, the parameters the agent proposed, and the Validation
+// errors. Keeping both attempts means a Triage records what the agent first
+// got wrong as well as the Proposal it replaced, which the status no longer
+// holds after a revision is accepted.
+func recordRefusal(
+	latest *v1alpha1.Triage, attempt int32, action v1alpha1.ProposedAction, errs []agentapi.ValidationError,
+) {
+	line := fmt.Sprintf("attempt %d: %s refused: %s", attempt, proposal.Describe(action), proposal.Summary(errs))
+	message := line
+	if existing := meta.FindStatusCondition(latest.Status.Conditions, v1alpha1.ConditionProposalRefused); existing != nil &&
+		existing.Message != "" {
+		message = existing.Message + "\n" + line
+	}
+	meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+		Type:               v1alpha1.ConditionProposalRefused,
+		Status:             metav1.ConditionTrue,
+		Reason:             v1alpha1.ReasonValidationRefused,
+		Message:            boundRefusalMessage(message),
+		ObservedGeneration: latest.Generation,
+	})
+}
+
+// boundRefusalMessage keeps the newest refusals when the message would exceed
+// the bound, because the latest attempt is the one an operator acts on.
+func boundRefusalMessage(message string) string {
+	runes := []rune(message)
+	if len(runes) <= maxRefusalMessageRunes {
+		return message
+	}
+	return string(runes[len(runes)-maxRefusalMessageRunes:])
 }
 
 func (h *Handler) writeUpdateError(ctx context.Context, w http.ResponseWriter, err error) {

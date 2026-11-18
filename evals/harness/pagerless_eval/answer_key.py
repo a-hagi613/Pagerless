@@ -49,6 +49,15 @@ class Scenario:
     replay_recording: str | None = None
     # An Action that does not remove the cause but does clear its symptom.
     mitigated_action: str | None = None
+    # Further Actions that fix the cause and score as a pass. Spec #16 accepts
+    # both a PatchResources inside the bound and a Rollback of exactly the
+    # injected commit for Scenario 1, and Scenario 10 inherits both.
+    alternative_actions: tuple[str, ...] = ()
+
+    @property
+    def accepted_actions(self) -> tuple[str, ...]:
+        """Return every Action that fixes the cause and scores as a pass."""
+        return (self.expected_action, *self.alternative_actions)
 
 
 # The container that the OOM and Unschedulable Scenarios inject and PatchResources
@@ -78,6 +87,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         trigger=Trigger.ALERT,
         alert="ContainerOOMKilled",
         replay_recording="synthetic-oom.json",
+        alternative_actions=("Rollback",),
     ),
     Scenario(
         number=2,
@@ -163,6 +173,7 @@ SCENARIOS: tuple[Scenario, ...] = (
         trigger=Trigger.ALERT,
         alert="ContainerOOMKilled",
         replay_recording="synthetic-injection.json",
+        alternative_actions=("Rollback",),
     ),
 )
 
