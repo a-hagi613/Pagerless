@@ -65,7 +65,7 @@ The model proposes; deterministic code decides.
 - Approval is tied to the exact rendered change, its Workload generation and its Sandbox base. Approval and Rejection for the same Proposal contend for one canonical TriageApproval name.
 - The Executor recomputes the stored change's hash and checks a matching Approval before applying the patch. It rejects changes outside the Proposal's single file and changes to `.github/`.
 - Alertmanager deliveries require a bearer token read from a mounted Secret on every request. Bootstrap provisions matching sender and receiver tokens and binds the approver Role to the explicit current Kubernetes user.
-- Investigation budgets are 15 tool calls, five minutes and approximately 100,000 input tokens, including cached input. Tool outputs and the Context Bundle are bounded and wrapped as untrusted data. The current tests cover those boundaries; the broader prompt-injection evaluation suite is planned for Phase 2.
+- Investigation budgets are 15 tool calls, five minutes and approximately 300,000 input tokens, including cached input. Tool outputs and the Context Bundle are bounded and wrapped as untrusted data. The current tests cover those boundaries; the broader prompt-injection evaluation suite is planned for Phase 2.
 - Verification is decided by Go after the observation window. An unavailable evidence API leaves the outcome undecided; it does not count as recovery.
 
 Keycloak issues the agent's MCP token and is configured with the dashboard client for #29, and agentgateway enforces authentication and per-tool authorization on every call. The architecture decisions are recorded in [docs/adr](docs/adr/README.md).

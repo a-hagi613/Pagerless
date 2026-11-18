@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 
 MAX_TOOL_CALLS = 15
 MAX_SECONDS = 5 * 60
-MAX_INPUT_TOKENS = 100_000
+MAX_INPUT_TOKENS = 300_000
 
 
 @dataclass(frozen=True)
