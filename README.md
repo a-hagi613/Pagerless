@@ -87,7 +87,7 @@ Install a reachable Docker engine, GNU make, Git with a configured commit identi
 
 1. Create a repository from the [Sandbox template](https://github.com/a-hagi613/pagerless-sandbox). Enable auto-merge and require its `kubeconform` check on `main`, following that repository's setup instructions.
 2. Prepare two fine-grained GitHub tokens scoped to that copy: a read-only token with Contents read access, and a separate write token with Contents and Pull requests write access. Replay avoids model charges; it still performs real MCP reads and real Sandbox GitHub operations in this workflow.
-3. Run the local bootstrap. It prompts for the Sandbox URL, tokens and model provider, defaulting to `replay`, and preserves them in the ignored root `.env`. The ordinary `make up` path uses the published, publicly pullable `0.2.0` GHCR references; `make dev` builds and loads this checkout's images instead.
+3. Run the local bootstrap. It prompts for the Sandbox URL, tokens and model provider, defaulting to `replay`, and preserves them in the ignored root `.env`. The ordinary `make up` path uses the published, publicly pullable `0.2.1` GHCR references; `make dev` builds and loads this checkout's images instead.
 
 Argo CD reads platform manifests from Git even when images are built locally. Push the intended commit before selecting it with `PLATFORM_REVISION`; set `PLATFORM_REPO_URL` as well when using another platform repository. From a checkout at that pushed commit:
 
