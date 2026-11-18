@@ -140,35 +140,43 @@ class Harness:
         self.commit, self.dirty = pagerless_revision(config.repo_root)
         self.runs: list[dict[str, Any]] = []
         self.path: Path | None = None
+        # completed and total drive the per-run counters, so a long batch says
+        # how far through it is instead of printing indistinguishable lines.
+        self.completed = 0
+        self.total = len(config.scenarios) * max(config.repeats, 0)
 
     # ---- entry point -------------------------------------------------------
 
     def run(self) -> int:
         self._preflight()
-        print(f"Evaluation model: {self.provider}; evidence: {self.evidence_mode}")
-        print(f"Scenarios: {', '.join(item.name for item in self.config.scenarios)}")
+        self._progress(f"Evaluation model: {self.provider}; evidence: {self.evidence_mode}")
+        self._progress(f"Scenarios: {', '.join(item.name for item in self.config.scenarios)}")
         kubeconfig = provision(self.kube, self.state_dir)
         evaluator = Kubectl(kubeconfig=kubeconfig)
         try:
             for scenario in self.config.scenarios:
                 for repeat in range(1, self.config.repeats + 1):
                     self._check_budget()
-                    print(f"[{scenario.name} repeat {repeat}/{self.config.repeats}] resetting and injecting")
-                    record = self._run_once(scenario, repeat, evaluator)
+                    self._progress(
+                        f"[{scenario.name} repeat {repeat}/{self.config.repeats}] resetting and injecting"
+                    )
+                    record = self._run_with_context(scenario, repeat, evaluator)
                     self.runs = merge_run(self.runs, record)
                     self._write()
+                    self.completed += 1
                     self._print_run(record)
                     self._assert_ci_evidence(record)
                     self._add_spend(record)
         finally:
             self._write()
             try:
-                print("Resetting the Sandbox after the batch")
+                self._progress("Resetting the Sandbox after the batch")
                 self._reset()
             except (HarnessError, KubectlError) as error:
                 print(
                     f"warning: the Sandbox could not be reset after the batch: {error}",
                     file=sys.stderr,
+                    flush=True,
                 )
             shutil.rmtree(self.state_dir, ignore_errors=True)
         if self.budget_exhausted:
@@ -304,6 +312,22 @@ class Harness:
             raise HarnessError("bin/kubectl-triage is missing. Run make build-cli.")
 
     # ---- one run -----------------------------------------------------------
+
+    def _run_with_context(self, scenario: Scenario, repeat: int, evaluator: Kubectl) -> dict[str, Any]:
+        """Run one Scenario, and say how long it took when it does not finish.
+
+        A live run can wait on a rollout, an alert, or a model call for many
+        minutes. Without the Scenario and the elapsed time, a failure deep inside
+        the run reads as a stall with no clue which step held it up.
+        """
+        started = time.monotonic()
+        try:
+            return self._run_once(scenario, repeat, evaluator)
+        except (HarnessError, KubectlError, subprocess.TimeoutExpired, OSError) as error:
+            elapsed = time.monotonic() - started
+            raise HarnessError(
+                f"Scenario {scenario.name!r} repeat {repeat} stopped after {elapsed:.0f}s: {error}"
+            ) from error
 
     def _run_once(self, scenario: Scenario, repeat: int, evaluator: Kubectl) -> dict[str, Any]:
         evidence = Evidence()
@@ -891,13 +915,45 @@ class Harness:
     def _print_run(self, record: dict[str, Any]) -> None:
         seconds = record["timeToRecoveredSeconds"]
         usage = record["usage"]
-        print(
-            f"  {record['scenario']} repeat {record['repeat']}: {record['action']} -> "
-            f"{record['result']} ({record['phase']}, "
-            f"{'n/a' if seconds is None else f'{seconds:.0f}s'} to Recovered, "
-            f"{usage.get('inputTokens') or 0}+{usage.get('outputTokens') or 0} tokens, "
-            f"${usage.get('costUSD') or 0:.4f})"
+        elapsed = "n/a to Recovered" if seconds is None else f"{seconds:.0f}s to Recovered"
+        tokens = f"{usage.get('inputTokens') or 0}+{usage.get('outputTokens') or 0}"
+        cost = f"{usage.get('costUSD') or 0:.4f}"
+        line = (
+            f"{record['scenario']} repeat {record['repeat']}: {record['action']} -> "
+            f"{record['result']} ({record['phase']}, {elapsed}, {tokens} tokens, ${cost})"
         )
+        self._progress(f"  {line}")
+        self._append_step_summary(f"[{self.completed}/{self.total}] {line}")
+
+    def _progress(self, message: str) -> None:
+        """Print one progress line immediately.
+
+        A full batch runs for hours inside one GitHub Actions job, and an
+        unflushed print can sit in a pipe buffer long enough to make a working
+        run look stalled.
+        """
+        print(message, flush=True)
+
+    def _append_step_summary(self, line: str) -> None:
+        """Append one Markdown line to the GitHub Actions job summary.
+
+        GitHub renders the file named by GITHUB_STEP_SUMMARY while the job runs,
+        so appending each completed run makes a long batch visible there instead
+        of only in the log after the job ends. Outside Actions the variable is
+        unset and this is a no-op.
+        """
+        path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if not path:
+            return
+        try:
+            with open(path, "a", encoding="utf-8") as summary:
+                summary.write(f"- {line}\n")
+        except OSError as error:
+            print(
+                f"warning: could not append to GITHUB_STEP_SUMMARY: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def _terminal() -> frozenset[str]:

@@ -74,6 +74,25 @@ jobs:
               sys.exit("The batch cost budget must be positive and at most 4.5 USD inside the 5 USD mission cap.")
           PY
 
+      - name: Announce the batch in the job summary
+        env:
+          SCENARIOS: ${{ inputs.scenarios != '' && inputs.scenarios || (inputs.phase == 'full' && 'all' || 'oom') }}
+          REPEATS: ${{ inputs.phase == 'full' && 2 || inputs.repeats }}
+          MAX_TOKENS: ${{ inputs.max_tokens }}
+          MAX_COST: ${{ inputs.max_cost_usd }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Pagerless paid evaluation"
+            echo
+            echo "- Phase: ${{ inputs.phase }} on ${{ inputs.model_provider }}"
+            echo "- Scenarios: \`${SCENARIOS}\`, ${REPEATS} repeat(s) each"
+            echo "- Budget: ${MAX_TOKENS} tokens, USD ${MAX_COST}"
+            echo
+            echo "The harness appends one line per completed run below as it finishes."
+            echo
+          } >>"$GITHUB_STEP_SUMMARY"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

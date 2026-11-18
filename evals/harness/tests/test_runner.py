@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -373,6 +374,44 @@ class HarnessTest(unittest.TestCase):
         with patch("pagerless_eval.runner.time.sleep"), self.assertRaises(HarnessError) as context:
             self.harness._wait_alert_inactive(scenario("oom"))
         self.assertIn("Alertmanager", str(context.exception))
+
+    def test_a_completed_run_appends_a_progress_line_to_the_step_summary(self) -> None:
+        record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
+        self.harness.completed = 1
+        summary = Path(self.directory.name) / "summary.md"
+        with patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}):
+            self.harness._print_run(record)
+            self.harness.completed = 2
+            self.harness._print_run(record)
+        lines = summary.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(
+            lines[0],
+            "- [1/1] oom repeat 1: PatchResources -> pass "
+            "(Recovered, 600s to Recovered, 1000+100 tokens, $0.0020)",
+        )
+        self.assertTrue(lines[1].startswith("- [2/1] oom repeat 1: PatchResources -> pass"))
+
+    def test_no_step_summary_is_written_when_the_variable_is_unset(self) -> None:
+        record = self.harness._record(scenario("oom"), 1, oom_triage(), [], self.evidence(), "")
+        environment = {key: value for key, value in os.environ.items() if key != "GITHUB_STEP_SUMMARY"}
+        with patch.dict(os.environ, environment, clear=True):
+            self.harness._print_run(record)
+        self.assertFalse((Path(self.directory.name) / "summary.md").exists())
+
+    def test_a_run_failure_names_the_scenario_and_the_elapsed_time(self) -> None:
+        with (
+            patch.object(
+                self.harness,
+                "_run_once",
+                side_effect=HarnessError("the Triage did not reach Proposed within 720s"),
+            ),
+            self.assertRaises(HarnessError) as context,
+        ):
+            self.harness._run_with_context(scenario("oom"), 2, MagicMock())
+        message = str(context.exception)
+        self.assertIn("'oom' repeat 2 stopped after", message)
+        self.assertIn("did not reach Proposed", message)
 
 
 if __name__ == "__main__":
