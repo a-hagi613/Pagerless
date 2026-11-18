@@ -25,6 +25,10 @@ const (
 	proposalPoll  = 50 * time.Millisecond
 	workloadField = "workload"
 	movedPath     = "apps/path/moved.yaml"
+	// Text that several Validation errors share.
+	permittedRangeText  = "permitted range"
+	exceedText          = "exceed"
+	requestsMemoryField = "requests[memory]"
 )
 
 func TestPatchResourcesProposalCarriesTheRenderedPatchAndItsBase(t *testing.T) {
@@ -104,13 +108,13 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 		{name: "resource without bounds", limits: quantities("ephemeral-storage", "1Gi"),
 			wantField: "limits[ephemeral-storage]", wantText: "not allowed"},
 		{name: "memory above the bound", limits: quantities("memory", "1Ti"),
-			wantField: "limits[memory]", wantText: "permitted range"},
+			wantField: "limits[memory]", wantText: permittedRangeText},
 		{name: "memory below the bound", limits: quantities("memory", "1Mi"),
-			wantField: "limits[memory]", wantText: "permitted range"},
+			wantField: "limits[memory]", wantText: permittedRangeText},
 		{name: "request above the limit in the proposal", requests: quantities("cpu", "2"), limits: quantities("cpu", "1"),
-			wantField: "requests[cpu]", wantText: "exceed"},
+			wantField: "requests[cpu]", wantText: exceedText},
 		{name: "request above the limit in the manifest", requests: quantities("memory", "512Mi"),
-			wantField: "requests[memory]", wantText: "exceed"},
+			wantField: requestsMemoryField, wantText: exceedText},
 		{name: "nothing to set", wantField: "proposal.parameters.patchResources", wantText: "at least one"},
 		{name: "container the Workload lacks", container: "ghost", limits: quantities("memory", "512Mi"),
 			wantField: "patchResources.container", wantText: "no container named ghost"},
@@ -138,7 +142,7 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 				c.Resources.Requests = quantities("memory", "512Mi")
 				c.Resources.Limits = quantities("memory", "512Mi")
 			}},
-			wantField: "requests[memory]", wantText: "exceed"},
+			wantField: requestsMemoryField, wantText: exceedText},
 	}
 	for i, tc := range tests {
 		tc.workload.name = "refused-" + strings.ReplaceAll(strings.ToLower(tc.name), " ", "-")
@@ -262,7 +266,7 @@ func TestEveryRefusedProposalIsRecordedOnTheTriage(t *testing.T) {
 		return found.Message
 	}
 	message := condition()
-	for _, want := range []string{"attempt 1: PatchResources", "container=app", "limits[memory]=1Ti", "permitted range"} {
+	for _, want := range []string{"attempt 1: PatchResources", "container=app", "limits[memory]=1Ti", permittedRangeText} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the refusal message lacks %q:\n%s", want, message)
 		}

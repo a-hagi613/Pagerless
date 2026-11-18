@@ -286,7 +286,7 @@ func TestScaleProposalsOutsideTheBoundsAreRefused(t *testing.T) {
 			found := false
 			for _, e := range result.Report.Errors {
 				found = found || (e.Field == "proposal.parameters.scale.replicas" &&
-					strings.Contains(e.Message, "permitted range"))
+					strings.Contains(e.Message, permittedRangeText))
 			}
 			if !found {
 				t.Errorf("errors = %+v, want one for proposal.parameters.scale.replicas mentioning the permitted range",
