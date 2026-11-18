@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -167,7 +166,11 @@ func dataSourceName(path string, writer bool) string {
 }
 
 func uriPath(path string) string {
-	slashed := filepath.ToSlash(path)
+	// A Windows drive path reaches this process on any platform, from a test or
+	// a caller that names a Windows share, so the separators are normalised
+	// unconditionally; filepath.ToSlash would leave them on a POSIX build and
+	// the URL would escape each backslash as %5C.
+	slashed := strings.ReplaceAll(path, `\`, "/")
 	if !strings.HasPrefix(slashed, "/") {
 		return "/" + slashed
 	}
