@@ -67,7 +67,7 @@ func TestDryRunClassifiesAnAPIServerAnswer(t *testing.T) {
 			t.Parallel()
 			live := liveWorkload()
 			r := &renderer{
-				params: v1alpha1.PatchResourcesParameters{Container: "app"},
+				params: v1alpha1.PatchResourcesParameters{Container: appName},
 				writer: failingWriter{err: tc.answer},
 			}
 			errs, err := r.DryRun(t.Context(), live)
@@ -92,7 +92,7 @@ func liveWorkload() *remediation.LiveWorkload {
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name: "app",
+						Name: appName,
 						Resources: corev1.ResourceRequirements{
 							Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")},
 						},
