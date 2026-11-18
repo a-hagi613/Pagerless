@@ -98,9 +98,15 @@ done
 }
 
 cd "$dashboard_dir"
-PAGERLESS_SMOKE_BASE_URL="http://127.0.0.1:${dashboard_port}" \
-PAGERLESS_SMOKE_STATE="$state/session.json" \
-	npx playwright test
+# CAPTURE=1 additionally writes the screenshots that docs/demo documents.
+playwright_env=(
+	"PAGERLESS_SMOKE_BASE_URL=http://127.0.0.1:${dashboard_port}"
+	"PAGERLESS_SMOKE_STATE=$state/session.json"
+)
+if [ "${CAPTURE:-0}" = "1" ]; then
+	playwright_env+=("PAGERLESS_DEMO_DIR=$repo_root/docs/demo")
+fi
+env "${playwright_env[@]}" npx playwright test
 
 wait "$server_pid"
 server_pid=""
