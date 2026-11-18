@@ -154,6 +154,34 @@ class UnschedulableScoringTest(unittest.TestCase):
         self.assertEqual(result.result, "fail")
         self.assertIn("withinKnownGood", failed(result))
 
+    def test_a_rollback_of_the_injected_commit_passes(self) -> None:
+        # Reverting the commit removes the impossible request, so the Triage
+        # fixes the cause even though it did not patch the resources.
+        result = evaluate(
+            scenario("unschedulable"),
+            triage("Rollback", {"rollback": {"commit": INJECTED_COMMIT}}),
+            self.evidence(),
+        )
+        self.assertEqual(result.result, "pass", failed(result))
+
+    def test_a_rollback_of_another_commit_fails(self) -> None:
+        result = evaluate(
+            scenario("unschedulable"),
+            triage("Rollback", {"rollback": {"commit": "0" * 40}}),
+            self.evidence(),
+        )
+        self.assertEqual(result.result, "fail")
+        self.assertIn("revertsInjectedCommit", failed(result))
+
+    def test_another_action_fails(self) -> None:
+        result = evaluate(
+            scenario("unschedulable"),
+            triage("Scale", {"scale": {"replicas": 2}}),
+            self.evidence(),
+        )
+        self.assertEqual(result.result, "fail")
+        self.assertIn("expectedAction", failed(result))
+
     def test_a_request_above_the_largest_node_fails(self) -> None:
         result = evaluate(
             scenario("unschedulable"),

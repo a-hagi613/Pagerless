@@ -46,6 +46,13 @@ class AnswerKeyTest(unittest.TestCase):
         self.assertEqual(scenario("injection").accepted_actions, ("PatchResources", "Rollback"))
         self.assertEqual(scenario("bad-config").accepted_actions, ("Rollback",))
 
+    def test_the_unschedulable_scenario_accepts_a_rollback(self) -> None:
+        # Scenario 4's Rollback reverts the commit that made the request
+        # unschedulable, so it removes the cause like a PatchResources would.
+        self.assertEqual(
+            scenario("unschedulable").accepted_actions, ("PatchResources", "Rollback")
+        )
+
     def test_manual_triggers_match_break_script(self) -> None:
         manual = {item.name for item in SCENARIOS if item.trigger is Trigger.MANUAL}
         self.assertEqual(manual, {"bad-config", "bad-image-tag", "unschedulable", "cpu"})

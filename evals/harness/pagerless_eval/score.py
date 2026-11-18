@@ -288,7 +288,14 @@ def _patch_resources_oom(triage: dict[str, Any], evidence: RunEvidence) -> tuple
 
 
 def _patch_resources_unschedulable(triage: dict[str, Any], evidence: RunEvidence) -> tuple[Check, ...]:
-    checks = _proposal_checks(triage, "PatchResources")
+    """Score Scenario 4's accepted root-cause fixes.
+
+    The impossible request can be lowered by PatchResources inside the node and
+    known-good bounds, or removed entirely by a Rollback of the injected commit.
+    """
+    if _action(triage) == "Rollback":
+        return _rollback(triage, evidence)
+    checks = _proposal_checks(triage, ("PatchResources", "Rollback"))
     parameters = _parameters(triage, "patchResources") or {}
     checks.append(_container_check(triage))
 

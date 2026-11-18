@@ -1,16 +1,26 @@
-"""Tests for the run-record mapping, the CI evidence gate, and the budget."""
+"""Tests for the run-record mapping, the CI evidence gate, the budget, and reset."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from pagerless_eval import results
 from pagerless_eval.answer_key import scenario
-from pagerless_eval.runner import BudgetExhaustedError, Config, Harness, HarnessError
+from pagerless_eval.runner import (
+    ALERT_POLL_INTERVAL,
+    ALERTMANAGER_ALERTS,
+    FLAG_WORKLOADS,
+    BudgetExhaustedError,
+    Config,
+    Harness,
+    HarnessError,
+    Timeouts,
+)
 from pagerless_eval.score import GatewayEvidence, MemorySettings, RunEvidence
 
 from tests.support import triage
@@ -36,6 +46,16 @@ def oom_triage(**kwargs: object) -> dict[str, object]:
         }
     }
     return triage("PatchResources", parameters, **kwargs)  # type: ignore[arg-type]
+
+
+def alertmanager(*labels: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Return a kubectl result that carries the given active alerts."""
+    return subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps([{"labels": item} for item in labels]),
+        stderr="",
+    )
 
 
 class HarnessTest(unittest.TestCase):
@@ -202,6 +222,157 @@ class HarnessTest(unittest.TestCase):
                     adapter_check.assert_called_once_with("triage-eval")
                 else:
                     adapter_check.assert_not_called()
+
+    def test_a_run_resets_with_its_scenario(self) -> None:
+        item = scenario("oom")
+        with (
+            patch.object(self.harness, "_set_recording"),
+            patch.object(self.harness, "_reset") as reset,
+            patch.object(self.harness, "_memory_settings", return_value=MemorySettings()),
+            patch.object(self.harness, "_delete_triages"),
+            patch.object(self.harness, "_break"),
+            patch.object(self.harness, "_sandbox_revision", return_value="a" * 40),
+            patch.object(self.harness, "_max_node_memory", return_value="1Gi"),
+            patch.object(self.harness, "_wait_for_triage", return_value=oom_triage()),
+            patch.object(self.harness, "_drive_triage", return_value=(oom_triage(), [])),
+            patch.object(self.harness, "_gateway_evidence", return_value=GatewayEvidence()),
+        ):
+            self.harness._run_once(item, 1, MagicMock())
+        reset.assert_called_once_with(item)
+
+    def test_adapter_reset_clears_stresschaos_and_replaces_flag_workloads(self) -> None:
+        self.harness.kube = MagicMock()
+        with (
+            patch.object(self.harness, "_adapter_client") as adapter_reset,
+            patch.object(self.harness, "_wait_sandbox_healthy") as healthy,
+            patch.object(self.harness, "_wait_alert_inactive") as wait_alert,
+        ):
+            self.harness._reset(scenario("cpu"))
+        adapter_reset.assert_called_once_with("reset")
+        healthy.assert_called_once_with()
+        wait_alert.assert_not_called()
+        calls = self.harness.kube.run.call_args_list
+        self.assertIn(
+            call(
+                "-n",
+                "sandbox",
+                "delete",
+                "stresschaos",
+                "--all",
+                "--ignore-not-found",
+                "--wait=true",
+                check=False,
+            ),
+            calls,
+        )
+        for workload in FLAG_WORKLOADS:
+            with self.subTest(workload=workload):
+                self.assertIn(
+                    call(
+                        "-n",
+                        "sandbox",
+                        "delete",
+                        "pod",
+                        "-l",
+                        f"opentelemetry.io/name={workload}",
+                        "--ignore-not-found",
+                        "--wait=true",
+                        timeout=300,
+                    ),
+                    calls,
+                )
+                self.assertIn(
+                    call(
+                        "-n",
+                        "sandbox",
+                        "rollout",
+                        "status",
+                        f"deployment/{workload}",
+                        "--timeout=180s",
+                        timeout=240,
+                    ),
+                    calls,
+                )
+        replaced = [
+            item.args[5].removeprefix("opentelemetry.io/name=")
+            for item in calls
+            if item.args[:4] == ("-n", "sandbox", "delete", "pod")
+        ]
+        self.assertEqual(tuple(replaced), FLAG_WORKLOADS)
+
+    def test_a_live_reset_leaves_replacement_to_hack_reset(self) -> None:
+        self.harness.config.adapter = False
+        self.harness.kube = MagicMock()
+        with (
+            patch.object(self.harness, "_make") as make,
+            patch.object(self.harness, "_wait_sandbox_healthy"),
+            patch.object(self.harness, "_wait_alert_inactive"),
+        ):
+            self.harness._reset(scenario("cpu"))
+        make.assert_called_once_with("reset", timeout=self.harness.config.timeouts.reset)
+        self.harness.kube.run.assert_called_once_with(
+            "-n",
+            "sandbox",
+            "rollout",
+            "status",
+            "deployment/checkout",
+            "--timeout=600s",
+            timeout=660,
+        )
+
+    def test_the_reset_waits_for_the_scenarios_alert_to_clear(self) -> None:
+        self.harness.kube = MagicMock()
+        item = scenario("oom")
+        with (
+            patch.object(self.harness, "_adapter_client"),
+            patch.object(self.harness, "_wait_sandbox_healthy"),
+            patch.object(self.harness, "_replace_flag_workloads"),
+            patch.object(self.harness, "_wait_alert_inactive") as wait_alert,
+        ):
+            self.harness._reset(item)
+        wait_alert.assert_called_once_with(item)
+
+    def test_an_inactive_alert_returns_after_one_query(self) -> None:
+        self.harness.kube = MagicMock()
+        self.harness.kube.run.return_value = alertmanager(
+            {"alertname": "ContainerOOMKilled", "deployment": "cart"},
+        )
+        with patch("pagerless_eval.runner.time.sleep") as sleep:
+            self.harness._wait_alert_inactive(scenario("oom"))
+        self.harness.kube.run.assert_called_once_with(
+            "get", "--raw", ALERTMANAGER_ALERTS, timeout=60, check=False
+        )
+        sleep.assert_not_called()
+
+    def test_the_alert_wait_polls_until_the_matching_alert_clears(self) -> None:
+        self.harness.kube = MagicMock()
+        firing = alertmanager({"alertname": "ContainerOOMKilled", "deployment": "checkout"})
+        self.harness.kube.run.side_effect = [firing, firing, alertmanager()]
+        with patch("pagerless_eval.runner.time.sleep") as sleep:
+            self.harness._wait_alert_inactive(scenario("oom"))
+        self.assertEqual(self.harness.kube.run.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_called_with(ALERT_POLL_INTERVAL)
+
+    def test_the_alert_wait_fails_when_the_alert_persists(self) -> None:
+        self.harness.config.timeouts = Timeouts(alert_inactive=0)
+        self.harness.kube = MagicMock()
+        self.harness.kube.run.return_value = alertmanager(
+            {"alertname": "ContainerOOMKilled", "deployment": "checkout"},
+        )
+        with patch("pagerless_eval.runner.time.sleep"), self.assertRaises(HarnessError) as context:
+            self.harness._wait_alert_inactive(scenario("oom"))
+        self.assertIn("ContainerOOMKilled", str(context.exception))
+
+    def test_an_unreadable_alertmanager_fails_instead_of_assuming_a_clear_alert(self) -> None:
+        self.harness.config.timeouts = Timeouts(alert_inactive=0)
+        self.harness.kube = MagicMock()
+        self.harness.kube.run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="the server could not find the requested resource"
+        )
+        with patch("pagerless_eval.runner.time.sleep"), self.assertRaises(HarnessError) as context:
+            self.harness._wait_alert_inactive(scenario("oom"))
+        self.assertIn("Alertmanager", str(context.exception))
 
 
 if __name__ == "__main__":
