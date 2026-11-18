@@ -56,10 +56,9 @@ module "eks" {
       max_size     = 2
       desired_size = 1
 
-      # access_entries.tf creates the node role's access entry explicitly, so the
-      # node group module must not create a second one for the same principal;
-      # EKS rejects the duplicate with ResourceInUseException.
-      create_access_entry = false
+      # With authentication_mode = "API", Amazon EKS creates the EC2_LINUX access
+      # entry for a managed node group's IAM role inside CreateNodegroup; Karpenter
+      # nodes get their own access entry from module.karpenter.
 
       # Outbound Systems Manager Session Manager gives interactive shell access to
       # the node without an SSH key or an inbound port-22 rule on the node security
