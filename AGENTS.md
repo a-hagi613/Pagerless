@@ -36,9 +36,7 @@ Development runs in WSL2 (Ubuntu), with the repository cloned into the Linux fil
 
 ## Development workflow
 
-Claude Opus 5.5 orchestrates: it plans, routes work, and reviews. It does not implement tickets itself.
-
-Implementation is performed by OpenCode with `opencode-go/deepseek-v4.1-flash`, using parallel sub-agents, one ticket each. Free models are never used.
+Development runs on a Linux devbox: an orchestrating agent plans, routes independent work across isolated sub-agent worktrees, and reviews, and every change lands through pull requests gated by CI.
 
 ### Conserving tokens
 

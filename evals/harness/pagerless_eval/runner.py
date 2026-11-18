@@ -344,7 +344,7 @@ class Harness:
                 self._await_decision(name)
                 terminal_deadline = time.monotonic() + self.config.timeouts.terminal
                 action = (status.get("proposal") or {}).get("action")
-                if self.config.adapter and action != "NoAction":
+                if self.config.adapter and action not in ("NoAction", "RestartWorkload"):
                     self._adapter_check(name)
                 continue
             now = time.monotonic()

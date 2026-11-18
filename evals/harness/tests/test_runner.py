@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from pagerless_eval import results
 from pagerless_eval.answer_key import scenario
@@ -160,6 +161,47 @@ class HarnessTest(unittest.TestCase):
         record["usage"]["inputTokens"] = 500
         self.harness._add_spend(record)
         self.assertTrue(self.harness.budget_exhausted)
+
+    def test_adapter_check_runs_only_for_pull_request_actions(self) -> None:
+        cases = (
+            ("NoAction", None, "Diagnosed", scenario("cpu"), False),
+            ("RestartWorkload", {}, "Recovered", scenario("email-memory-leak"), False),
+            (
+                "PatchResources",
+                {
+                    "patchResources": {
+                        "container": "memory-holder",
+                        "requests": {"memory": "64Mi"},
+                        "limits": {"memory": "128Mi"},
+                    }
+                },
+                "Recovered",
+                scenario("oom"),
+                True,
+            ),
+        )
+        for action, parameters, terminal_phase, item, expect_adapter_check in cases:
+            with self.subTest(action=action):
+                snapshots = [
+                    triage(action, parameters, phase="Proposed", decision=None),
+                    triage(action, parameters, phase="Approved", decision="eval-approver"),
+                    triage(action, parameters, phase=terminal_phase, decision="eval-approver"),
+                ]
+                self.harness.kube = MagicMock()
+                self.harness.kube.get_json.side_effect = snapshots
+                evaluator = MagicMock()
+                with patch.object(self.harness, "_adapter_check") as adapter_check:
+                    final_triage, phases = self.harness._drive_triage("triage-eval", item, evaluator)
+                evaluator.create.assert_called_once()
+                self.assertEqual(final_triage["status"]["phase"], terminal_phase)
+                self.assertEqual(
+                    [entry["phase"] for entry in phases],
+                    ["Proposed", terminal_phase],
+                )
+                if expect_adapter_check:
+                    adapter_check.assert_called_once_with("triage-eval")
+                else:
+                    adapter_check.assert_not_called()
 
 
 if __name__ == "__main__":
