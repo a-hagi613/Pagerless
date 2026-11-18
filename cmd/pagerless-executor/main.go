@@ -40,7 +40,8 @@ func run() error {
 			"namespace that holds Triages and TriageApprovals (default: $POD_NAMESPACE)")
 		bind       = flag.String("bind-address", ":8080", "address the Executor's API and health probe listen on")
 		sandboxURL = flag.String("sandbox-url", os.Getenv("SANDBOX_URL"),
-			"git URL of the Sandbox, which the Executor pushes to (default: $SANDBOX_URL)")
+			"git URL of the Sandbox, which the Executor pushes to (default: $SANDBOX_URL); "+
+				"empty runs in live-only RestartWorkload mode")
 		sandboxBranch = flag.String("sandbox-branch", "main", "branch of the Sandbox that pull requests target")
 		repository    = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
 			"Sandbox owner/name (default: $PAGERLESS_GITHUB_REPOSITORY, otherwise derived from --sandbox-url)")
@@ -55,15 +56,8 @@ func run() error {
 	flag.Parse()
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&zapOptions)))
 
-	if *namespace == "" || *sandboxURL == "" {
-		return errors.New("--namespace and --sandbox-url are required")
-	}
-	if *repository == "" {
-		derived, err := executor.RepositoryFromURL(*sandboxURL)
-		if err != nil {
-			return fmt.Errorf("derive --github-repository: %w", err)
-		}
-		*repository = derived
+	if *namespace == "" {
+		return errors.New("--namespace is required")
 	}
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
@@ -78,21 +72,31 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
 	}
-	token := func() (string, error) {
-		raw, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			return "", fmt.Errorf("read the GitHub token: %w", err)
-		}
-		return strings.TrimSpace(string(raw)), nil
-	}
-	runner, err := executor.New(executor.Config{
+	cfg := executor.Config{
 		Reader:    reader,
 		Writer:    reader,
 		Namespace: *namespace,
-		Sandbox:   sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch},
-		GitHub:    &executor.GitHub{APIURL: *apiURL, Repository: *repository, Token: token},
-		Token:     token,
-	})
+	}
+	if *sandboxURL != "" {
+		if *repository == "" {
+			derived, err := executor.RepositoryFromURL(*sandboxURL)
+			if err != nil {
+				return fmt.Errorf("derive --github-repository: %w", err)
+			}
+			*repository = derived
+		}
+		token := func() (string, error) {
+			raw, err := os.ReadFile(*tokenFile)
+			if err != nil {
+				return "", fmt.Errorf("read the GitHub token: %w", err)
+			}
+			return strings.TrimSpace(string(raw)), nil
+		}
+		cfg.Sandbox = sandbox.Repository{URL: *sandboxURL, Branch: *sandboxBranch}
+		cfg.GitHub = &executor.GitHub{APIURL: *apiURL, Repository: *repository, Token: token}
+		cfg.Token = token
+	}
+	runner, err := executor.New(cfg)
 	if err != nil {
 		return err
 	}
@@ -107,7 +111,13 @@ func run() error {
 	}
 	ctx := ctrl.SetupSignalHandler()
 	srv := &http.Server{Handler: handler.Routes(), ReadHeaderTimeout: readHeaderTimeout}
-	ctrl.Log.WithName("setup").Info("starting pagerless-executor", "namespace", *namespace, "repository", *repository)
+	if *sandboxURL != "" {
+		ctrl.Log.WithName("setup").Info("starting pagerless-executor with pull-request delivery enabled",
+			"namespace", *namespace, "repository", *repository)
+	} else {
+		ctrl.Log.WithName("setup").Info("starting pagerless-executor in live-only RestartWorkload mode",
+			"namespace", *namespace)
+	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(listener) }()
 	select {
