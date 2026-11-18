@@ -1,0 +1,175 @@
+{{- /*
+pagerless-server is the single writer of Triage status (ADR-0001, ADR-0005),
+so it runs one replica and replaces it only after the old one has stopped. The
+container flags mirror deploy/pagerless-server: every integration is configured
+here, so no post-render patch is needed.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerless-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pagerless-server
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 8 }}
+    spec:
+      serviceAccountName: pagerless-server
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        # Give the non-root server write access to the emptyDir volumes.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          image: {{ include "pagerless.image" (dict "context" $ "image" .Values.images.server) }}
+          imagePullPolicy: {{ .Values.images.server.pullPolicy }}
+          args:
+            - --agent-image={{ include "pagerless.image" (dict "context" $ "image" .Values.images.agent) }}
+            - --report-url=http://pagerless-server.{{ .Release.Namespace }}.svc:8080
+            - --metrics-bind-address=:9090
+            - --dashboard-bind-address=:8082
+            # The browser reaches Grafana through its own port-forward, so the panel URLs use the reader's
+            # localhost. The dashboard UIDs default to the dashboards in deploy/observability/dashboards.
+            - --grafana-url={{ .Values.grafana.browserUrl }}
+            {{- with .Values.grafana.workloadDashboardUid }}
+            - --grafana-workload-dashboard-uid={{ . }}
+            {{- end }}
+            {{- with .Values.grafana.logsDashboardUid }}
+            - --grafana-logs-dashboard-uid={{ . }}
+            {{- end }}
+            # Sign-in runs against Keycloak. The browser reaches the dashboard on the configured base URL,
+            # which is also the redirect URI the realm allows. Set dashboard.cookieSecure behind TLS.
+            - --dashboard-base-url={{ .Values.dashboard.baseUrl }}
+            - --dashboard-cookie-secure={{ .Values.dashboard.cookieSecure }}
+            - --oidc-issuer={{ .Values.oidc.issuer }}
+            - --oidc-client-id={{ .Values.oidc.dashboardClientId }}
+            - --oidc-client-secret-file=/var/run/pagerless/keycloak/client-secret
+            - --keycloak-base-url={{ .Values.oidc.keycloakBaseUrl }}
+            - --keycloak-admin-client-id={{ .Values.oidc.serverClientId }}
+            - --keycloak-admin-client-secret-file=/var/run/pagerless/keycloak/server-client-secret
+            - --approvers-group={{ .Values.dashboard.approversGroup }}
+            - --workload-namespaces={{ include "pagerless.workloadNamespaces" . }}
+            - --alert-namespaces={{ include "pagerless.workloadNamespaces" . }}
+            - --patch-namespaces={{ include "pagerless.workloadNamespaces" . }}
+            - --argocd-application={{ .Values.argocd.application | default "sandbox" }}
+            - --sandbox-url={{ .Values.sandbox.url }}
+            - --sandbox-branch={{ .Values.sandbox.branch }}
+            - --history-path=/var/lib/pagerless/history.db
+            - --executor-url=http://pagerless-executor.{{ .Release.Namespace }}.svc:8080
+            - --argocd-url={{ .Values.argocd.url }}
+            - --alertmanager-url={{ .Values.alertmanager.url }}
+            - --alertmanager-token-file=/var/run/pagerless/alertmanager/token
+            - --sandbox-read-token-file=/var/run/pagerless/github-read/token
+          envFrom:
+            - configMapRef:
+                name: pagerless-agent-config
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: report
+              containerPort: 8080
+            - name: webhook
+              containerPort: 9443
+            - name: health
+              containerPort: 8081
+            - name: metrics
+              containerPort: 9090
+            - name: dashboard
+              containerPort: 8082
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: alertmanager-token
+              mountPath: /var/run/pagerless/alertmanager
+              readOnly: true
+            - name: webhook-certs
+              mountPath: /var/run/pagerless/webhook-certs
+            - name: executor-token
+              mountPath: /var/run/secrets/pagerless/executor
+              readOnly: true
+            - name: argocd-token
+              mountPath: /var/run/secrets/pagerless/argocd
+              readOnly: true
+            - name: temporary
+              mountPath: /tmp
+            - name: github-read
+              mountPath: /var/run/pagerless/github-read
+              readOnly: true
+            # The Keycloak identity: the dashboard client's secret completes the sign-in, and the server
+            # client's secret reads approver group membership (ADR-0020).
+            - name: keycloak
+              mountPath: /var/run/pagerless/keycloak
+              readOnly: true
+            # The append-only history survives a server restart, so a Triage's record is not lost with its pod.
+            - name: history
+              mountPath: /var/lib/pagerless
+      volumes:
+        - name: alertmanager-token
+          secret:
+            secretName: {{ .Values.alertmanager.secretName }}
+        - name: github-read
+          secret:
+            secretName: {{ .Values.sandbox.readSecretName }}
+        - name: keycloak
+          secret:
+            secretName: {{ .Values.oidc.secretName }}
+        - name: argocd-token
+          secret:
+            secretName: {{ .Values.argocd.secretName }}
+        - name: temporary
+          emptyDir:
+            medium: Memory
+            sizeLimit: 128Mi
+        # The token that authenticates the server to pagerless-executor (ADR-0014). Its audience is the Executor's,
+        # so no other service accepts it, and the kubelet rotates it in place.
+        - name: executor-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: pagerless-executor
+                  expirationSeconds: 3600
+                  path: token
+        - name: webhook-certs
+          emptyDir:
+            medium: Memory
+        - name: history
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: pagerless-history
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.persistence.size }}
+          {{- end }}

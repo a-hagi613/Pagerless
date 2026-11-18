@@ -1,0 +1,172 @@
+# Default values for charts/pagerless.
+#
+# This chart installs the Pagerless control plane (pagerless-server), the
+# isolated Executor (pagerless-executor), the agent's configuration, the web
+# dashboard served by pagerless-server, and, optionally, the bundled read-only
+# MCP servers. It does not install Keycloak, agentgateway, Argo CD, a
+# Prometheus stack, Grafana, or the OpenTelemetry shopping-cart demo
+# (pagerless-sandbox). See README.md for the prerequisites of each mode.
+
+# Container images. The default tag is the chart's appVersion, which matches the
+# images CI publishes for the same release tag (see hack/versions.env).
+images:
+  server:
+    repository: ghcr.io/a-hagi613/pagerless-server
+    # Empty uses .Chart.AppVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  executor:
+    repository: ghcr.io/a-hagi613/pagerless-executor
+    tag: ""
+    pullPolicy: IfNotPresent
+  agent:
+    repository: ghcr.io/a-hagi613/pagerless-agent
+    tag: ""
+    pullPolicy: IfNotPresent
+
+# Namespaces whose Workloads Pagerless may read and, after an Approval,
+# remediate. Every entry receives the pagerless-server-validation,
+# pagerless-executor-restart, and (with the bundled MCP servers)
+# pagerless-mcp-read Roles.
+workloadNamespaces:
+  - default
+
+# When true, the chart renders a Namespace object for every entry in
+# workloadNamespaces that is not the release namespace. Leave false when the
+# namespaces already exist or another tool owns them.
+createWorkloadNamespaces: false
+
+agent:
+  # Model provider for investigation and Narrative Jobs: anthropic, bedrock, or
+  # replay. Replay needs no model credentials and only replays recordings.
+  provider: anthropic
+  # AWS region for Bedrock. Required when provider is bedrock; unused otherwise.
+  awsRegion: ""
+  serviceAccount:
+    # Annotations on the pagerless-agent ServiceAccount, for example
+    # eks.amazonaws.com/role-arn for IRSA or the Pod Identity association that
+    # supplies Bedrock credentials. The ServiceAccount never receives a
+    # Kubernetes API token.
+    annotations: {}
+  # Recording replayed when provider is replay.
+  replayFile: /app/recordings/oom.json
+  # Recording replayed for the Narrative when provider is replay.
+  narrativeReplayFile: /app/recordings/narrative.json
+
+sandbox:
+  # HTTPS URL of the Git repository that holds the Workload manifests. Empty
+  # selects live-only mode (RestartWorkload and NoAction); a GitHub URL enables
+  # the git-backed Actions (Scale, PatchResources, Rollback) through a pull
+  # request.
+  url: ""
+  # Branch that pull requests target and that Argo CD deploys.
+  branch: main
+  # Sandbox owner and repository. When both are empty, they are parsed from a
+  # sandbox.url that starts with https://github.com/.
+  owner: ""
+  repo: ""
+  # Explicit owner/name passed to pagerless-executor as
+  # PAGERLESS_GITHUB_REPOSITORY, for a Git service whose URL path is not
+  # exactly owner/repo. Empty derives it from sandbox.url.
+  githubRepository: ""
+  # Secret that holds the read-scoped GitHub token in the `token` key.
+  readSecretName: github-read
+  # Secret that holds the write-scoped GitHub token in the `token` key.
+  writeSecretName: github-write
+
+argocd:
+  # Argo CD Application whose sync and health status Verification reads. Empty
+  # leaves the server's default (`sandbox`) and does not enable the argocd MCP
+  # server; set it when Argo CD manages the Workloads.
+  application: ""
+  # In-cluster Argo CD API base URL.
+  url: http://argocd-server.argocd.svc
+  # Secret that holds the read-only Argo CD API token in the `token` key.
+  secretName: argocd-read
+
+alertmanager:
+  # Alertmanager base URL whose opted-in alerts create Triages.
+  url: http://kube-prometheus-stack-alertmanager.monitoring.svc:9093
+  # Secret that holds the rotating webhook bearer token in the `token` key.
+  secretName: pagerless-alertmanager
+
+grafana:
+  # Grafana base URL that the reader's browser can reach; used for dashboard
+  # panel deep links.
+  browserUrl: http://localhost:3000
+  # In-cluster Grafana base URL that mcp-grafana queries.
+  mcpUrl: http://kube-prometheus-stack-grafana.monitoring.svc
+  # UID of the dashboard that charts a Workload's metrics. Empty keeps the
+  # server default from deploy/observability/dashboards.
+  workloadDashboardUid: ""
+  # UID of the dashboard that shows a Workload's logs. Empty keeps the server
+  # default from deploy/observability/dashboards.
+  logsDashboardUid: ""
+
+dashboard:
+  # Browser-facing base URL of the dashboard, which is also the OIDC redirect
+  # origin. Use the URL a reader opens, not an in-cluster Service name.
+  baseUrl: http://localhost:8080
+  # Mark the session and flow cookies Secure. Requires HTTPS at dashboard.baseUrl.
+  cookieSecure: false
+  # Keycloak group whose members may approve or reject a Proposal.
+  approversGroup: pagerless-approvers
+
+oidc:
+  # Keycloak realm issuer. It is also the audience of the agent's projected
+  # token, so agentgateway validates exactly this realm.
+  issuer: http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless
+  # Token endpoint. Empty derives <issuer>/protocol/openid-connect/token.
+  tokenUrl: ""
+  # In-cluster Keycloak base URL used to read approver group membership.
+  keycloakBaseUrl: http://keycloak.keycloak.svc.cluster.local:8080
+  # OIDC client that completes the dashboard sign-in.
+  dashboardClientId: pagerless-dashboard
+  # Keycloak admin client that reads group membership.
+  serverClientId: pagerless-server
+  # Federated client that the agent authenticates as through agentgateway.
+  agentClientId: pagerless-agent
+  # Secret with the dashboard and server client secrets in the keys
+  # `client-secret` and `server-client-secret`.
+  secretName: pagerless-keycloak-dashboard
+
+mcp:
+  # Base URL of the agentgateway that fronts every MCP server.
+  gatewayUrl: http://mcp-gateway.agentgateway-system.svc.cluster.local
+  # Comma-separated MCP servers the agent may call: k8s, grafana, argocd,
+  # github. Empty derives k8s,grafana plus argocd and github when their
+  # integrations are configured.
+  servers: ""
+  bundled:
+    # Deploy the read-only MCP servers in the release namespace. Disable when
+    # an existing installation already provides them.
+    enabled: true
+  # GitHub Enterprise host for mcp-github. Empty selects GitHub.com.
+  githubHost: ""
+  # Secret with the backend credentials in the keys `grafana` and, when Argo CD
+  # is enabled, `argocd`.
+  backendTokensSecretName: mcp-backend-tokens
+  # Secret with the caller tokens in the keys `grafana`, `argocd`, and `github`.
+  clientTokensSecretName: mcp-client-tokens
+
+persistence:
+  # Keep the append-only Triage history on a PersistentVolumeClaim. When false,
+  # the history lives in a size-bounded emptyDir and is lost with the pod.
+  enabled: true
+  size: 1Gi
+  # StorageClass of the history claim. Empty uses the cluster default.
+  storageClassName: ""
+
+secrets:
+  # Create empty placeholder Secrets for the optional integration secrets, so
+  # the control-plane and MCP pods start before GitHub, Argo CD, or Grafana
+  # credentials are supplied. Only for trials: Helm owns each Secret it creates,
+  # so supply real credentials through an external secret manager or use
+  # hack/install.sh, which provisions them and keeps this false.
+  createPlaceholders: false
+
+approvers:
+  # Subjects bound to Role pagerless-approver in the release namespace, for
+  # example users or groups that may approve Proposals. Empty renders no
+  # RoleBinding, and an administrator binds the Role separately.
+  subjects: []

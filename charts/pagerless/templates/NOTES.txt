@@ -1,0 +1,25 @@
+Pagerless {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+
+Mode:      {{ if .Values.sandbox.url }}GitOps (pull-request remediation with {{ .Values.sandbox.url }}){{ else }}live-only (RestartWorkload and NoAction; no Sandbox URL){{ end }}
+Provider:  {{ .Values.agent.provider }}
+Workloads: {{ include "pagerless.workloadNamespaces" . }}
+MCP:       {{ include "pagerless.mcpServers" . }} through {{ .Values.mcp.gatewayUrl }}
+
+Prerequisites this chart does not install:
+  - Keycloak, whose realm and client secrets are configured by oidc.*.
+  - An MCP gateway (agentgateway) at mcp.gatewayUrl, when the agent needs tools.
+  - Secret {{ .Values.oidc.secretName }} with the dashboard and server client secrets.
+  - Secret {{ .Values.alertmanager.secretName }} with the Alertmanager webhook token.
+  - Secret pagerless-agent-credentials with the model provider's credentials, or
+    an EKS Pod Identity or IRSA association on the pagerless-agent ServiceAccount.
+
+Open the dashboard:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:8082
+  Then open {{ .Values.dashboard.baseUrl }}.
+
+Start a Triage:
+  kubectl triage --namespace {{ (first .Values.workloadNamespaces) }} deploy/<workload-name>
+
+Approve Proposals by creating a TriageApproval through the dashboard or the CLI.
+Role pagerless-approver in this namespace grants exactly that permission; bind it
+to the people who may approve.

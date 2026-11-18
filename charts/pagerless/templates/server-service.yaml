@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: pagerless-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: pagerless-server
+  ports:
+    - name: report
+      port: 8080
+      targetPort: report
+    - name: webhook
+      port: 443
+      targetPort: webhook
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+    - name: dashboard
+      port: 8082
+      targetPort: dashboard

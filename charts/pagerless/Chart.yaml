@@ -1,0 +1,9 @@
+apiVersion: v2
+name: pagerless
+description: Human-gated Kubernetes Triage operator, LangGraph investigation agent, web dashboard, and isolated Executor.
+type: application
+version: 0.2.1
+appVersion: "0.2.1"
+home: https://github.com/a-hagi613/pagerless
+sources:
+  - https://github.com/a-hagi613/pagerless

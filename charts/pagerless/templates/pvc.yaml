@@ -1,0 +1,24 @@
+{{- /*
+The append-only Triage history. The server appends one status snapshot per
+Phase change and refuses UPDATE and DELETE; the PVC keeps that record across a
+pod restart. With persistence.enabled false the history lives in a bounded
+emptyDir and is lost with the pod, which is only suitable for a trial.
+*/ -}}
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pagerless-history
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
