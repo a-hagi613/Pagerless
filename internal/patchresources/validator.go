@@ -250,14 +250,15 @@ func checkMerged(r corev1.ResourceRequirements) []agentapi.ValidationError {
 	return errs
 }
 
-// errNoKnownGood means that the bound of an unschedulable Workload cannot be
-// checked, because the Sandbox's known-good state does not declare the value.
+// errNoKnownGood means that the Sandbox's known-good tag is absent or does not
+// declare the container's resources, so only node allocatable bounds apply.
 var errNoKnownGood = errors.New("the Unschedulable bound cannot be checked against the Sandbox's known-good state")
 
 // checkUnschedulable enforces the bound that applies when the live Workload's
 // requests cannot fit any node: the Proposal must set each such request within
-// the largest value that any node reports as allocatable, and no higher than
-// the value that the Sandbox's known-good state declares.
+// the largest value that any node reports as allocatable, and, when the
+// Sandbox's known-good tag declares a request for that resource, no higher
+// than that known-good value.
 func (r *renderer) checkUnschedulable(
 	ctx context.Context, live *remediation.LiveWorkload, workload v1alpha1.WorkloadReference,
 	sourcePath, container string, merged corev1.ResourceRequirements,
@@ -282,10 +283,7 @@ func (r *renderer) checkUnschedulable(
 		return nil, nil
 	}
 	knownGood, err := r.knownGoodRequests(ctx, workload, sourcePath, container)
-	switch {
-	case errors.Is(err, errNoKnownGood):
-		return []agentapi.ValidationError{{Field: fieldPrefix, Message: err.Error()}}, nil
-	case err != nil:
+	if err != nil && !errors.Is(err, errNoKnownGood) {
 		return nil, err
 	}
 	var errs []agentapi.ValidationError
@@ -295,9 +293,6 @@ func (r *renderer) checkUnschedulable(
 		reach, reachable := largest[name]
 		requested := merged.Requests[name]
 		switch {
-		case !declared:
-			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
-				"%v: it declares no %s request for container %s", errNoKnownGood, name, container)})
 		case !reachable:
 			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
 				"no node reports allocatable %s, so a %s request cannot fit one", name, name)})
@@ -306,7 +301,7 @@ func (r *renderer) checkUnschedulable(
 				"the Workload is unschedulable because its %s request %s fits no node; "+
 					"the request must not exceed the largest node's allocatable %s",
 				name, requested.String(), reach.String())})
-		case bound.Cmp(requested) < 0:
+		case declared && bound.Cmp(requested) < 0:
 			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
 				"the %s request %s exceeds the known-good request %s",
 				name, requested.String(), bound.String())})
@@ -330,8 +325,8 @@ func largestAllocatable(nodes []corev1.Node) corev1.ResourceList {
 }
 
 // knownGoodRequests returns the requests that the Sandbox's known-good state
-// declares for the container. It reports errNoKnownGood when that state does
-// not declare them, because the bound must not be guessed.
+// declares for the container. It reports errNoKnownGood when that tag or
+// container declaration is absent.
 func (r *renderer) knownGoodRequests(
 	ctx context.Context, workload v1alpha1.WorkloadReference, sourcePath, container string,
 ) (corev1.ResourceList, error) {

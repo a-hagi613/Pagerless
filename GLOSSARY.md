@@ -87,7 +87,7 @@ _Avoid_: state, status, stage
 ## Environment
 
 **Sandbox**:
-The separate Git repository that holds the demo Workloads' manifests. Argo CD deploys from it, Scenarios inject failures into it, and the Executor's pull requests target it.
+The Git repository that holds the Workloads' manifests. Argo CD deploys from it and the Executor's pull requests target it; `pagerless-sandbox` is the reference demo repository into which Scenarios inject failures.
 _Avoid_: demo repo, GitOps repo, test repo
 
 **Scenario**:

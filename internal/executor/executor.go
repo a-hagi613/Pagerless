@@ -76,13 +76,17 @@ func New(cfg Config) (*Executor, error) {
 		return nil, errors.New("a writer is required")
 	case cfg.Namespace == "":
 		return nil, errors.New("a namespace is required")
-	case cfg.GitHub == nil || cfg.Token == nil || cfg.GitHub.Token == nil:
-		return nil, errors.New("GitHub and a token are required")
-	case !repositoryName.MatchString(cfg.GitHub.Repository):
-		return nil, fmt.Errorf("%q is not a GitHub repository as <owner>/<name>", cfg.GitHub.Repository)
 	}
-	if err := cfg.Sandbox.Check(); err != nil {
-		return nil, err
+	if cfg.Sandbox.URL != "" || cfg.GitHub != nil {
+		switch {
+		case cfg.GitHub == nil || cfg.Token == nil || cfg.GitHub.Token == nil:
+			return nil, errors.New("GitHub and a token are required")
+		case !repositoryName.MatchString(cfg.GitHub.Repository):
+			return nil, fmt.Errorf("%q is not a GitHub repository as <owner>/<name>", cfg.GitHub.Repository)
+		}
+		if err := cfg.Sandbox.Check(); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.RestartTimeout == 0 {
 		cfg.RestartTimeout = DefaultRestartTimeout
@@ -111,6 +115,11 @@ func (e *Executor) Execute(ctx context.Context, name, hash string) (*executorapi
 
 	if tr.Status.Proposal.Action.ExecutesLive() {
 		return e.restart(ctx, tr)
+	}
+	if e.cfg.GitHub == nil {
+		return nil, refuse(http.StatusPreconditionFailed, executorapi.ReasonUnsupportedAction,
+			"the Executor is running without --sandbox-url and cannot open pull requests for %s",
+			tr.Status.Proposal.Action)
 	}
 
 	branch := branchName(tr, hash)
