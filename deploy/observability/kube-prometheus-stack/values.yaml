@@ -1,6 +1,6 @@
 # Values for the kube-prometheus-stack chart 93.3.0, read by the Argo CD Application
 # in deploy/apps/templates. Requests are modest so that the whole local stack fits
-# the 8 GiB memory preflight in hack/preflight.sh.
+# the 12 GiB memory preflight in hack/preflight.sh.
 
 # kind binds these control-plane components to the loopback address of the node,
 # so the chart cannot scrape them.

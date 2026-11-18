@@ -153,7 +153,9 @@ def merge_documents(
 
     It refuses a batch that cannot be published honestly: a shard from another
     commit or evidence mode, a dirty worktree, two shards that record the same
-    run, an incomplete or extended Scenario/repeat set, and any failed run.
+    run, an incomplete or extended Scenario/repeat set, and any incomplete or
+    errored run. A run that completed cleanly and was graded ``fail`` is a real
+    measurement of the model, so it is kept and counted in the Fail column.
     """
     if not documents:
         raise ResultError("no shard documents were merged")
@@ -214,9 +216,15 @@ def merge_documents(
             "the merged batch carries runs it did not declare: "
             + ", ".join(f"{name} repeat {repeat}" for name, repeat in unexpected)
         )
-    failed = sorted({run["scenario"] for run in runs if run["result"] == "fail"})
-    if failed:
-        raise ResultError(f"the merged batch records failed runs for {', '.join(failed)}")
+    incomplete = sorted(
+        f"{run['scenario']} repeat {run['repeat']}"
+        for run in runs
+        if run["failure"] is not None or run["phase"] in ("Failed", "TimedOut")
+    )
+    if incomplete:
+        raise ResultError(
+            f"the merged batch carries incomplete or errored runs: {', '.join(incomplete)}"
+        )
 
     budget = {
         "maxTokens": sum(document["budget"]["maxTokens"] for document in documents),

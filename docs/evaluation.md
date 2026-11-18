@@ -230,6 +230,7 @@ credential:
 | `phase` | choice `measured`, `full` | `measured` | `measured` runs `oom` once to confirm cost and writes the genuine recordings; `full` runs all ten Scenarios twice and samples the stack's memory. |
 | `scenarios` | string | empty | Overrides the phase's Scenario list; empty uses the phase default. |
 | `repeats` | number | 1 | Repeats per Scenario. |
+| `repeat_number` | string | empty | An optional single repeat number (1..`repeats`). A `scenarios` override dispatches one shard, and this selects which repeat of the batch it runs so the batch can be rerun one repeat at a time. Empty runs every repeat. |
 | `max_tokens` | number | 150000 | The hard token budget passed to the harness. One live investigation may use its full 100,000-input-token budget and the harness fails a batch that outspends its own budget, so the default clears a single investigation. A full batch passes it to each of its twenty shards and the merged document records their sum. |
 | `max_cost_usd` | number | 1 | The hard cost budget passed to the harness. The job rejects a budget above 4.5 USD, which keeps one batch inside the 5 USD mission cap. A full batch passes it to each shard and the merged document records their sum. |
 | `confirm_paid_run` | string | empty | Must be exactly `yes`; anything else fails the job before a model call. |
@@ -278,12 +279,18 @@ job then downloads every shard artifact, and
 `python -m pagerless_eval.results merge` recombines them into the single
 document a batch publishes: it refuses a shard from another commit, another
 evidence mode, or a dirty worktree, a batch that misses a Scenario or repeat,
-two shards that record the same run, and any failed run. It starts the document
+two shards that record the same run, and any incomplete or errored run
+(`failure` set, `Failed`, or `TimedOut`). A run that completed cleanly and was
+graded `fail` is a real measurement of the model, not an error, so it is kept
+and counted in the Fail column. It starts the document
 at the earliest shard, sums the spend and the shard budgets, writes
 `evals/results/<date>-<commit>-live.json`, renders the result table into the job
 summary, and concatenates the memory samples. A `measured` run and a
-`scenarios` override run one shard named `single`, and publish its artifacts
-directly.
+`scenarios` override run one shard named `single`, which runs every repeat
+unless `repeat_number` names one, and publish its artifacts directly. A `full`
+shard does not require a passing score, so a completed run that the answer key
+grades `fail` is recorded and published; the aggregate merge then rejects any
+run that errored or never reached a terminal phase.
 
 A shard waits out one deadline that is longer than the rest:
 `ContainerMemoryGrowth` fires only for a pod older than 15 minutes and then
