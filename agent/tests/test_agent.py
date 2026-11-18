@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from pagerless_agent.agent import Agent, Outcome, OutcomeKind
-from pagerless_agent.budget import Limits
+from pagerless_agent.budget import MAX_INPUT_TOKENS, Limits
 from pagerless_agent.bundle import ContextBundle, PodLogs
 from pagerless_agent.model import ModelProvider, Stage, ToolSpec
 from pagerless_agent.replay import Recording, RecordingProvider, ReplayProvider
@@ -360,10 +360,11 @@ class TestBudgets:
         assert len(result.server.reports[0]["findings"]) == 12
 
     async def test_input_tokens_are_counted_over_every_call(self, tmp_path: Path) -> None:
+        per_call = MAX_INPUT_TOKENS // 2 + 1
         heavy = [
             respond(
                 call(f"t{n}", "resources_get", kind="Deployment", namespace="sandbox", name="checkout"),
-                input_tokens=60_000,
+                input_tokens=per_call,
             )
             for n in range(1, 6)
         ]
@@ -373,7 +374,7 @@ class TestBudgets:
         assert result.outcome.kind == "budget_exhausted"
         assert len(result.model.requests) == 2
         assert (
-            "Budget exhausted (input tokens): 120000 input tokens read; the budget is 100000."
+            f"Budget exhausted (input tokens): {2 * per_call} input tokens read; the budget is {MAX_INPUT_TOKENS}."
             in steps(result.server)[-1][2]
         )
 
