@@ -4,7 +4,9 @@
 # Two kinds of resource are outside Terraform's state and would survive a
 # `terraform destroy` while still billing: the EC2 instances Karpenter launched
 # and the EBS volumes the CSI driver provisioned. Both are removed first, by
-# deleting the NodePools and the claims and waiting for each to finish.
+# deleting the NodePools and the claims and waiting for each to finish; the
+# volumes are then swept by tag, which also covers a cluster that is already
+# gone.
 #
 # The Terraform state bucket and the two GitHub Actions roles are the only
 # resources this command leaves behind, by design: the bucket outlives every
@@ -116,18 +118,24 @@ for profile in $(aws iam list-instance-profiles \
 	aws iam delete-instance-profile --instance-profile-name "$profile" >/dev/null 2>&1 || true
 done
 
-# 2. Destroy the stack. An empty state is success: this is also what the nightly
+# 2. Sweep the volumes directly. The CSI driver deletes a volume asynchronously
+# when its claim is deleted, and a destroy that gets there first orphans it. The
+# sweep needs no cluster: it finds the volumes by tag, so it also runs when the
+# control plane was lost before this command.
+bash "$REPO_ROOT/hack/cloud-volume-sweep.sh"
+
+# 3. Destroy the stack. An empty state is success: this is also what the nightly
 # teardown runs.
 terraform -chdir="$REPO_ROOT/infra" init -input=false
 terraform -chdir="$REPO_ROOT/infra" destroy -input=false -auto-approve
 
-# 3. Remove the session's kubeconfig entries, so a later command cannot silently
+# 4. Remove the session's kubeconfig entries, so a later command cannot silently
 # target a cluster that no longer exists.
 kubectl config delete-context "$CLOUD_CONTEXT" >/dev/null 2>&1 || true
 kubectl config unset "clusters.${cluster_arn}" >/dev/null 2>&1 || true
 kubectl config unset "users.${cluster_arn}" >/dev/null 2>&1 || true
 
-# 4. Prove that nothing billable remains. The check retries for a bounded time,
+# 5. Prove that nothing billable remains. The check retries for a bounded time,
 # because AWS deletes asynchronously.
 bash "$REPO_ROOT/hack/cloud-teardown-check.sh"
 
