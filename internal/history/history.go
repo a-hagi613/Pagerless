@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 
 	// The pure-Go SQLite driver registers the "sqlite" database/sql driver.
@@ -152,15 +154,31 @@ func OpenReader(path string) (*Store, error) {
 	return open(path, false)
 }
 
-// open opens the file with the pragmas that make one writer and many readers safe. WAL keeps a reader from
-// blocking the server's appends, and busy_timeout lets a writer wait out a short reader transaction. Only the
-// writer switches the journal mode, because that pragma writes to the file.
-func open(path string, writer bool) (*Store, error) {
-	location := url.URL{Scheme: "file", Path: path}
+// dataSourceName builds the SQLite URI for path. A Windows drive path is not a
+// URI path, so it needs a leading slash: without one the drive letter parses as
+// a URI authority and the driver rejects the DSN.
+func dataSourceName(path string, writer bool) string {
+	location := url.URL{Scheme: "file", Path: uriPath(path)}
 	dsn := location.String() + "?_pragma=busy_timeout(5000)"
 	if writer {
 		dsn += "&_pragma=journal_mode(WAL)"
 	}
+	return dsn
+}
+
+func uriPath(path string) string {
+	slashed := filepath.ToSlash(path)
+	if !strings.HasPrefix(slashed, "/") {
+		return "/" + slashed
+	}
+	return slashed
+}
+
+// open opens the file with the pragmas that make one writer and many readers safe. WAL keeps a reader from
+// blocking the server's appends, and busy_timeout lets a writer wait out a short reader transaction. Only the
+// writer switches the journal mode, because that pragma writes to the file.
+func open(path string, writer bool) (*Store, error) {
+	dsn := dataSourceName(path, writer)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open the history database: %w", err)

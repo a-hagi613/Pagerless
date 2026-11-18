@@ -41,7 +41,7 @@ func newTriage(name string, created time.Time) *v1alpha1.Triage {
 // before the dashboard recorded specs and creation times left it.
 func openVersion1(t *testing.T, path string) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+path)
+	db, err := sql.Open("sqlite", dataSourceName(path, false))
 	if err != nil {
 		t.Fatal(err)
 	}
