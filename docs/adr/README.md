@@ -30,4 +30,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0024](0024-budget-guardrail-stays-outside-terraform.md) | The budget guardrail stays outside Terraform |
 | [0025](0025-the-agent-job-admits-the-pod-identity-token.md) | The agent Job admits the EKS Pod Identity token |
 | [0026](0026-standalone-helm-chart.md) | A standalone Helm chart installs Pagerless without the reference Sandbox stack |
-| [0027](0027-full-evaluation-runs-as-five-shards.md) | The full paid evaluation runs as five parallel shards that one job merges |
+| [0027](0027-full-evaluation-runs-as-five-shards.md) | The full paid evaluation runs as twenty parallel single-run shards that one job merges |

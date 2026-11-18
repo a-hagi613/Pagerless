@@ -128,7 +128,7 @@ payment-flag)
 product-catalog-flag)
 	injected="enables the productCatalogFailure flag for every product in the shared flagd configuration, so the catalog answers GetProduct with an internal error" ;;
 email-memory-leak)
-	injected="sets the emailMemoryLeak flag to 1000x in the shared flagd configuration, so the email service pads and retains every delivery it sends and its memory grows until the container is killed" ;;
+	injected="sets the emailMemoryLeak flag to 100x in the shared flagd configuration, so the email service pads every message a hundredfold and retains every delivery it sends, and its memory grows past the memory-growth threshold without its container being killed" ;;
 *)
 	injected="injects the $scenario Scenario" ;;
 esac
@@ -273,7 +273,7 @@ product-catalog-flag)
 	wait_for_flag productCatalogFailure "on"
 	;;
 email-memory-leak)
-	wait_for_flag emailMemoryLeak "1000x"
+	wait_for_flag emailMemoryLeak "100x"
 	;;
 esac
 

@@ -7,7 +7,7 @@ index 93e918b..96e378d 100644
          },
          "emailMemoryLeak": {
 -          "defaultVariant": "off",
-+          "defaultVariant": "1000x",
++          "defaultVariant": "100x",
            "description": "Memory leak in the email service.",
            "state": "ENABLED",
            "variants": {

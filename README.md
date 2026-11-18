@@ -213,7 +213,8 @@ It records the Scenario, Action, result, time to Recovered, Verification outcome
 in a versioned document under [`evals/results`](evals/results), named by date and commit. The
 harness never calls a model and never approves with the cluster administrator.
 
-The harness is tested without a cluster: `make test-eval` runs its unit tests, and the
+The harness is tested without a cluster: `make test-eval` runs its unit tests, `make dry-run-eval`
+builds the full batch's twenty shards from fixtures and merges them offline in seconds, and the
 credential-free Replay subset is `make eval-replay`, which runs three Scenarios (`oom`,
 `unschedulable`, `bad-config`) in the isolated adapter cluster. CI runs that subset. A live run
 needs the local stack and a paid provider: `make eval` runs every Scenario twice by default, and

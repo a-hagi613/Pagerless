@@ -210,6 +210,9 @@ if [ "${PAGERLESS_E2E_EVAL:-0}" = "1" ]; then
 	if [ -n "${PAGERLESS_E2E_MAX_COST_USD:-}" ]; then
 		eval_arguments+=(--max-cost-usd "$PAGERLESS_E2E_MAX_COST_USD")
 	fi
+	if [ -n "${PAGERLESS_E2E_REPEAT_NUMBER:-}" ]; then
+		eval_arguments+=(--repeat-number "$PAGERLESS_E2E_REPEAT_NUMBER")
+	fi
 	if [ "${PAGERLESS_E2E_REQUIRE_PASS:-1}" = "1" ]; then
 		eval_arguments+=(--require-pass)
 	fi

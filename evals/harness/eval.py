@@ -23,6 +23,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenarios", default="all", help="all, or a comma-separated Scenario list")
     parser.add_argument("--repeats", type=int, default=2, help="runs per Scenario (default: 2)")
     parser.add_argument(
+        "--repeat-number",
+        type=int,
+        default=None,
+        help="run only this repeat of every Scenario, so one shard holds one run",
+    )
+    parser.add_argument(
         "--results-dir",
         type=Path,
         default=REPO_ROOT / "evals" / "results",
@@ -72,9 +78,15 @@ def main(argv: list[str] | None = None) -> int:
             max_cost_usd=arguments.max_cost_usd,
             verification_window=arguments.verification_window,
             context=arguments.context,
+            repeat_number=arguments.repeat_number,
         )
         if config.repeats < 1:
             raise HarnessError("--repeats must be at least 1")
+        if config.repeat_number is not None and not 1 <= config.repeat_number <= config.repeats:
+            raise HarnessError(
+                f"--repeat-number must be between 1 and --repeats ({config.repeats}), "
+                f"not {config.repeat_number}"
+            )
         if config.max_tokens < 0 or config.max_cost_usd < 0:
             raise HarnessError("--max-tokens and --max-cost-usd cannot be negative")
         if config.verification_window < 1:
