@@ -15,7 +15,7 @@ keycloak_image="quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a
 keycloak_container="pagerless-preview-keycloak"
 keycloak_port="${PAGERLESS_PREVIEW_KEYCLOAK_PORT:-18180}"
 preview_bind="${PAGERLESS_PREVIEW_BIND:-0.0.0.0:8080}"
-preview_url="${PAGERLESS_PREVIEW_URL:-http://devbox:8080}"
+preview_url="${PAGERLESS_PREVIEW_BASE_URL:-${PAGERLESS_PREVIEW_URL:-http://devbox:8080}}"
 preview_port="${preview_bind##*:}"
 
 pid_file="$state_dir/server.pid"

@@ -57,7 +57,7 @@ proxies `/realms/<realm>/...` and `/resources/...` on the dashboard listener its
   continue talking directly to `--oidc-issuer` inside the cluster.
 
 `hack/provision-keycloak.py` registers redirect URIs and web origins for `http://localhost:8080/*`,
-`http://127.0.0.1:8080/*`, `http://devbox:8080/*`, `http://100.75.231.118:8080/*`, and `$PAGERLESS_DASHBOARD_BASE_URL/*`
+`http://127.0.0.1:8080/*`, `http://devbox:8080/*`, and `$PAGERLESS_DASHBOARD_BASE_URL/*`
 (when set), and idempotently provisions the operator user (`$PAGERLESS_DASHBOARD_USER`, default `pagerless-approver`)
 in `pagerless-approvers`, storing the credentials in the `pagerless/pagerless-dashboard-operator` Secret.
 

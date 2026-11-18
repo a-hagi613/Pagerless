@@ -41,7 +41,6 @@ def dashboard_redirects():
         "http://localhost:8080/*",
         "http://127.0.0.1:8080/*",
         "http://devbox:8080/*",
-        "http://100.75.231.118:8080/*",
     ]
     custom = os.environ.get("PAGERLESS_DASHBOARD_BASE_URL", "").strip().rstrip("/")
     if custom:
