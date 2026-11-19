@@ -15,11 +15,14 @@ import (
 	"github.com/a-hagi613/pagerless/internal/cli"
 )
 
+// testCSRF is the CSRF claim that the fake Portal expects on every write.
+const testCSRF = "csrf-1"
+
 // sessionCookie builds a signed-cookie-shaped value with a CSRF claim. The CLI
 // reads the claim; the server verifies the signature.
 func sessionCookie(t *testing.T) string {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"v": 1, "sub": "admin", "csrf": "csrf-1"})
+	payload, err := json.Marshal(map[string]any{"v": 1, "sub": "admin", "csrf": testCSRF})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +195,7 @@ func TestConfigSetWritesOnlyTheSubmittedKeys(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		if r.Header.Get("X-CSRF-Token") != "csrf-1" {
+		if r.Header.Get("X-CSRF-Token") != testCSRF {
 			http.Error(w, "csrf", http.StatusForbidden)
 			return
 		}
@@ -264,7 +267,7 @@ func TestApproveInServerModeBindsTheDisplayedHash(t *testing.T) {
 				"proposal":{"attempt":1,"hash":"`+proposalHash+`","action":"NoAction",
 				"expiresAt":"2026-11-18T13:00:00Z","parameters":null}}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/pages/checkout-abc/decision":
-			if r.Header.Get("X-CSRF-Token") != "csrf-1" {
+			if r.Header.Get("X-CSRF-Token") != testCSRF {
 				http.Error(w, "csrf", http.StatusForbidden)
 				return
 			}

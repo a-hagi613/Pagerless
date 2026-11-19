@@ -40,6 +40,9 @@ const (
 	// labelKey labels the pods of the Targets that these tests create.
 	labelKey      = "app"
 	containerName = "app"
+
+	// newCommand is the verb that opens a Page.
+	newCommand = "new"
 )
 
 var (
@@ -119,7 +122,7 @@ func TestStartResolvesEachTargetToItsTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"new", "-n", sandbox}, tc.args...)
+			args := append([]string{newCommand, "-n", sandbox}, tc.args...)
 			if _, err := execute(t.Context(), kubeconfig, args...); err != nil {
 				t.Fatalf("start: %v", err)
 			}
@@ -146,7 +149,7 @@ func TestStartRefusesATargetWithoutATarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, tc.arg)
+			_, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, tc.arg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("start %s: error = %v, want it to contain %q", tc.arg, err, tc.want)
 			}
@@ -161,14 +164,14 @@ func TestStartPrintsTheNameOfTheActivePage(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 
-	first, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+checkout)
+	first, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+checkout)
 	if err != nil {
 		t.Fatalf("first start: %v", err)
 	}
 	name := createdName(t, first)
 	env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
 
-	second, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+checkout)
+	second, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+checkout)
 	if err != nil {
 		t.Fatalf("second start: %v", err)
 	}
@@ -186,7 +189,7 @@ func TestListShowsEachPageInEveryFormat(t *testing.T) {
 	createDeployment(t, env, cart)
 	names := map[string]v1alpha1.TargetReference{}
 	for _, target := range []string{checkout, cart} {
-		out, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+target)
+		out, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+target)
 		if err != nil {
 			t.Fatalf("start %s: %v", target, err)
 		}
@@ -236,7 +239,7 @@ func TestListShowsEachPageInEveryFormat(t *testing.T) {
 func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
-	out, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+checkout)
+	out, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+checkout)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -295,7 +298,7 @@ func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
-	out, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+checkout)
+	out, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+checkout)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -363,7 +366,7 @@ func TestShowRefusesAnUnknownPage(t *testing.T) {
 func TestShowDisplaysTheNarrative(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
-	out, err := execute(t.Context(), kubeconfig, "new", "-n", sandbox, "deploy/"+checkout)
+	out, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+checkout)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
