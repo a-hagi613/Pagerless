@@ -323,6 +323,19 @@ const (
 	TriggerSourceAPI TriggerSource = "API"
 )
 
+// IsHumanRequest reports whether the Trigger was a person asking for an
+// investigation, through the CLI, the Portal, or the API. A human-requested
+// Page never opens a draft Pull Request unattended, because the request was for
+// a Diagnosis, not for an unreviewed change.
+func (s TriggerSource) IsHumanRequest() bool {
+	switch s {
+	case TriggerSourceCLI, TriggerSourcePortal, TriggerSourceAPI:
+		return true
+	default:
+		return false
+	}
+}
+
 // Trigger records the observation that opened or joined a Page. Later Triggers
 // accumulate in status.triggerCount, so the spec keeps the first one verbatim.
 type Trigger struct {
