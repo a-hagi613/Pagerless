@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,7 +29,11 @@ const (
 // decisionRequest is the body of POST /api/pages/{name}/decision.
 type decisionRequest struct {
 	Decision v1alpha1.DecisionOutcome `json:"decision"`
-	Reason   string                   `json:"reason"`
+	// ProposalHash is the hash the approver was shown. When it is set and no
+	// longer matches the Page, the decision is refused rather than applied to a
+	// Proposal the approver never saw (ADR-0031).
+	ProposalHash string `json:"proposalHash"`
+	Reason       string `json:"reason"`
 }
 
 // decisionResponse is the answer to a recorded decision.
@@ -55,12 +60,14 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only a member of the approvers group may decide a Proposal")
 		return
 	}
-	switch request.Decision {
+	switch normalizeDecision(request.Decision) {
 	case v1alpha1.DecisionApproved, v1alpha1.DecisionRejected:
 	default:
-		writeError(w, http.StatusBadRequest, "decision must be Approved or Rejected")
+		writeAPIError(w, http.StatusBadRequest, "decision_invalid",
+			"decision must be approve or dismiss", nil)
 		return
 	}
+	outcome := normalizeDecision(request.Decision)
 	if len(request.Reason) > v1alpha1.MaxReasonLength {
 		writeError(w, http.StatusBadRequest,
 			fmt.Sprintf("the reason is %d characters long; at most %d are allowed",
@@ -80,8 +87,14 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.Status.Phase != v1alpha1.PhaseProposed || p.Status.Proposal == nil {
-		writeError(w, http.StatusConflict, fmt.Sprintf(
-			"Page %s is in phase %s; only a Proposed Page accepts a decision", p.Name, phaseOrUnset(p.Status.Phase)))
+		writeAPIError(w, http.StatusConflict, "page_not_proposed", fmt.Sprintf(
+			"Page %s is in phase %s; only a Proposed Page accepts a decision", p.Name, phaseOrUnset(p.Status.Phase)), nil)
+		return
+	}
+	if request.ProposalHash != "" && request.ProposalHash != p.Status.Proposal.Hash {
+		writeAPIError(w, http.StatusConflict, "proposal_changed",
+			"the Proposal changed since it was displayed; reopen the Page and decide again",
+			map[string]any{"currentProposalHash": p.Status.Proposal.Hash})
 		return
 	}
 
@@ -89,7 +102,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	if p.Annotations == nil {
 		p.Annotations = map[string]string{}
 	}
-	if request.Decision == v1alpha1.DecisionRejected {
+	if outcome == v1alpha1.DecisionRejected {
 		p.Annotations[v1alpha1.AnnotationDecision] = v1alpha1.DecisionAnnotationReject
 	} else {
 		p.Annotations[v1alpha1.AnnotationDecision] = v1alpha1.DecisionAnnotationApprove
@@ -106,8 +119,21 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, decisionResponse{
-		Name: p.Name, Page: p.Name, Decision: string(request.Decision), DecidedBy: user.Username,
+		Name: p.Name, Page: p.Name, Decision: string(outcome), DecidedBy: user.Username,
 	})
+}
+
+// normalizeDecision accepts the API's lowercase outcomes and the resource's
+// capitalized ones, so the Portal and the CLI may send either form.
+func normalizeDecision(outcome v1alpha1.DecisionOutcome) v1alpha1.DecisionOutcome {
+	switch strings.ToLower(string(outcome)) {
+	case "approve", "approved":
+		return v1alpha1.DecisionApproved
+	case "dismiss", "reject", "rejected":
+		return v1alpha1.DecisionRejected
+	default:
+		return outcome
+	}
 }
 
 // writeWriteError answers a refused decision. A conflict means the Page moved

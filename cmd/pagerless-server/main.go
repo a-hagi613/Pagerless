@@ -47,6 +47,18 @@ const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
 // defaultAlertmanagerTokenFile is the rotating Secret that authenticates webhook deliveries.
 const defaultAlertmanagerTokenFile = "/var/run/pagerless/alertmanager/token"
 
+// defaultAdminTokenFile is where the chart mounts the bootstrap token Secret.
+const defaultAdminTokenFile = "/var/run/pagerless/auth/admin-token"
+
+// defaultSessionKeyFile is where the chart mounts the session signing key Secret.
+const defaultSessionKeyFile = "/var/run/pagerless/auth/session-key"
+
+// defaultCredentialsMountPath is where the chart mounts the credentials Secret.
+const defaultCredentialsMountPath = "/var/run/pagerless/credentials"
+
+// version is the release version, set at link time by the image build.
+var version = "dev"
+
 // tokenFromFile returns a source that reads the token at every call, because
 // the kubelet rotates a projected token in place.
 func tokenFromFile(path string) func() (string, error) {
@@ -56,6 +68,20 @@ func tokenFromFile(path string) func() (string, error) {
 			return "", fmt.Errorf("read the token file %s: %w", path, err)
 		}
 		return strings.TrimSpace(string(raw)), nil
+	}
+}
+
+// bytesFromFile returns a source that reads the file at every call, because the
+// kubelet replaces a mounted Secret in place. The value is not trimmed: a
+// signing key is used exactly as the chart generated it, and the reader trims
+// surrounding whitespace when it validates the length.
+func bytesFromFile(path string) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read the key file %s: %w", path, err)
+		}
+		return raw, nil
 	}
 }
 
@@ -149,18 +175,28 @@ func run() error {
 		targetNamespaces = flag.String("target-namespaces", "default",
 			"comma-separated namespaces whose Targets the dashboard's Start request offers")
 		dashboardBaseURL = flag.String("dashboard-base-url", "http://localhost:8080",
-			"browser-facing base URL of the dashboard, used to build the OIDC redirect URI "+
+			"browser-facing base URL of the Portal, used to scope the session cookie and mark it Secure "+
 				"(overridden by $PAGERLESS_DASHBOARD_BASE_URL)")
-		oidcIssuer = flag.String("oidc-issuer", "",
-			"realm issuer that signs dashboard users in; empty leaves the dashboard disabled")
-		oidcClientID = flag.String("oidc-client-id", "pagerless-dashboard",
-			"confidential OIDC client for dashboard sign-in")
-		oidcClientSecretFile = flag.String("oidc-client-secret-file", "/var/run/pagerless/keycloak/client-secret",
-			"file that holds the dashboard client secret")
-		approversGroup = flag.String("approvers-group", "pagerless-approvers",
-			"realm group whose members may approve through the dashboard")
-		dashboardCookieSecure = flag.Bool("dashboard-cookie-secure", true,
-			"mark dashboard session cookies Secure; set false only when the browser reaches the dashboard over HTTP")
+		authMode = flag.String("auth-mode", os.Getenv("PAGERLESS_AUTH_MODE"),
+			`Portal authentication mode: "token" (default) or "disabled"`)
+		authAdminTokenFile = flag.String("auth-admin-token-file", defaultAdminTokenFile,
+			"file that holds the bootstrap token that signs the operator in")
+		authSessionKeyFile = flag.String("auth-session-key-file", defaultSessionKeyFile,
+			"file that holds the HMAC-SHA256 key that signs session cookies")
+		authBearerToken = flag.Bool("auth-bearer-token", false,
+			"accept Authorization: Bearer <bootstrap token> on /api/* for scripted calls")
+		authIdentityHeader = flag.String("auth-identity-header", "",
+			"trusted identity header (such as X-Auth-Request-User) that names the operator in disabled mode")
+		authSessionTTL = flag.Duration("auth-session-ttl", 0,
+			"lifetime of a signed session cookie (default: 8h)")
+		dashboardCookieSecure = flag.String("dashboard-cookie-secure", "",
+			`mark session cookies Secure: "" derives it from --dashboard-base-url, or pass "true"/"false"`)
+		credentialsSecret = flag.String("credentials-secret", "pagerless-credentials",
+			"Secret that holds the AI, Target Repository, and connector credentials")
+		credentialsExternalManager = flag.String("credentials-external-manager", "",
+			"secret manager that owns the credentials Secret; empty lets the Portal and CLI write it")
+		credentialsMountPath = flag.String("credentials-mount-path", defaultCredentialsMountPath,
+			"directory where the credentials Secret is mounted")
 		watcherEnabled = flag.Bool("watcher", true,
 			"watch the cluster for failing Targets, open Pages, and enforce the guardrails")
 		watcherInclude = flag.String("watcher-namespaces-include", "",
@@ -247,11 +283,15 @@ func run() error {
 		Sandbox: sandbox.Repository{
 			URL: *sandboxURL, Branch: *sandboxBranch, ReadToken: sandboxReadToken,
 		},
-		AllowedNamespaces:  splitList(*patchable),
-		PatchBounds:        bounds,
-		ScaleBounds:        scaleBounds,
-		AlertNamespaces:    allowed,
-		HealthProbeAddress: *healthBind,
+		AllowedNamespaces:          splitList(*patchable),
+		PatchBounds:                bounds,
+		ScaleBounds:                scaleBounds,
+		AlertNamespaces:            allowed,
+		HealthProbeAddress:         *healthBind,
+		CredentialsSecretName:      *credentialsSecret,
+		CredentialsExternalManager: *credentialsExternalManager,
+		CredentialsMountPath:       *credentialsMountPath,
+		Version:                    version,
 	}
 	if *argoCDURL != "" {
 		cfg.ArgoCDToken = tokenFromFile(*argoCDTokenFile)
@@ -260,24 +300,23 @@ func run() error {
 		cfg.AlertmanagerToken = tokenFromFile(*alertmanagerTokenFile)
 	}
 	if *dashboardBind != "" {
-		// The dashboard is served only when an identity provider is configured. Its
-		// decisions patch Page annotations, which the Page controller reconciles.
-		dashboardAuth, err := dashboardauth.New(dashboardauth.Config{
-			Issuer:         *oidcIssuer,
-			ClientID:       *oidcClientID,
-			ClientSecret:   tokenFromFile(*oidcClientSecretFile),
-			RedirectURL:    strings.TrimSuffix(*dashboardBaseURL, "/") + "/auth/callback",
-			ApproversGroup: *approversGroup,
-			SecureCookies:  *dashboardCookieSecure,
-		})
-		if err != nil {
-			return fmt.Errorf("configure dashboard sign-in: %w", err)
-		}
+		// The Portal authenticates with the bootstrap token and a signed session
+		// cookie (ADR-0032). Its decisions patch Page annotations, which the Page
+		// controller reconciles.
 		dashboardListener, err := net.Listen("tcp", *dashboardBind)
 		if err != nil {
 			return fmt.Errorf("listen for the dashboard: %w", err)
 		}
-		cfg.DashboardAuth = dashboardAuth
+		cfg.DashboardAuthConfig = &dashboardauth.Config{
+			Mode:           *authMode,
+			AdminToken:     tokenFromFile(*authAdminTokenFile),
+			SessionKey:     bytesFromFile(*authSessionKeyFile),
+			BaseURL:        *dashboardBaseURL,
+			CookieSecure:   *dashboardCookieSecure,
+			BearerToken:    *authBearerToken,
+			IdentityHeader: *authIdentityHeader,
+			SessionTTL:     *authSessionTTL,
+		}
 		cfg.DashboardListener = dashboardListener
 	}
 	if *watcherEnabled {

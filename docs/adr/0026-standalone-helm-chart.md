@@ -3,6 +3,14 @@
 - **Status:** Accepted
 - **Date:** 2026-11-18
 - **Relates to:** [ADR-0003](0003-separate-sandbox-repository.md), [ADR-0005](0005-two-go-binaries.md), [ADR-0019](0019-opentelemetry-demo-as-rendered-manifests.md), [ADR-0022](0022-agentgateway-is-the-only-mcp-caller.md)
+- **Amended by:** [ADR-0032](0032-single-operator-local-authentication.md)
+
+> Amended in v2.0: the chart is now the only install path. `hack/install.sh` runs
+> `helm upgrade --install` and provisions no platform service; Keycloak,
+> agentgateway, and their databases are gone (ADR-0030, ADR-0032), and the
+> installer no longer applies CRDs or a values file of its own. The decision
+> below stands, and its references to the v1 installer describe the context it
+> replaced.
 
 ## Context
 

@@ -9,22 +9,41 @@ import (
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
+// appsAPIVersion is the API version of the apps kinds.
+const appsAPIVersion = "apps/v1"
+
 // humanRequestReason is the reason class that a human request contributes to the
 // Fingerprint.
 const humanRequestReason = "ManualRequest"
 
-// startRequest is the body of POST /api/pages.
+// startRequest is the body of POST /api/pages. It accepts the CLI's nested
+// target and the Portal's flat kind/namespace/name, so both surfaces create the
+// same Page.
 type startRequest struct {
-	// Target is the Deployment or StatefulSet to investigate.
+	// Target is the object to investigate.
 	Target v1alpha1.TargetReference `json:"target"`
+	// Kind, Namespace, and Name are the flat form.
+	Kind      v1alpha1.TargetKind `json:"kind"`
+	Namespace string              `json:"namespace"`
+	Name      string              `json:"name"`
 	// Hint is optional guidance for the agent.
 	Hint string `json:"hint"`
+}
+
+// target returns the Target reference, whichever form the caller sent.
+func (r startRequest) target() v1alpha1.TargetReference {
+	if r.Kind != "" || r.Name != "" {
+		return v1alpha1.TargetReference{Kind: r.Kind, Namespace: r.Namespace, Name: r.Name}
+	}
+	return r.Target
 }
 
 // startResponse names the Page that now covers the Target. AlreadyActive
@@ -98,24 +117,24 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if err := h.confirmTarget(ctx, &request.Target); err != nil {
+	target := request.target()
+	if err := h.confirmTarget(ctx, &target); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	fingerprint := v1alpha1.Fingerprint(request.Target, humanRequestReason)
+	fingerprint := v1alpha1.Fingerprint(target, humanRequestReason)
 	if name, ok, err := h.activePage(ctx, fingerprint); err != nil {
 		h.internal(w, ctx, err)
-		return
 	} else if ok {
 		writeJSON(w, http.StatusOK, startResponse{Name: name, AlreadyActive: true})
 		return
 	}
 	page := &v1alpha1.Page{
-		GenerateName: request.Target.Name + "-",
+		GenerateName: target.Name + "-",
 		Namespace:    h.namespace,
 		Spec: v1alpha1.PageSpec{
-			Target:      request.Target,
+			Target:      target,
 			Fingerprint: fingerprint,
 			Hint:        strings.TrimSpace(request.Hint),
 			Trigger:     v1alpha1.Trigger{Source: v1alpha1.TriggerSourcePortal, Reason: humanRequestReason},
@@ -130,16 +149,31 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 
 // validateStart checks the request before anything reaches the API server.
 func (h *Handler) validateStart(request startRequest) error {
-	switch request.Target.Kind {
-	case v1alpha1.TargetKindDeployment, v1alpha1.TargetKindStatefulSet:
+	target := request.target()
+	switch target.Kind {
+	case v1alpha1.TargetKindDeployment, v1alpha1.TargetKindStatefulSet, v1alpha1.TargetKindDaemonSet,
+		v1alpha1.TargetKindJob, v1alpha1.TargetKindCronJob, v1alpha1.TargetKindPod,
+		v1alpha1.TargetKindPersistentVolumeClaim, v1alpha1.TargetKindNode:
 	default:
-		return fmt.Errorf("target.kind must be Deployment or StatefulSet")
+		return fmt.Errorf("target.kind must be one of Deployment, StatefulSet, DaemonSet, Job, CronJob, Pod, " +
+			"PersistentVolumeClaim, or Node")
 	}
-	if request.Target.Name == "" {
+	if target.Name == "" {
 		return errors.New("target.name is required")
 	}
-	if !slices.Contains(h.namespaces, request.Target.Namespace) {
-		return fmt.Errorf("start Page does not offer Targets in namespace %q", request.Target.Namespace)
+	if target.Kind.IsClusterScoped() {
+		if target.Namespace != "" {
+			return fmt.Errorf("target.namespace must be empty for a %s", target.Kind)
+		}
+	} else {
+		if target.Namespace == "" {
+			return fmt.Errorf("target.namespace is required for a %s", target.Kind)
+		}
+		// The Portal only offers the configured namespaces. An empty list means
+		// the chart did not restrict the offer, so the server's read RBAC decides.
+		if len(h.namespaces) > 0 && !slices.Contains(h.namespaces, target.Namespace) {
+			return fmt.Errorf("start Page does not offer Targets in namespace %q", target.Namespace)
+		}
 	}
 	if len(request.Hint) > 1000 {
 		return fmt.Errorf("the hint is %d characters long; at most 1000 are allowed", len(request.Hint))
@@ -150,9 +184,9 @@ func (h *Handler) validateStart(request startRequest) error {
 // confirmTarget checks that the Target exists, so a typo cannot start a
 // Page that can never gather a Context Bundle.
 func (h *Handler) confirmTarget(ctx context.Context, ref *v1alpha1.TargetReference) error {
-	var obj client.Object = &appsv1.Deployment{}
-	if ref.Kind == v1alpha1.TargetKindStatefulSet {
-		obj = &appsv1.StatefulSet{}
+	obj, apiVersion, err := targetObject(ref.Kind)
+	if err != nil {
+		return err
 	}
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
 	if err := h.targets.Get(ctx, key, obj); err != nil {
@@ -163,9 +197,33 @@ func (h *Handler) confirmTarget(ctx context.Context, ref *v1alpha1.TargetReferen
 	}
 	// The UID is part of the Fingerprint, so a recreated Target is a new failure
 	// rather than a continuation of the old Page.
-	ref.APIVersion = "apps/v1"
+	ref.APIVersion = apiVersion
 	ref.UID = string(obj.GetUID())
 	return nil
+}
+
+// targetObject returns an empty object of the Target's kind and its API version.
+func targetObject(kind v1alpha1.TargetKind) (client.Object, string, error) {
+	switch kind {
+	case v1alpha1.TargetKindDeployment:
+		return &appsv1.Deployment{}, appsAPIVersion, nil
+	case v1alpha1.TargetKindStatefulSet:
+		return &appsv1.StatefulSet{}, appsAPIVersion, nil
+	case v1alpha1.TargetKindDaemonSet:
+		return &appsv1.DaemonSet{}, appsAPIVersion, nil
+	case v1alpha1.TargetKindJob:
+		return &batchv1.Job{}, "batch/v1", nil
+	case v1alpha1.TargetKindCronJob:
+		return &batchv1.CronJob{}, "batch/v1", nil
+	case v1alpha1.TargetKindPod:
+		return &corev1.Pod{}, "v1", nil
+	case v1alpha1.TargetKindPersistentVolumeClaim:
+		return &corev1.PersistentVolumeClaim{}, "v1", nil
+	case v1alpha1.TargetKindNode:
+		return &corev1.Node{}, "v1", nil
+	default:
+		return nil, "", fmt.Errorf("unsupported Target kind %q", kind)
+	}
 }
 
 // activePage returns the canonical Active Page for the Fingerprint, if any.
