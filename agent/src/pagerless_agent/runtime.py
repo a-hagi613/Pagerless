@@ -1,156 +1,86 @@
-"""Run one agent Job with live read-only evidence and a selected model provider."""
+"""Run one agent Job with a scoped server client and one OpenAI-compatible provider.
+
+This module is the only place where an HTTP client is constructed. There are two, and
+only two: the tool broker client for `PAGERLESS_SERVER_URL`, and the model client for
+`PAGERLESS_MODEL_BASE_URL`. No Kubernetes, connector, or GitHub client exists in this
+package, because the agent holds no credential for any of them.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-import tempfile
-from collections.abc import Callable, Mapping
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from pathlib import Path
-
-import httpx
-from mcp import Client
+from collections.abc import Mapping
 
 from pagerless_agent.agent import Agent, Outcome
-from pagerless_agent.identifiers import ReplayError
-from pagerless_agent.keycloak import FederatedTokenSource, TokenError
-from pagerless_agent.live_context import MCPContextSource
-from pagerless_agent.mcp import MCPServerConfig, MCPTools, connect
+from pagerless_agent.config import TASK_NARRATIVE, ConfigError, Settings
 from pagerless_agent.model import ModelProvider
-from pagerless_agent.pricing import HAIKU_5_5_PRICES, NOVA_2_LITE_PRICES
-from pagerless_agent.replay import Recording, RecordingProvider, ReplayProvider
-from pagerless_agent.server import ServerClient
-from pagerless_agent.settings import (
-    ENV_TASK,
-    TASK_INVESTIGATE,
-    TASK_NARRATIVE,
-    ConfigError,
-    RuntimeSettings,
+from pagerless_agent.openai_compat import (
+    OpenAICompatibleProvider,
+    ProviderAuthError,
+    ProviderRejectedError,
+    ProviderTruncatedError,
 )
+from pagerless_agent.toolclient import ServerError, ToolClient
 
 log = logging.getLogger(__name__)
 
 
-def create_provider(provider: str, replay_file: Path) -> ModelProvider:
-    """Select Replay by default; live providers use the SDK's environment credential discovery."""
-    if provider == "replay":
-        return ReplayProvider(Recording.load(replay_file))
-    from pagerless_agent.providers import AnthropicProvider, BedrockProvider
-
-    if provider == "anthropic":
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise ConfigError("ANTHROPIC_API_KEY is required for the anthropic provider")
-        return AnthropicProvider()
-    return BedrockProvider(aws_region=os.environ.get("AWS_REGION"), aws_profile=os.environ.get("AWS_PROFILE"))
+def create_provider(settings: Settings) -> OpenAICompatibleProvider:
+    """Return the one provider this agent uses: any OpenAI-compatible endpoint."""
+    return OpenAICompatibleProvider(settings.model)
 
 
 async def run(
-    settings: RuntimeSettings,
+    settings: Settings,
     *,
-    client_factory: Callable[[MCPServerConfig], AbstractAsyncContextManager[Client]] = connect,
-    server_http: httpx.AsyncClient | None = None,
     provider: ModelProvider | None = None,
-    token_source: FederatedTokenSource | None = None,
+    client: ToolClient | None = None,
 ) -> Outcome:
-    """Investigate, report, and close every connection; Replay still executes MCP reads."""
-    selected = provider or create_provider(settings.provider, settings.replay_file)
-    recorder = None
-    if settings.recording_file is not None:
-        if settings.provider == "replay":
-            raise ConfigError("Replay cannot produce a live recording")
-        from pagerless_agent.providers import ANTHROPIC_MODEL, BEDROCK_MODEL
-
-        model = ANTHROPIC_MODEL if settings.provider == "anthropic" else BEDROCK_MODEL
-        recorder = RecordingProvider(selected, scenario="oom", model=model)
-    investigation = settings.investigation
-    gateway = token_source or FederatedTokenSource(
-        settings.keycloak.token_url, settings.keycloak.client_id, settings.keycloak.token_file
+    """Investigate one Page and report the outcome, closing only what this function created."""
+    selected = provider or create_provider(settings)
+    tools = client or ToolClient(
+        settings.server_url,
+        settings.page,
+        settings.page_uid,
+        settings.token_file,
     )
     try:
-        async with AsyncExitStack() as stack:
-            if token_source is None:
-                stack.push_async_callback(gateway.aclose)
-            server = ServerClient(
-                investigation.server_url,
-                investigation.target.page,
-                investigation.token_file,
-                http=server_http,
-            )
-            stack.push_async_callback(server.aclose)
-            tools = await stack.enter_async_context(
-                MCPTools(
-                    settings.servers(gateway),
-                    namespace=investigation.target.namespace,
-                    owner=settings.sandbox_owner,
-                    repository=settings.sandbox_repository,
-                    application=settings.application,
-                    client_factory=client_factory,
-                )
-            )
-            outcome = await Agent(
-                target=investigation.target,
-                provider=recorder or selected,
-                tools=tools,
-                source=MCPContextSource(tools),
-                server=server,
-                prices=(NOVA_2_LITE_PRICES if settings.provider == "bedrock" else HAIKU_5_5_PRICES),
-            ).run()
-            if recorder is not None and outcome.kind == "reported":
-                save_recording(recorder.recording(), settings.recording_file)
-            return outcome
+        return await Agent(settings=settings, provider=selected, client=tools).run()
     finally:
+        if client is None:
+            await tools.aclose()
         close = getattr(selected, "aclose", None)
-        if close is not None:
+        if provider is None and close is not None:
             await close()
 
 
-def save_recording(recording: Recording, destination: Path | None) -> None:
-    if destination is None:
-        return
-    # A partial or non-normalizable recording must never replace a valid artifact.
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            dir=destination.parent, prefix=".pagerless-recording-", delete=False
-        ) as file:
-            temporary = Path(file.name)
-        recording.save(temporary)
-        temporary.replace(destination)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def main(env: Mapping[str, str] | None = None) -> int:
-    """Run the Job that the environment selects, and return its exit code."""
+    """Run the Job the environment selects, and return its exit code without printing a secret."""
     environment = os.environ if env is None else env
-    task = environment.get(ENV_TASK, TASK_INVESTIGATE)
-    if task == TASK_NARRATIVE:
-        from pagerless_agent.narrative import main as narrative_main
-
-        return narrative_main(environment)
-    if task != TASK_INVESTIGATE:
-        log.error("invalid agent configuration: %s must be investigate or narrative", ENV_TASK)
-        return 1
     try:
-        settings = RuntimeSettings.from_env(environment)
-        outcome = asyncio.run(run(settings))
+        settings = Settings.from_env(environment)
     except ConfigError as error:
         log.error("invalid agent configuration: %s", error)
         return 1
-    except ReplayError:
-        log.error(
-            "cannot read or validate the Replay recording; set PAGERLESS_REPLAY_FILE to a captured recording"
-        )
-        return 1
-    except TokenError as error:
-        log.error("cannot authenticate to the MCP gateway through Keycloak: %s", error)
+    if settings.task == TASK_NARRATIVE:
+        from pagerless_agent.narrative import main as narrative_main
+
+        return narrative_main(environment)
+    try:
+        outcome = asyncio.run(run(settings))
+    except ProviderAuthError as error:
+        log.error("the model endpoint refused the credentials: %s", error)
+        return 5
+    except (ProviderRejectedError, ProviderTruncatedError) as error:
+        log.error("the model endpoint rejected the request: %s", error)
+        return 6
+    except ServerError as error:
+        log.error("pagerless-server is unavailable: %s", error)
         return 1
     except Exception as error:
-        log.error("agent startup or recording failed (%s)", type(error).__name__)
+        log.error("agent startup failed (%s)", type(error).__name__)
         return 1
     log.info("agent finished: %s", outcome.kind)
     return outcome.exit_code

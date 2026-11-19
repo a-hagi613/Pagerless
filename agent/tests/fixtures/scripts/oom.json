@@ -1,0 +1,51 @@
+{
+  "name": "oom",
+  "steps": [
+    {
+      "content": "Reading the previous container's logs first.",
+      "toolCalls": [
+        {
+          "name": "pods_logs",
+          "arguments": "{\"namespace\":\"shop\",\"pod\":\"checkout-6d9f8c7b5-2xk4p\",\"previous\":true}"
+        }
+      ]
+    },
+    {
+      "content": "Recording the evidence.",
+      "toolCalls": [
+        {
+          "name": "record_finding",
+          "arguments": "{\"kind\":\"Log\",\"source\":\"pods_logs shop/checkout-6d9f8c7b5-2xk4p (previous)\",\"summary\":\"The process allocated 512 MiB and was killed.\",\"toolCallId\":\"srv-1\",\"pointer\":\"/data/lines/0\"}"
+        }
+      ]
+    },
+    { "content": "The investigation is complete: the container exceeds its memory limit." },
+    {
+      "payload": {
+        "diagnosis": "The checkout container exceeds its 128Mi memory limit and is OOMKilled while allocating a 512 MiB heap. The resolution points at apps/shop/checkout.yaml, whose last commit lowered the limit.",
+        "findings": [
+          {
+            "kind": "Log",
+            "source": "pods_logs shop/checkout-6d9f8c7b5-2xk4p (previous)",
+            "summary": "The process allocated 512 MiB and was killed.",
+            "toolCallId": "srv-1",
+            "pointer": "/data/lines/0"
+          }
+        ]
+      }
+    },
+    {
+      "payload": {
+        "kind": "FilePatch",
+        "files": [
+          {
+            "path": "apps/shop/checkout.yaml",
+            "updatedContent": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: checkout\nspec:\n  replicas: 1\n  template:\n    spec:\n      containers:\n        - name: app\n          image: ghcr.io/acme/checkout:2.4.1\n          resources:\n            requests:\n              memory: 128Mi\n            limits:\n              memory: 512Mi\n",
+            "rationale": "Raise the memory limit above the 512 MiB the runtime allocates."
+          }
+        ],
+        "confidence": "exact"
+      }
+    }
+  ]
+}

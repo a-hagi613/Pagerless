@@ -1,323 +1,223 @@
-"""The wire contract: the shapes the server decodes, and agreement with the Go source that defines them."""
+"""The wire contract: the Proposal variants, the path policy, and the citations."""
 
 from __future__ import annotations
-
-import re
-from pathlib import Path
-from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
 
-from pagerless_agent import contract, settings
 from pagerless_agent.contract import (
-    PROPOSED_ACTION,
+    PROPOSAL,
+    Capabilities,
+    Diagnosis,
+    DiagnosisOnly,
+    FileEdit,
+    FilePatch,
     Finding,
+    Investigation,
+    Page,
     Report,
     StepEvent,
+    Target,
+    TargetRepository,
+    Usage,
+    citation_problems,
+    diagnosis_schema,
     encode,
     normalize_proposal,
-    proposal_tool_schema,
-    validation_errors,
+    proposal_schema,
 )
+from pagerless_agent.structured import strictify
+from tests.support import manifest
 
-REPO = Path(__file__).resolve().parents[2]
-
-
-def go_source(path: str) -> str:
-    return (REPO / path).read_text(encoding="utf-8")
+VALID_CONTENT = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: checkout\n"
 
 
-class TestProposalToolSchema:
-    def test_the_schema_is_a_flat_object_the_anthropic_api_accepts(self) -> None:
-        schema = proposal_tool_schema()
-        assert schema["type"] == "object"
-        assert not {"oneOf", "anyOf", "allOf"} & schema.keys()
-        assert schema["required"] == ["action"]
-        properties = schema["properties"]
-        assert isinstance(properties, dict)
-        assert properties["action"]["enum"] == list(contract.ACTIONS)
-        parameters = properties["parameters"]
-        assert set(parameters["properties"]) == {"replicas", "container", "requests", "limits", "commit"}
+def file_edit(**overrides: object) -> FileEdit:
+    fields: dict[str, object] = {
+        "path": "apps/shop/checkout.yaml",
+        "updated_content": VALID_CONTENT,
+        "rationale": "Raise the memory limit.",
+    }
+    fields.update(overrides)
+    return FileEdit(**fields)  # type: ignore[arg-type]
 
-    @pytest.mark.parametrize(
-        ("payload", "action"),
-        [
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"container": "app", "limits": {"memory": "128Mi"}},
-                },
-                "PatchResources",
-            ),
-            ({"action": "Scale", "parameters": {"replicas": 2}}, "Scale"),
-            ({"action": "Rollback", "parameters": {"commit": "a" * 40}}, "Rollback"),
-            ({"action": "NoAction"}, "NoAction"),
-        ],
+
+def test_the_glossary_identifiers_exist() -> None:
+    assert Page.__name__ == "Page"
+    assert Target.__name__ == "Target"
+    assert Finding.__name__ == "Finding"
+    assert Diagnosis.__name__ == "Diagnosis"
+    assert TargetRepository.__name__ == "TargetRepository"
+    assert {FilePatch.__name__, DiagnosisOnly.__name__} == {"FilePatch", "DiagnosisOnly"}
+
+
+def test_a_file_edit_normalises_line_endings_and_one_trailing_newline() -> None:
+    edit = file_edit(updated_content="apiVersion: v1\nkind: Pod\n\n\n")
+
+    assert edit.updated_content.endswith("\n")
+    assert not edit.updated_content.endswith("\n\n")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/etc/passwd",
+        "apps/../secrets.yaml",
+        ".github/workflows/ci.yaml",
+        "apps/shop/checkout.json",
+        "apps\\shop\\checkout.yaml",
+        ".git/config.yaml",
+        "apps//shop/checkout.yaml",
+        "apps/shop/checkout.yaml ",
+    ],
+)
+def test_the_path_policy_refuses_a_path_a_patch_may_not_touch(path: str) -> None:
+    with pytest.raises(ValidationError):
+        file_edit(path=path)
+
+
+def test_content_with_carriage_returns_or_nul_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        file_edit(updated_content="kind: Pod\r\n")
+    with pytest.raises(ValidationError):
+        file_edit(updated_content="kind: Pod\x00\n")
+
+
+def test_a_proposal_changes_one_to_five_files() -> None:
+    one = FilePatch(kind="FilePatch", files=[file_edit()])
+    assert len(one.files) == 1
+
+    five = [file_edit(path=f"apps/shop/file-{index}.yaml") for index in range(5)]
+    assert len(FilePatch(kind="FilePatch", files=five).files) == 5
+
+    with pytest.raises(ValidationError):
+        FilePatch(kind="FilePatch", files=[])
+    with pytest.raises(ValidationError):
+        FilePatch(kind="FilePatch", files=[file_edit(path=f"apps/f{index}.yaml") for index in range(6)])
+
+
+def test_diagnosis_only_carries_a_documented_reason_and_a_recommendation() -> None:
+    proposal = DiagnosisOnly(
+        kind="DiagnosisOnly",
+        reason="external-cause",
+        recommendation="Stop the StressChaos experiment that targets the Target.",
     )
-    def test_flat_parameters_are_wrapped_for_the_wire_contract(
-        self, payload: dict[str, Any], action: str
-    ) -> None:
-        assert PROPOSED_ACTION.validate_python(normalize_proposal(payload)).action == action
 
-    def test_parameters_already_in_the_wire_shape_are_unchanged(self) -> None:
-        nested = {
-            "action": "PatchResources",
-            "parameters": {"patchResources": {"container": "app", "limits": {"memory": "128Mi"}}},
-        }
-        assert normalize_proposal(nested) is nested
-        assert PROPOSED_ACTION.validate_python(normalize_proposal(nested)).action == "PatchResources"
+    assert proposal.reason == "external-cause"
+    with pytest.raises(ValidationError):
+        DiagnosisOnly(kind="DiagnosisOnly", reason="because", recommendation="Do something.")  # type: ignore[arg-type]
 
 
-class TestAgreementWithTheServer:
-    """These tests read the Go packages, so that a change on either side of the contract fails here."""
+def test_normalize_proposal_removes_the_other_variants_nullable_fields() -> None:
+    raw = {
+        "kind": "DiagnosisOnly",
+        "files": None,
+        "confidence": None,
+        "reason": "unmanaged-resource",
+        "recommendation": "Attach the Deployment to GitOps.",
+    }
 
-    def test_the_limits_match_the_servers(self) -> None:
-        check = go_source("internal/agentapi/check.go")
-        limits = {m[1]: int(m[2]) for m in re.finditer(r"^\s+(Max\w+)\s*=\s*(\d+)$", check, re.MULTILINE)}
-        assert limits == {
-            "MaxDiagnosisLength": contract.MAX_DIAGNOSIS_LENGTH,
-            "MaxFindingSourceLen": contract.MAX_FINDING_SOURCE_LENGTH,
-            "MaxFindingSummaryLen": contract.MAX_FINDING_SUMMARY_LENGTH,
-            "MaxNarrativeLength": contract.MAX_NARRATIVE_LENGTH,
-            "MaxStepSummaryLength": contract.MAX_STEP_SUMMARY_LENGTH,
-            "MaxToolNameLength": contract.MAX_TOOL_NAME_LENGTH,
-        }
-        types = go_source("api/v1alpha1/page_types.go")
-        assert re.search(rf"const MaxFindings = {contract.MAX_FINDINGS}\b", types)
-        assert re.search(rf"const MaxNarrativeLength = {contract.MAX_NARRATIVE_LENGTH}\b", types)
+    validated = PROPOSAL.validate_python(normalize_proposal(raw))
 
-    def test_the_vocabularies_match_the_servers(self) -> None:
-        types = go_source("api/v1alpha1/page_types.go")
-        proposal = go_source("api/v1alpha1/proposal_types.go")
-        finding_kinds = re.findall(r'FindingKind\w+ FindingKind = "(\w+)"', types)
-        step_kinds = re.findall(r'StepKind\w+ StepKind = "(\w+)"', types)
-        actions = re.findall(r'Action\w+ Action = "(\w+)"', proposal)
-        assert finding_kinds == list(get_args(contract.FindingKind))
-        assert step_kinds == list(get_args(contract.StepKind))
-        assert actions == list(contract.ACTIONS)
-
-    def test_the_environment_matches_the_one_the_server_sets_on_the_job(self) -> None:
-        names = set(re.findall(r'Env\w+ += "(PAGERLESS_\w+)"', go_source("internal/agentapi/contract.go")))
-        mine = {value for key, value in vars(settings).items() if key.startswith("ENV_")}
-        assert mine == names
-
-    def test_the_audience_and_paths_match(self) -> None:
-        source = go_source("internal/agentapi/contract.go")
-        assert 'Audience = "pagerless-server"' in source
-        assert '"/v1/pages/" + url.PathEscape(page) + "/events"' in source
-        assert '"/v1/pages/" + url.PathEscape(page) + "/report"' in source
-        assert '"/v1/pages/" + url.PathEscape(page) + "/narrative"' in source
-
-
-class TestFindingAndStep:
-    def test_a_finding_needs_a_source_and_a_summary_that_are_not_blank(self) -> None:
-        for bad in (
-            {"kind": "Log", "source": " ", "summary": "x"},
-            {"kind": "Log", "source": "x", "summary": ""},
-            {"kind": "Rumour", "source": "x", "summary": "x"},
-            {"kind": "Log", "source": "x" * 501, "summary": "x"},
-            {"kind": "Log", "source": "x", "summary": "x" * 1001},
-            {"kind": "Log", "source": "x", "summary": "x", "extra": 1},
-        ):
-            with pytest.raises(ValidationError):
-                Finding.model_validate(bad)
-
-    def test_a_finding_step_carries_its_finding_and_no_other_step_does(self) -> None:
-        finding = Finding(kind="Log", source="s", summary="m")
-        StepEvent(kind="Finding", summary="x", finding=finding)
-        with pytest.raises(ValidationError, match="must carry the finding"):
-            StepEvent(kind="Finding", summary="x")
-        with pytest.raises(ValidationError, match="only a Finding step"):
-            StepEvent(kind="Progress", summary="x", finding=finding)
-
-    def test_a_step_is_encoded_without_its_unset_fields(self) -> None:
-        assert encode(StepEvent(kind="Progress", summary="Investigating.")) == {
-            "kind": "Progress",
-            "summary": "Investigating.",
-        }
-        assert encode(StepEvent(kind="ToolCall", tool="pods_log", summary="pods_log {}")) == {
-            "kind": "ToolCall",
-            "tool": "pods_log",
-            "summary": "pods_log {}",
-        }
-
-    def test_a_step_summary_longer_than_the_servers_limit_is_refused_locally(self) -> None:
-        with pytest.raises(ValidationError):
-            StepEvent(kind="Progress", summary="x" * 301)
-
-
-VALID_PROPOSALS: list[dict[str, Any]] = [
-    {"action": "NoAction"},
-    {"action": "Scale", "parameters": {"scale": {"replicas": 3}}},
-    {"action": "Scale", "parameters": {"scale": {"replicas": 0}}},
-    {
-        "action": "PatchResources",
-        "parameters": {"patchResources": {"container": "app", "limits": {"memory": "512Mi"}}},
-    },
-    {
-        "action": "PatchResources",
-        "parameters": {
-            "patchResources": {
-                "container": "app",
-                "requests": {"cpu": "250m", "memory": "256Mi"},
-                "limits": {"cpu": "1", "memory": "1Gi", "ephemeral-storage": "1e3"},
-            }
-        },
-    },
-    {"action": "Rollback", "parameters": {"rollback": {"commit": "3f2a9c1"}}},
-]
-
-
-class TestProposalSchema:
-    @pytest.mark.parametrize("proposal", VALID_PROPOSALS)
-    def test_a_valid_proposal_round_trips_to_the_wire_form_unchanged(self, proposal: dict[str, Any]) -> None:
-        parsed = PROPOSED_ACTION.validate_python(proposal)
-        assert PROPOSED_ACTION.dump_python(parsed, mode="json", exclude_none=True) == proposal
-
-    @pytest.mark.parametrize(
-        ("proposal", "field"),
-        [
-            ({"action": "DeleteNamespace"}, "proposal"),
-            ({}, "proposal"),
-            ({"action": "Scale"}, "proposal.parameters"),
-            (
-                {"action": "Scale", "parameters": {"scale": {"replicas": -1}}},
-                "proposal.parameters.scale.replicas",
-            ),
-            (
-                {"action": "Scale", "parameters": {"scale": {"replicas": "3"}}},
-                "proposal.parameters.scale.replicas",
-            ),
-            (
-                {"action": "Scale", "parameters": {"scale": {"replicas": 2**31}}},
-                "proposal.parameters.scale.replicas",
-            ),
-            (
-                {"action": "Scale", "parameters": {"patchResources": {"container": "a"}}},
-                "proposal.parameters.scale",
-            ),
-            ({"action": "NoAction", "parameters": {"scale": {"replicas": 1}}}, "proposal.parameters"),
-            (
-                {"action": "PatchResources", "parameters": {"patchResources": {"container": "app"}}},
-                "proposal.parameters.patchResources",
-            ),
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"patchResources": {"container": "", "limits": {"memory": "1Gi"}}},
-                },
-                "proposal.parameters.patchResources.container",
-            ),
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"patchResources": {"container": "a" * 64, "limits": {"memory": "1Gi"}}},
-                },
-                "proposal.parameters.patchResources.container",
-            ),
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"patchResources": {"container": "app", "limits": {"memory": "lots"}}},
-                },
-                "proposal.parameters.patchResources.limits.memory",
-            ),
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"patchResources": {"container": "app", "limits": {"memory": "-1Gi"}}},
-                },
-                "proposal.parameters.patchResources.limits.memory",
-            ),
-            (
-                {
-                    "action": "PatchResources",
-                    "parameters": {"patchResources": {"container": "app", "limits": {"Memory": "1Gi"}}},
-                },
-                "proposal.parameters.patchResources.limits.Memory",
-            ),
-            (
-                {"action": "Rollback", "parameters": {"rollback": {"commit": "abc"}}},
-                "proposal.parameters.rollback.commit",
-            ),
-            (
-                {"action": "Rollback", "parameters": {"rollback": {"commit": "ABCDEF1"}}},
-                "proposal.parameters.rollback.commit",
-            ),
-            (
-                {"action": "Rollback", "parameters": {"rollback": {"commit": "HEAD~1"}}},
-                "proposal.parameters.rollback.commit",
-            ),
-            (
-                {"action": "Rollback", "parameters": {"rollback": {"commit": "a" * 65}}},
-                "proposal.parameters.rollback.commit",
-            ),
-            ({"action": "NoAction", "approve": True}, "proposal.approve"),
-        ],
-    )
-    def test_a_proposal_off_the_menu_or_out_of_shape_is_refused_at_the_field(
-        self, proposal: dict[str, Any], field: str
-    ) -> None:
-        with pytest.raises(ValidationError) as caught:
-            PROPOSED_ACTION.validate_python(proposal)
-        fields = [e.field for e in validation_errors(caught.value, "proposal")]
-        assert any(f == field or f.startswith(field + ".") for f in fields), fields
-
-    def test_the_schema_given_to_the_model_is_the_per_action_union(self) -> None:
-        schema = PROPOSED_ACTION.json_schema()
-        assert schema["discriminator"]["propertyName"] == "action"
-        assert set(schema["discriminator"]["mapping"]) == set(contract.ACTIONS)
-
-
-def test_a_report_is_encoded_as_the_server_decodes_it() -> None:
-    report = Report.model_validate(
-        {
-            "diagnosis": "d",
-            "findings": [{"kind": "Log", "source": "s", "summary": "m"}],
-            "proposal": {"action": "NoAction"},
-        }
-    )
-    assert encode(report) == {
-        "diagnosis": "d",
-        "findings": [{"kind": "Log", "source": "s", "summary": "m"}],
-        "proposal": {"action": "NoAction"},
+    assert isinstance(validated, DiagnosisOnly)
+    assert normalize_proposal({"kind": "FilePatch", "files": [], "reason": None, "confidence": "exact"}) == {
+        "kind": "FilePatch",
+        "files": [],
+        "confidence": "exact",
     }
 
 
-def test_diagnosis_output_is_bounded_like_the_servers_report() -> None:
-    finding = {"kind": "Log", "source": "s", "summary": "m"}
-    contract.DiagnosisOutput.model_validate({"diagnosis": "d", "findings": [finding] * 20})
-    for bad in (
-        {"diagnosis": "d", "findings": [finding] * 21},
-        {"diagnosis": " ", "findings": [finding]},
-        {"diagnosis": "x" * 4001, "findings": [finding]},
-    ):
-        with pytest.raises(ValidationError):
-            contract.DiagnosisOutput.model_validate(bad)
-
-
-def test_the_narrative_report_is_bounded_and_encoded_as_the_server_decodes_it() -> None:
-    assert encode(contract.NarrativeReport(narrative="The Page recovered.")) == {
-        "narrative": "The Page recovered."
-    }
-    for bad in ({"narrative": ""}, {"narrative": " "}, {"narrative": "x" * 4001}):
-        with pytest.raises(ValidationError):
-            contract.NarrativeReport.model_validate(bad)
-
-
-def test_the_narrative_record_needs_a_workload_and_non_blank_text() -> None:
-    record = contract.NarrativeRecord.model_validate(
-        {
-            "workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"},
-            "text": "Phase: Recovered",
-        }
+def test_the_diagnosis_requires_at_least_one_finding() -> None:
+    finding = Finding(
+        kind="Log",
+        source="pods_logs shop/checkout (previous)",
+        summary="The process allocated 512 MiB and was killed.",
+        tool_call_id="srv-1",
+        pointer="/data/lines/0",
     )
-    assert record.workload.name == "checkout"
-    for bad in (
-        {"text": "Phase: Recovered"},
-        {"workload": {"kind": "Pod", "namespace": "sandbox", "name": "checkout"}, "text": "x"},
-        {"workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"}, "text": ""},
-    ):
-        with pytest.raises(ValidationError):
-            contract.NarrativeRecord.model_validate(bad)
+
+    diagnosis = Diagnosis(diagnosis="The container exceeds its memory limit.", findings=[finding])
+    assert diagnosis.findings[0].tool_call_id == "srv-1"
+
+    with pytest.raises(ValidationError):
+        Diagnosis(diagnosis="No evidence.", findings=[])
+
+
+def test_a_finding_citation_must_name_a_recorded_call_and_an_existing_pointer() -> None:
+    results = {"srv-1": {"ok": True, "data": {"lines": ["first", "second"]}}}
+    good = Finding(
+        kind="Log",
+        source="pods_logs",
+        summary="The first line.",
+        tool_call_id="srv-1",
+        pointer="/data/lines/1",
+    )
+    unknown = good.model_copy(update={"tool_call_id": "srv-9"})
+    wrong = good.model_copy(update={"pointer": "/data/lines/7"})
+
+    assert citation_problems([good], results) == []
+    assert "no tool call named 'srv-9'" in citation_problems([unknown], results)[0]
+    assert "does not exist" in citation_problems([wrong], results)[0]
+
+
+def test_step_events_validate_their_payload_against_their_kind() -> None:
+    finding = Finding(
+        kind="Event",
+        source="events_list",
+        summary="BackOff",
+        tool_call_id="srv-2",
+        pointer="/data/events/0",
+    )
+
+    assert StepEvent(kind="Finding", summary="recorded", finding=finding).finding is finding
+    with pytest.raises(ValidationError):
+        StepEvent(kind="Finding", summary="missing")
+    with pytest.raises(ValidationError):
+        StepEvent(kind="Progress", summary="wrong", finding=finding)
+
+
+def test_encode_uses_the_servers_camel_case_names() -> None:
+    report = Report(
+        page=Page(name="checkout-7f2c", uid="uid-1", namespace="pagerless"),
+        diagnosis="diagnosis",
+        findings=[
+            Finding(
+                kind="Log",
+                source="pods_logs",
+                summary="summary",
+                tool_call_id="srv-1",
+                pointer="/data/lines/0",
+            )
+        ],
+        proposal=DiagnosisOnly(kind="DiagnosisOnly", reason="infrastructure", recommendation="Drain."),
+        usage=Usage(input_tokens=10, output_tokens=5, model_calls=2),
+        capabilities=Capabilities(structured_output={"propose": "tool"}),
+    )
+
+    encoded = encode(report)
+
+    assert encoded["page"] == {"name": "checkout-7f2c", "uid": "uid-1", "namespace": "pagerless"}
+    assert encoded["usage"] == {"inputTokens": 10, "outputTokens": 5, "modelCalls": 2, "estimated": False}
+    assert encoded["capabilities"] == {
+        "structuredOutput": {"propose": "tool"},
+        "usageSource": "provider",
+    }
+    assert encoded["findings"][0]["toolCallId"] == "srv-1"
+
+
+def test_the_model_schemas_survive_the_strict_projection() -> None:
+    for schema in (diagnosis_schema(), proposal_schema()):
+        projected = strictify(schema)
+        assert projected["additionalProperties"] is False
+        assert set(projected["properties"]) == set(projected["required"])
+
+
+def test_the_manifest_parses_into_typed_models() -> None:
+    investigation = Investigation.model_validate(manifest(context={"gatheredAt": "now"}))
+
+    assert investigation.page.name
+    assert investigation.target.label == "Deployment shop/checkout"
+    assert investigation.scope.namespaces == ("shop",)
+    assert investigation.scope.repositories[0].slug == "acme/gitops"
+    assert investigation.limits.tool_calls == 15
+    assert investigation.context == {"gatheredAt": "now"}
