@@ -26,6 +26,14 @@
 //
 // Version 2 added the created_at and spec columns; a version 1 database is upgraded in place. Version 3 adds the
 // runtime tables; a version 2 database gains them on first start without rewriting a row.
+//
+// Schema version 4 adds one table, and only adds it:
+//
+//	proposal_contents(proposal_hash, path, content, recorded_at)
+//
+// It holds the complete content of a Proposal's files, keyed by the Proposal hash, because the Page records only
+// each file's digest and rationale. Every statement is idempotent, so a version 1, 2, or 3 database gains the new
+// tables in place without rewriting a row.
 package history
 
 import (
@@ -45,13 +53,15 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const (
 	// snapshotsTable holds one row per Phase change.
 	snapshotsTable = "page_snapshots"
 	// stepsTable holds one row per step event.
 	stepsTable = "page_steps"
+	// contentsTable holds the complete content of a Proposal's files.
+	contentsTable = "proposal_contents"
 )
 
 // schema is applied to a new database. It is idempotent so that a restart reopens the same file.
@@ -136,6 +146,20 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS failure_observations_by_subject
 		ON failure_observations (subject_key, last_seen_at DESC)`,
+	// Version 4. The complete content of a Proposal's files, keyed by the Proposal hash.
+	`CREATE TABLE IF NOT EXISTS ` + contentsTable + ` (
+		proposal_hash TEXT NOT NULL,
+		path TEXT NOT NULL,
+		content BLOB NOT NULL,
+		recorded_at TEXT NOT NULL,
+		PRIMARY KEY (proposal_hash, path)
+	)`,
+	`CREATE TRIGGER IF NOT EXISTS ` + contentsTable + `_no_update
+		BEFORE UPDATE ON ` + contentsTable + `
+		BEGIN SELECT RAISE(ABORT, '` + contentsTable + ` is append-only'); END`,
+	`CREATE TRIGGER IF NOT EXISTS ` + contentsTable + `_no_delete
+		BEFORE DELETE ON ` + contentsTable + `
+		BEGIN SELECT RAISE(ABORT, '` + contentsTable + ` is append-only'); END`,
 }
 
 // Store is an append-only history database.
