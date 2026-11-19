@@ -1,0 +1,92 @@
+{
+  "openapi": "3.0.0",
+  "components": {
+    "schemas": {
+      "io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "namespace": {"type": "string"},
+          "labels": {"type": "object", "additionalProperties": {"type": "string"}},
+          "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+        },
+        "additionalProperties": true
+      },
+      "io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector": {
+        "type": "object",
+        "properties": {"matchLabels": {"type": "object", "additionalProperties": {"type": "string"}}},
+        "additionalProperties": true
+      },
+      "io.k8s.api.core.v1.ResourceRequirements": {
+        "type": "object",
+        "properties": {
+          "limits": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "integer"}]}},
+          "requests": {"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"type": "integer"}]}}
+        }
+      },
+      "io.k8s.api.core.v1.Container": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "image": {"type": "string"},
+          "imagePullPolicy": {"type": "string"},
+          "resources": {"$ref": "#/components/schemas/io.k8s.api.core.v1.ResourceRequirements"},
+          "securityContext": {"type": "object", "x-kubernetes-preserve-unknown-fields": true},
+          "command": {"type": "array", "items": {"type": "string"}},
+          "args": {"type": "array", "items": {"type": "string"}},
+          "env": {"type": "array", "x-kubernetes-preserve-unknown-fields": true},
+          "ports": {"type": "array", "x-kubernetes-preserve-unknown-fields": true},
+          "volumeMounts": {"type": "array", "x-kubernetes-preserve-unknown-fields": true},
+          "livenessProbe": {"type": "object", "x-kubernetes-preserve-unknown-fields": true},
+          "readinessProbe": {"type": "object", "x-kubernetes-preserve-unknown-fields": true}
+        }
+      },
+      "io.k8s.api.core.v1.PodSpec": {
+        "type": "object",
+        "required": ["containers"],
+        "properties": {
+          "containers": {"type": "array", "items": {"$ref": "#/components/schemas/io.k8s.api.core.v1.Container"}},
+          "initContainers": {"type": "array", "items": {"$ref": "#/components/schemas/io.k8s.api.core.v1.Container"}},
+          "volumes": {"type": "array", "items": {"type": "object", "x-kubernetes-preserve-unknown-fields": true}},
+          "hostNetwork": {"type": "boolean"},
+          "hostPID": {"type": "boolean"},
+          "hostIPC": {"type": "boolean"},
+          "serviceAccountName": {"type": "string"},
+          "automountServiceAccountToken": {"type": "boolean"},
+          "imagePullSecrets": {"type": "array", "x-kubernetes-preserve-unknown-fields": true},
+          "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+          "nodeName": {"type": "string"},
+          "affinity": {"type": "object", "x-kubernetes-preserve-unknown-fields": true},
+          "tolerations": {"type": "array", "x-kubernetes-preserve-unknown-fields": true},
+          "topologySpreadConstraints": {"type": "array", "x-kubernetes-preserve-unknown-fields": true}
+        }
+      },
+      "io.k8s.api.core.v1.PodTemplateSpec": {
+        "type": "object",
+        "properties": {
+          "metadata": {"$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"},
+          "spec": {"$ref": "#/components/schemas/io.k8s.api.core.v1.PodSpec"}
+        }
+      },
+      "io.k8s.api.apps.v1.DeploymentSpec": {
+        "type": "object",
+        "properties": {
+          "replicas": {"type": "integer"},
+          "selector": {"$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector"},
+          "template": {"$ref": "#/components/schemas/io.k8s.api.core.v1.PodTemplateSpec"}
+        }
+      },
+      "io.k8s.api.apps.v1.Deployment": {
+        "type": "object",
+        "required": ["apiVersion", "kind", "metadata", "spec"],
+        "properties": {
+          "apiVersion": {"type": "string"},
+          "kind": {"type": "string"},
+          "metadata": {"$ref": "#/components/schemas/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta"},
+          "spec": {"$ref": "#/components/schemas/io.k8s.api.apps.v1.DeploymentSpec"}
+        }
+      }
+    }
+  }
+}
