@@ -204,6 +204,70 @@ spec:
                 description: AgentJobName is the name of the agent Job.
                 maxLength: 253
                 type: string
+              alerts:
+                description: |-
+                  Alerts are the inbound alerts recorded on the Page, oldest first. A
+                  resolved alert is marked resolved rather than removed, so the Page keeps
+                  the history of what joined it.
+                items:
+                  description: |-
+                    AlertTrigger records one inbound alert that opened or joined a Page. It keeps
+                    the sender and the alert's own timing, which the Page's Trigger does not,
+                    so a resolved alert can be closed without losing the Kubernetes evidence.
+                  properties:
+                    endsAt:
+                      description: EndsAt is when the sender says the alert resolved.
+                      format: date-time
+                      type: string
+                    fingerprint:
+                      description: Fingerprint is the sender's stable alert identity.
+                      maxLength: 256
+                      type: string
+                    sender:
+                      description: Sender names the configured sender, such as alertmanager
+                        or grafana.
+                      maxLength: 128
+                      type: string
+                    severity:
+                      description: Severity is the alert's severity, mapped to the
+                        Page vocabulary.
+                      enum:
+                      - info
+                      - warning
+                      - critical
+                      type: string
+                    source:
+                      description: Source is the sender dialect that delivered the
+                        alert.
+                      enum:
+                      - Event
+                      - Condition
+                      - Alertmanager
+                      - Grafana
+                      - Datadog
+                      - SNS
+                      - CLI
+                      - Portal
+                      - API
+                      type: string
+                    startsAt:
+                      description: StartsAt is when the sender says the alert started
+                        firing.
+                      format: date-time
+                      type: string
+                    state:
+                      description: State is whether the alert is firing or resolved.
+                      enum:
+                      - Firing
+                      - Resolved
+                      type: string
+                  required:
+                  - source
+                  - state
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
               conditions:
                 description: Conditions describe the Page's state in machine-readable
                   form.
@@ -332,6 +396,50 @@ spec:
                 description: Diagnosis is the agent's root-cause conclusion.
                 maxLength: 4000
                 type: string
+              evidence:
+                description: |-
+                  Evidence summarizes the stored Context Bundle. The bundle body stays out
+                  of the Page object.
+                properties:
+                  bundleHash:
+                    description: BundleHash is the SHA-256 of the stored bundle content.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  bytes:
+                    description: Bytes is the serialized bundle size.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  collectedAt:
+                    description: CollectedAt is when the bundle was assembled.
+                    format: date-time
+                    type: string
+                  connectors:
+                    description: Connectors names the producing Connectors, in assembly
+                      order.
+                    items:
+                      type: string
+                    maxItems: 20
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  notes:
+                    description: Notes record a degraded Connector or a truncation.
+                    items:
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  redactions:
+                    description: Redactions is the number of sanitized values.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  truncated:
+                    description: Truncated reports whether a cap dropped evidence.
+                    type: boolean
+                required:
+                - bundleHash
+                type: object
               findings:
                 description: Findings are the cited evidence the agent reported.
                 items:
@@ -848,10 +956,19 @@ spec:
                     type: array
                     x-kubernetes-list-type: atomic
                   resolution:
-                    description: Resolution says whether the whole owner chain resolved.
+                    description: |-
+                      Resolution says whether the whole owner chain resolved, or which rule an
+                      inbound alert used to name the Subject.
                     enum:
                     - Canonical
                     - Partial
+                    - Explicit
+                    - WorkloadLabel
+                    - PodOwner
+                    - Annotation
+                    - Extraction
+                    - Missing
+                    - None
                     type: string
                   resolvedFrom:
                     description: |-
@@ -860,6 +977,15 @@ spec:
                       claim resolved to its single consumer.
                     maxLength: 32
                     type: string
+                  resolvedFromKeys:
+                    description: |-
+                      ResolvedFromKeys lists the label or annotation keys that named the
+                      Subject, in the order they were read. It is set by an inbound alert.
+                    items:
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
                   uid:
                     description: UID is the Subject's UID. A recreated Subject is
                       a different Subject.

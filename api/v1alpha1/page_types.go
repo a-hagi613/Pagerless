@@ -704,8 +704,9 @@ type CooldownStatus struct {
 	BackoffLevel int32 `json:"backoffLevel,omitempty"`
 }
 
-// SubjectResolution says how completely the chain of controller owners resolved.
-// +kubebuilder:validation:Enum=Canonical;Partial
+// SubjectResolution says how completely the chain of controller owners resolved,
+// or which rule an inbound alert used to name the Subject.
+// +kubebuilder:validation:Enum=Canonical;Partial;Explicit;WorkloadLabel;PodOwner;Annotation;Extraction;Missing;None
 type SubjectResolution string
 
 const (
@@ -714,6 +715,21 @@ const (
 	// ResolutionPartial means an owner on the chain was deleted or rejected, so the
 	// Page investigates the highest supported object that did resolve.
 	ResolutionPartial SubjectResolution = "Partial"
+	// ResolutionExplicit means the explicit Pagerless kind and name labels named
+	// the Subject.
+	ResolutionExplicit SubjectResolution = "Explicit"
+	// ResolutionWorkloadLabel means exactly one workload label named the Subject.
+	ResolutionWorkloadLabel SubjectResolution = "WorkloadLabel"
+	// ResolutionPodOwner means a Pod label resolved through the owner chain.
+	ResolutionPodOwner SubjectResolution = "PodOwner"
+	// ResolutionAnnotation means the structured Subject annotation named it.
+	ResolutionAnnotation SubjectResolution = "Annotation"
+	// ResolutionExtraction means a configured extraction rule matched a label.
+	ResolutionExtraction SubjectResolution = "Extraction"
+	// ResolutionMissing means the alert named a Subject that no longer exists.
+	ResolutionMissing SubjectResolution = "Missing"
+	// ResolutionNone means no rule matched.
+	ResolutionNone SubjectResolution = "None"
 )
 
 // SubjectStatus mirrors the canonical Subject identity that SQLite uses for the
@@ -745,9 +761,17 @@ type SubjectStatus struct {
 	// +kubebuilder:validation:MaxLength=64
 	UID string `json:"uid,omitempty"`
 
-	// Resolution says whether the whole owner chain resolved.
+	// Resolution says whether the whole owner chain resolved, or which rule an
+	// inbound alert used to name the Subject.
 	// +optional
 	Resolution SubjectResolution `json:"resolution,omitempty"`
+
+	// ResolvedFromKeys lists the label or annotation keys that named the
+	// Subject, in the order they were read. It is set by an inbound alert.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	ResolvedFromKeys []string `json:"resolvedFromKeys,omitempty"`
 
 	// ResolvedFrom names the field the raw signal named, when it was not the
 	// Subject itself: "related" for an Event's related reference, "pvc" for a
@@ -850,6 +874,98 @@ type InvestigationStatus struct {
 	Job string `json:"job,omitempty"`
 }
 
+// MaxAlerts is the number of inbound alerts a Page records.
+const MaxAlerts = 20
+
+// AlertState is the state of one inbound alert.
+// +kubebuilder:validation:Enum=Firing;Resolved
+type AlertState string
+
+const (
+	// AlertStateFiring means the sender reported the alert as firing.
+	AlertStateFiring AlertState = "Firing"
+	// AlertStateResolved means the sender reported the alert as resolved.
+	AlertStateResolved AlertState = "Resolved"
+)
+
+// AlertTrigger records one inbound alert that opened or joined a Page. It keeps
+// the sender and the alert's own timing, which the Page's Trigger does not,
+// so a resolved alert can be closed without losing the Kubernetes evidence.
+type AlertTrigger struct {
+	// Source is the sender dialect that delivered the alert.
+	// +required
+	Source TriggerSource `json:"source"`
+
+	// Sender names the configured sender, such as alertmanager or grafana.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Sender string `json:"sender,omitempty"`
+
+	// Fingerprint is the sender's stable alert identity.
+	// +optional
+	// +kubebuilder:validation:MaxLength=256
+	Fingerprint string `json:"fingerprint,omitempty"`
+
+	// Severity is the alert's severity, mapped to the Page vocabulary.
+	// +optional
+	Severity Severity `json:"severity,omitempty"`
+
+	// StartsAt is when the sender says the alert started firing.
+	// +optional
+	StartsAt *metav1.Time `json:"startsAt,omitempty"`
+
+	// EndsAt is when the sender says the alert resolved.
+	// +optional
+	EndsAt *metav1.Time `json:"endsAt,omitempty"`
+
+	// State is whether the alert is firing or resolved.
+	// +required
+	State AlertState `json:"state"`
+}
+
+// MaxEvidenceNotes is the number of degradation notes a Page keeps.
+const MaxEvidenceNotes = 10
+
+// EvidenceSummary is the Page's view of its Context Bundle. The bundle body is
+// stored outside the Page object, so Page status carries only what an operator
+// and the Portal need.
+type EvidenceSummary struct {
+	// BundleHash is the SHA-256 of the stored bundle content.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	BundleHash string `json:"bundleHash"`
+
+	// Bytes is the serialized bundle size.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Bytes int64 `json:"bytes,omitempty"`
+
+	// Truncated reports whether a cap dropped evidence.
+	// +optional
+	Truncated bool `json:"truncated,omitempty"`
+
+	// CollectedAt is when the bundle was assembled.
+	// +optional
+	CollectedAt *metav1.Time `json:"collectedAt,omitempty"`
+
+	// Connectors names the producing Connectors, in assembly order.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	Connectors []string `json:"connectors,omitempty"`
+
+	// Notes record a degraded Connector or a truncation.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	Notes []string `json:"notes,omitempty"`
+
+	// Redactions is the number of sanitized values.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Redactions int32 `json:"redactions,omitempty"`
+}
+
 // PageStatus is the observed state of a Page. Only pagerless-server writes it (ADR-0001).
 type PageStatus struct {
 	// Phase is the stage the Page is in.
@@ -863,6 +979,19 @@ type PageStatus struct {
 	// Severity ranks how urgently the Page needs a human.
 	// +optional
 	Severity Severity `json:"severity,omitempty"`
+
+	// Evidence summarizes the stored Context Bundle. The bundle body stays out
+	// of the Page object.
+	// +optional
+	Evidence *EvidenceSummary `json:"evidence,omitempty"`
+
+	// Alerts are the inbound alerts recorded on the Page, oldest first. A
+	// resolved alert is marked resolved rather than removed, so the Page keeps
+	// the history of what joined it.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	Alerts []AlertTrigger `json:"alerts,omitempty"`
 
 	// StartedAt is when pagerless-server put the Page in the Pending phase. It is
 	// the start of the time to Recovered that Pagerless exports.
