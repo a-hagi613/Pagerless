@@ -30,7 +30,9 @@ func TestAPortalDecisionAppliesToAnExternallyProposedPage(t *testing.T) {
 		Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 2}},
 		Hash:       hash,
 		Attempt:    1,
-		ExpiresAt:  metav1.NewTime(time.Now().Add(time.Hour)),
+		// The server checks expiry against its own clock, so the window is opened on that clock
+		// rather than on the runner's wall clock.
+		ExpiresAt: metav1.NewTime(env.Clock.Now().Add(time.Hour)),
 	}
 	if err := env.Client.Status().Update(t.Context(), latest); err != nil {
 		t.Fatalf("propose the Page: %v", err)

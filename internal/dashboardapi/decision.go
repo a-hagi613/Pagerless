@@ -78,7 +78,11 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var p v1alpha1.Page
 	key := types.NamespacedName{Namespace: h.namespace, Name: r.PathValue("name")}
-	if err := h.reader.Get(ctx, key, &p); err != nil {
+	// The read that gates the write is live: a decision is refused or accepted on the Phase and hash
+	// this returns, so a cached copy can refuse a Page that is already Proposed, or bind the decision
+	// to a Proposal the approver never saw. ADR-0031 makes the hash the contract, so the read must be
+	// the one the API server has now.
+	if err := h.live.Get(ctx, key, &p); err != nil {
 		if apierrors.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("Page %q not found", key.Name))
 			return

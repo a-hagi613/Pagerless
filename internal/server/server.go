@@ -808,10 +808,13 @@ func addDashboard(
 	}
 	// The dashboard reads through the manager's client, so it inherits the server's
 	// RBAC. Its decision route patches the Page's decision annotations, which the
-	// Page controller reconciles into status (ADR-0031).
+	// Page controller reconciles into status (ADR-0031). That route alone reads the
+	// Page from the API server: the Phase and hash it checks gate a write, so a
+	// cached copy would refuse a decision on a Page that is already Proposed.
 	dashboard := dashboardapi.New(dashboardapi.Config{
 		Namespace:        cfg.Namespace,
 		Reader:           mgr.GetClient(),
+		Live:             mgr.GetAPIReader(),
 		Writer:           mgr.GetClient(),
 		Targets:          mgr.GetAPIReader(),
 		TargetNamespaces: cfg.TargetNamespaces,

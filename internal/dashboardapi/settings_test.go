@@ -30,6 +30,7 @@ const (
 	testSession   = "session"
 	testSigned    = "signed"
 	testAIBaseURL = "testAIBaseURL"
+	testUser      = "admin"
 )
 
 // fakeAuth signs in one user when the request carries its cookie.
@@ -39,7 +40,7 @@ func (fakeAuth) User(r *http.Request) *dashboardapi.User {
 	if _, err := r.Cookie("session"); err != nil {
 		return nil
 	}
-	return &dashboardapi.User{Subject: "admin", Username: "admin", Approver: true, CSRF: testCSRF, Mode: "token"}
+	return &dashboardapi.User{Subject: testUser, Username: testUser, Approver: true, CSRF: testCSRF, Mode: "token"}
 }
 
 func (fakeAuth) ValidateCSRF(r *http.Request, user *dashboardapi.User) bool {

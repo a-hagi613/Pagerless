@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +67,10 @@ const (
 
 // StartTime is the instant at which the harness's fake clock starts.
 var StartTime = time.Date(2026, time.November, 16, 12, 0, 0, 0, time.UTC)
+
+// installLogger installs the process-wide test logger exactly once, because
+// logr's delegation is not safe to rewrite while parallel tests are logging.
+var installLogger sync.Once
 
 // Env is a running harness.
 type Env struct {
@@ -190,8 +195,12 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("KUBEBUILDER_ASSETS is not set; run the tests with `make test-go`, which downloads the envtest binaries")
 	}
-	// Only errors reach the test output, so that a passing run stays quiet.
-	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.Level(zapcore.ErrorLevel)))
+	// Only errors reach the test output, so that a passing run stays quiet. The
+	// logger is a package-level singleton, so it is installed once: parallel tests
+	// that each called SetLogger raced with the delegation it rewrites.
+	installLogger.Do(func() {
+		logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.Level(zapcore.ErrorLevel)))
+	})
 
 	root := repoRoot(t)
 	rendered := chart(t, root)
