@@ -10,8 +10,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
@@ -19,45 +17,44 @@ import (
 // describe writes the presentation of a Page: its header, its Diagnosis and
 // Findings, its Proposal with the rendered change, the human decision, the
 // execution result, the Verification checks, and the Narrative.
-func describe(w io.Writer, tr *v1alpha1.Page) error {
+func describe(w io.Writer, r *record) error {
 	p := &printer{w: w}
-	status := &tr.Status
-	p.field("Name", tr.Name)
-	p.field("Phase", phaseLabel(status.Phase))
-	p.field("Target", targetLabel(tr.Spec.Target))
-	p.field("Trigger", triggerLabel(tr.Spec.Trigger))
-	p.field("Triggers", strconv.Itoa(int(status.TriggerCount)))
-	p.field("Created", tr.CreationTimestamp.Format(time.RFC3339))
-	if tr.Spec.Hint != "" {
-		p.field("Hint", tr.Spec.Hint)
+	p.field("Name", r.Name)
+	p.field("Phase", phaseLabel(r.Phase))
+	p.field("Target", targetLabel(r.Target))
+	p.field("Trigger", triggerLabel(r.Trigger))
+	p.field("Triggers", strconv.Itoa(int(r.TriggerCount)))
+	p.field("Created", r.CreatedAt.Format(time.RFC3339))
+	if r.Hint != "" {
+		p.field("Hint", r.Hint)
 	}
-	if tr.Spec.PreviousPage != "" {
-		p.field("Previous", tr.Spec.PreviousPage)
+	if r.PreviousPage != "" {
+		p.field("Previous", r.PreviousPage)
 	}
-	if failure := failureLabel(tr); failure != "" {
-		p.field("Failure", failure)
+	if r.Failure != "" {
+		p.field("Failure", r.Failure)
 	}
 
 	p.section("Diagnosis")
-	p.block("  ", status.Diagnosis)
+	p.block("  ", r.Diagnosis)
 
 	p.section("Findings")
-	writeFindings(p, status.Findings)
+	writeFindings(p, r.Findings)
 
 	p.section("Proposal")
-	writeProposal(p, status.Proposal)
+	writeProposal(p, r.Proposal)
 
 	p.section("Decision")
-	writeDecision(p, status.Decision)
+	writeDecision(p, r.Decision)
 
 	p.section("Pull request")
-	writePullRequest(p, status.PullRequest)
+	writePullRequest(p, r.PullRequest)
 
 	p.section("Verification")
-	writeVerification(p, status.VerificationChecks)
+	writeVerification(p, r.VerificationChecks)
 
 	p.section("Narrative")
-	p.block("  ", status.Narrative)
+	p.block("  ", r.Narrative)
 	return p.err
 }
 
@@ -74,18 +71,6 @@ func triggerLabel(trigger v1alpha1.Trigger) string {
 		return string(trigger.Source)
 	}
 	return string(trigger.Source) + " (" + strings.Join(details, ", ") + ")"
-}
-
-// failureLabel describes the reason and message of the Failed condition, or returns an empty string.
-func failureLabel(tr *v1alpha1.Page) string {
-	condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionFailed)
-	if condition == nil || condition.Status != metav1.ConditionTrue {
-		return ""
-	}
-	if condition.Message == "" {
-		return condition.Reason
-	}
-	return condition.Reason + ": " + condition.Message
 }
 
 // writeFindings writes the Findings with their sources.

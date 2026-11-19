@@ -19,7 +19,10 @@ COPY cmd/pagerless-server/ cmd/pagerless-server/
 COPY internal/ internal/
 COPY dashboard/embed.go dashboard/embed.go
 COPY --from=dashboard /dashboard/dist dashboard/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pagerless-server ./cmd/pagerless-server
+ARG VERSION=local
+RUN CGO_ENABLED=0 go build -trimpath \
+	-ldflags="-s -w -X main.version=${VERSION}" \
+	-o /out/pagerless-server ./cmd/pagerless-server
 
 FROM alpine:3.23.8
 

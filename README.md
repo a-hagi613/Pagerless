@@ -35,14 +35,22 @@ Then check the installation and open your first Page:
 
 ```console
 kubectl page version
-kubectl page deploy/checkout --namespace shop
+kubectl page new deploy/checkout --namespace shop
 kubectl page list
 ```
 
 The chart installs one `pagerless-server` Deployment, one Service, one
-`pagerless-data` PersistentVolumeClaim, two ConfigMaps, a ServiceAccount, and
-exactly one read identity. It needs no database, identity provider, message
-broker, gateway, or admission webhook.
+`pagerless-data` PersistentVolumeClaim, two ConfigMaps, a ServiceAccount, an
+empty `pagerless-credentials` Secret, the bootstrap token and session key
+Secrets, and exactly one read identity. It installs no database, identity
+provider, message broker, gateway, or admission webhook.
+
+The release notes print the sign-in steps: port-forward the Portal, decode the
+bootstrap token, open `/settings`, and finish onboarding. The Portal writes the
+same credentials Secret that `kubectl page config` writes from a terminal, and
+`helm install --set credentials.existingSecret=…` keeps an external secret
+manager as the only writer: both surfaces then report the settings as read-only.
+
 [`docs/install.md`](docs/install.md) covers the watch modes and the credentials
 Secret; [`docs/onboarding.md`](docs/onboarding.md) finishes an installation that
 starts without credentials.
@@ -58,14 +66,15 @@ request, so widening it is a reviewed act:
   `pods/log`; `get` on `/openapi/v3` for schema validation.
 - The product's own `pages` and `pages/status`, and the agent Jobs, in the
   release namespace.
-- `get` on two Secrets by name, and `update`/`patch` on the credentials Secret
-  only.
+- `get`, `update`, and `patch` on the credentials Secret only, by
+  `resourceNames`. The bootstrap token and session key are read from their
+  mounted volumes, so they need no API grant.
 
 There is no `update`, `patch`, `create`, or `delete` on any workload, Event, or
 Node; no `pods/exec`, `pods/attach`, `pods/portforward`, or
 `pods/ephemeralcontainers`; no `serviceaccounts/token`; no `impersonate`,
-`escalate`, or `bind`; no `*/scale`; and no Secret read outside the two named
-Secrets. The evidence is [ADR-0037](docs/adr/0037-read-only-cluster-identity.md),
+`escalate`, or `bind`; no `*/scale`; and no Secret read outside the credentials
+Secret. The evidence is [ADR-0037](docs/adr/0037-read-only-cluster-identity.md),
 a chart test that fails when a rule widens, an envtest authorization matrix, and
 `make verify-chart`, which installs the chart on a throwaway kind cluster and
 runs `kubectl auth can-i` as the server's ServiceAccount.
@@ -76,13 +85,25 @@ runs `kubectl auth can-i` as the server's ServiceAccount.
 `kubectl page`:
 
 ```console
-kubectl page deploy/my-service --namespace payments    # open a Page
-kubectl page list
-kubectl page show <name> --watch
-kubectl page approve <name>                            # bind the displayed hash
-kubectl page dismiss <name> --reason "<why>"
-kubectl page version                                   # version, commit, expected chart
+kubectl page new deploy/my-service -n payments   # open a Page for a Target
+kubectl page list                                # the resource's printer columns
+kubectl page get <name> -o yaml                  # the Page record
+kubectl page diff <name>                         # the Proposal against its base
+kubectl page approve <name>                      # bind the displayed hash
+kubectl page reject <name> --reason "<why>"      # close it without a change
+kubectl page config get                          # masked credentials and fingerprints
+kubectl page config set ai                       # write the AI endpoint
+kubectl page login --server https://portal       # store a session for server mode
+kubectl page version                             # version, commit, expected chart
+
 ```
+
+Commands use the kubeconfig by default and the Portal API with `--mode server`,
+and every run reports which mode it used. No command accepts a secret value as a
+flag: a credential is read from an interactive prompt without echo, standard
+input, a file, or an env file. The exit codes are `0` success, `1` failure, `2`
+invalid command line, `3` a write refused because a secret manager owns the
+credentials Secret, and `4` a Proposal that changed before it was decided.
 
 A decision is an annotation patch on the Page, so it needs only `patch` on
 `pages`; `Role pagerless-approver` grants exactly that. `spec` is immutable and

@@ -32,7 +32,7 @@ func follow(ctx context.Context, cl client.WithWatch, key client.ObjectKey, w io
 	for {
 		var tr v1alpha1.Page
 		if err := cl.Get(ctx, key, &tr); err != nil {
-			return nil, pageError(err, key.Name)
+			return nil, pageError(err, key.Name, key.Namespace)
 		}
 		if f.observe(&tr) {
 			return &tr, nil

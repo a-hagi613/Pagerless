@@ -88,5 +88,5 @@ fi
 
 helm "${ARGS[@]}"
 echo
-echo "Pagerless is installed. Fill Secret $RELEASE_NAMESPACE/pagerless-credentials, then:"
-echo "  kubectl -n $RELEASE_NAMESPACE port-forward svc/pagerless-server 8080:8080"
+echo "Pagerless is installed. Its release notes print the sign-in steps:"
+echo "  helm -n $RELEASE_NAMESPACE status $RELEASE_NAME --show-notes"

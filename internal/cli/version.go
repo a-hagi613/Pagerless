@@ -20,14 +20,14 @@ var (
 	ExpectedChartVersion = "2.0.0"
 )
 
-// newVersionCommand returns the command that prints the build and the chart
-// version the binary expects.
-func newVersionCommand() *cobra.Command {
+// newVersionCommand returns the command that prints the build, the chart
+// version the binary expects, and the transport that a command would use.
+func newVersionCommand(opts *options) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "version",
-		Short: "Print the version, commit, and expected chart version",
-		Args:  cobra.NoArgs,
+		Short: "Print the version, commit, expected chart version, and mode",
+		Args:  noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := versionInfo{
 				Version:       Version,
@@ -35,13 +35,43 @@ func newVersionCommand() *cobra.Command {
 				BuildDate:     BuildDate,
 				ExpectedChart: ExpectedChartVersion,
 				GoVersion:     runtime.Version(),
+				Mode:          opts.mode,
+			}
+			if opts.mode == modeServer {
+				client, err := newAPIClient(opts.server, "")
+				if err != nil {
+					return err
+				}
+				stored, err := loadConfig(opts.configPath)
+				if err != nil {
+					return err
+				}
+				if stored.SessionToken != "" {
+					client.token = stored.SessionToken
+					if csrf, err := csrfFromSession(stored.SessionToken); err == nil {
+						client.csrf = csrf
+					}
+				}
+				var server serverVersion
+				if err := client.do(cmd.Context(), "GET", "/api/version", nil, &server); err != nil {
+					return err
+				}
+				info.ServerVersion = server.Version
+				info.ServerMode = server.Mode
 			}
 			if output == formatJSON {
 				return writeJSON(cmd.OutOrStdout(), &info)
 			}
 			out := cmd.OutOrStdout()
-			_, err := fmt.Fprintf(out, "kubectl-page %s\ncommit %s\nbuilt %s\nexpected chart %s\ngo %s\n",
-				info.Version, info.Commit, info.BuildDate, info.ExpectedChart, info.GoVersion)
+			_, err := fmt.Fprintf(out,
+				"kubectl-page %s\ncommit %s\nbuilt %s\nexpected chart %s\ngo %s\nmode %s\n",
+				info.Version, info.Commit, info.BuildDate, info.ExpectedChart, info.GoVersion, info.Mode)
+			if err != nil {
+				return err
+			}
+			if info.ServerVersion != "" {
+				_, err = fmt.Fprintf(out, "server %s (auth.mode %s)\n", info.ServerVersion, info.ServerMode)
+			}
 			return err
 		},
 	}
@@ -56,4 +86,7 @@ type versionInfo struct {
 	BuildDate     string `json:"buildDate"`
 	ExpectedChart string `json:"expectedChartVersion"`
 	GoVersion     string `json:"goVersion"`
+	Mode          string `json:"mode"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	ServerMode    string `json:"serverMode,omitempty"`
 }
