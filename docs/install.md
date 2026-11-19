@@ -1,9 +1,9 @@
 # Installing Pagerless
 
 Pagerless installs into one namespace of a Kubernetes cluster you already run.
-Its prerequisites are a cluster and one Secret. It needs no database, identity
-provider, message broker, gateway, or admission webhook, and its cluster identity
-is read-only: every remediation is a pull request.
+It needs no database, identity provider, message broker, gateway, or admission
+webhook, and its cluster identity is read-only: every remediation is a pull
+request.
 
 ## Prerequisites
 
@@ -57,6 +57,26 @@ Agent authentication therefore needs cluster-wide mode, or an operator-granted
 `create` on `authentication.k8s.io/tokenreviews`. See
 [ADR-0038](adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md).
 
+## Authentication
+
+The chart requires no identity provider. In the default `auth.mode: token` it
+generates two Secrets:
+
+- `pagerless-admin-secret` holds a 48-character bootstrap token. The release
+  notes print the one command that decodes it; the operator signs in at
+  `/login`, then deletes the Secret as the documented hardening step. Existing
+  browser sessions keep working.
+- `pagerless-session-key` signs the session cookies. Rotating it signs every
+  session out.
+
+Both are kept across `helm uninstall` so a reinstall does not rotate them. Set
+`auth.adminSecret.create=false` in GitOps to supply the token out of band.
+
+To authenticate with a reverse proxy instead, set `auth.mode: disabled` and
+`auth.proxy.identityHeader`. The chart refuses to render that mode with an
+Ingress and no header. [ADR-0032](adr/0032-single-operator-local-authentication.md)
+records the design and [`docs/auth.md`](auth.md) documents the flags.
+
 ## Credentials
 
 The chart pre-creates `pagerless-credentials` with every documented key present
@@ -67,8 +87,11 @@ missing-file error:
 AI_BASE_URL  AI_API_KEY  AI_MODEL  GITHUB_TOKEN  GITHUB_REPO  GITHUB_API_URL
 ```
 
-Fill it with `kubectl -n pagerless edit secret pagerless-credentials`, or keep an
-external secret manager as the only writer:
+Finish onboarding at `/settings` in the Portal, or write the same keys from a
+terminal with `kubectl page config set ai` and `kubectl page config set github`.
+Both surfaces read, merge, and write the same Secret
+([ADR-0033](adr/0033-one-credentials-secret.md)). A secret manager can remain the
+only writer:
 
 ```bash
 helm upgrade --install pagerless ./charts/pagerless -n pagerless \
@@ -76,7 +99,8 @@ helm upgrade --install pagerless ./charts/pagerless -n pagerless \
 ```
 
 With `credentials.existingSecret` set, the chart renders no Secret at all and the
-Deployment mounts the named one. The Secret must exist before the pod starts.
+Deployment mounts the named one. The Secret must exist before the pod starts,
+and the Portal and the CLI report the settings as read-only.
 [`docs/onboarding.md`](onboarding.md) covers each way of filling it, including
 finishing an installation that started without credentials.
 
@@ -90,9 +114,10 @@ kubectl auth can-i update deployments -n shop --as=system:serviceaccount:pagerle
 ```
 
 A healthy installation renders one Deployment, one Service, one
-PersistentVolumeClaim, two ConfigMaps, the two ServiceAccounts, and the read
-identity. It renders no Keycloak, gateway, database, or MCP server, and no
-admission webhook.
+PersistentVolumeClaim, two ConfigMaps, the two ServiceAccounts, the credentials
+Secret and (in token mode) the two authentication Secrets, and the read
+identity. It renders no identity provider, gateway, database, or MCP server, and
+no admission webhook.
 
 `make verify-chart` runs the whole matrix on a throwaway kind cluster, builds the
 server image, and deletes the cluster afterwards.
@@ -134,7 +159,9 @@ kubectl delete namespace pagerless
 kubectl delete crd pages.pagerless.dev
 ```
 
-Uninstalling the release removes the credentials Secret the chart created. An
+Uninstalling the release removes the credentials Secret the chart created. The
+bootstrap token and session key Secrets carry `helm.sh/resource-policy: keep`, so
+they survive until the namespace is deleted or their `keep` value is false. An
 external secret manager keeps whatever it owns, because the chart never rendered
 that Secret.
 

@@ -23,9 +23,7 @@ start.
 
 ## Path 1: the Portal
 
-Availability: delivered by the Portal settings route in the remaining v2.0
-slices. The route is `/settings`, and it writes the same six keys into the same
-Secret.
+The route is `/settings`, and it writes the same six keys into the same Secret.
 
 1. Read the bootstrap command from the release notes:
 
@@ -44,13 +42,10 @@ your secret manager is the only writer.
 
 ## Path 2: the CLI
 
-Availability: delivered by `kubectl page config set` in the remaining v2.0
-slices.
-
 ```bash
 kubectl page config set ai          # prompts without echo, or reads stdin
 kubectl page config set github
-kubectl page config show            # keys present and set, never their values
+kubectl page config get             # keys present and set, never their values
 ```
 
 The command writes `pagerless-credentials` through the Kubernetes API and never
@@ -88,12 +83,9 @@ An installation without credentials is a supported state, not a broken one:
 - `pagerless-server` starts, serves the agent report API and the metrics API,
   and answers `/healthz` and `/readyz`.
 - Nothing needs to be reinstalled. Fill the Secret, or point
-  `credentials.existingSecret` at one, and restart the Deployment so the pod
-  re-reads it:
-
-  ```bash
-  kubectl -n pagerless rollout restart deployment/pagerless-server
-  ```
+  `credentials.existingSecret` at one. No restart is needed: the kubelet
+  refreshes a mounted Secret, and the server also reads the credentials Secret
+  through the API when it owns it.
 
 Check what an installation holds without printing values:
 
