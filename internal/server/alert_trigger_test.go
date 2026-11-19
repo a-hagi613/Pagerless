@@ -45,13 +45,13 @@ type webhookAlert struct {
 // given labels, as a rule for a Target's OOMKilled containers would.
 func optedInAlert(fingerprint string, labels map[string]string) webhookAlert {
 	all := map[string]string{
-		"alertname": "OOMKilled",
-		"namespace": sandboxNamespace,
-		optInLabel:  "true",
+		"alertname":    "OOMKilled",
+		labelNamespace: sandboxNamespace,
+		optInLabel:     labelTrue,
 	}
 	maps.Copy(all, labels)
 	return webhookAlert{
-		Status:      "firing",
+		Status:      alertFiring,
 		Labels:      all,
 		Annotations: map[string]string{"summary": "container OOMKilled"},
 		StartsAt:    testenv.StartTime,
@@ -61,7 +61,7 @@ func optedInAlert(fingerprint string, labels map[string]string) webhookAlert {
 
 // checkoutAlert returns an opted-in alert for the checkout Deployment.
 func checkoutAlert(fingerprint, pod string) webhookAlert {
-	return optedInAlert(fingerprint, map[string]string{"deployment": checkout, "pod": pod})
+	return optedInAlert(fingerprint, map[string]string{labelDeployment: checkout, labelPod: pod})
 }
 
 // postAlerts posts one firing Alertmanager payload to the receiver and returns the status code.
@@ -75,7 +75,7 @@ func postAlertsWithToken(t *testing.T, env *testenv.Env, token string, items ...
 	body, err := json.Marshal(webhookBody{
 		Version:  "4",
 		GroupKey: `{}:{alertname="OOMKilled"}`,
-		Status:   "firing",
+		Status:   alertFiring,
 		Receiver: "pagerless",
 		Alerts:   items,
 	})
@@ -213,7 +213,7 @@ func TestStatefulSetAlertTargetsAStatefulSet(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace))
 
-	ledger := optedInAlert("fp-db", map[string]string{"statefulset": "ledger", "pod": "ledger-0"})
+	ledger := optedInAlert("fp-db", map[string]string{"statefulset": "ledger", labelPod: "ledger-0"})
 	if code := postAlerts(t, env, ledger); code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", code)
 	}
@@ -238,7 +238,7 @@ func TestAlertsThatAreNotOptedInOrOutsideTheAllowlistAreIgnored(t *testing.T) {
 	notTrue := checkoutAlert("fp-b", "checkout-0")
 	notTrue.Labels[optInLabel] = "false"
 	outside := checkoutAlert("fp-c", "checkout-0")
-	outside.Labels["namespace"] = "payments"
+	outside.Labels[labelNamespace] = "payments"
 	resolved := checkoutAlert("fp-d", "checkout-0")
 	resolved.Status = "resolved"
 	resolved.EndsAt = testenv.StartTime.Add(time.Minute)

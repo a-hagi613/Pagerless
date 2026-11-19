@@ -168,6 +168,16 @@ func run() error {
 			"base URL of Alertmanager; empty disables the alert receiver and the alert-resolution check")
 		alertmanagerTokenFile = flag.String("alertmanager-token-file", defaultAlertmanagerTokenFile,
 			"file that holds the required bearer token for Alertmanager webhook deliveries")
+		connectorsConfig = flag.String("connectors-config", "",
+			"path of the Connector configuration ConfigMap; empty disables every external Connector")
+		webhookAlertmanagerTokenFile = flag.String("webhook-alertmanager-token-file", "",
+			"file that holds the bearer token of the Alertmanager webhook dialect; empty disables it")
+		webhookGrafanaSecretFile = flag.String("webhook-grafana-secret-file", "",
+			"file that holds the HMAC-SHA256 secret of the Grafana webhook dialect; empty disables it")
+		webhookDatadogTokenFile = flag.String("webhook-datadog-token-file", "",
+			"file that holds the bearer token of the Datadog webhook dialect; empty disables it")
+		webhookGenericTokenFile = flag.String("webhook-generic-token-file", "",
+			"file that holds the bearer token of the generic webhook dialect; empty disables it")
 		verificationWindow = flag.Duration("verification-window", defaultVerificationWindow,
 			"how long Verification observes the Target for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
@@ -275,6 +285,7 @@ func run() error {
 		ArgoCDURL:                  *argoCDURL,
 		ArgoCDApplication:          *argoCDApplication,
 		AlertmanagerURL:            *alertmanagerURL,
+		ConnectorsPath:             *connectorsConfig,
 		VerificationWindow:         *verificationWindow,
 		AgentServiceAccount:        *agentAccount,
 		ServerServiceAccount:       *serverAccount,
@@ -298,6 +309,18 @@ func run() error {
 	}
 	if *alertmanagerURL != "" {
 		cfg.AlertmanagerToken = tokenFromFile(*alertmanagerTokenFile)
+	}
+	if *webhookAlertmanagerTokenFile != "" {
+		cfg.AlertmanagerWebhookToken = tokenFromFile(*webhookAlertmanagerTokenFile)
+	}
+	if *webhookGrafanaSecretFile != "" {
+		cfg.GrafanaWebhookSecret = tokenFromFile(*webhookGrafanaSecretFile)
+	}
+	if *webhookDatadogTokenFile != "" {
+		cfg.DatadogWebhookToken = tokenFromFile(*webhookDatadogTokenFile)
+	}
+	if *webhookGenericTokenFile != "" {
+		cfg.GenericWebhookToken = tokenFromFile(*webhookGenericTokenFile)
 	}
 	if *dashboardBind != "" {
 		// The Portal authenticates with the bootstrap token and a signed session

@@ -15,11 +15,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -27,6 +29,10 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	webassets "github.com/a-hagi613/pagerless/dashboard"
 	"github.com/a-hagi613/pagerless/internal/alerts"
+	"github.com/a-hagi613/pagerless/internal/connectors"
+	"github.com/a-hagi613/pagerless/internal/connectors/base"
+	connectorlogs "github.com/a-hagi613/pagerless/internal/connectors/logs"
+	"github.com/a-hagi613/pagerless/internal/contextbundle"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/credentials"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
@@ -42,8 +48,10 @@ import (
 	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
+	"github.com/a-hagi613/pagerless/internal/subject"
 	"github.com/a-hagi613/pagerless/internal/verification"
 	"github.com/a-hagi613/pagerless/internal/watcher"
+	"github.com/a-hagi613/pagerless/internal/webhooks"
 )
 
 const (
@@ -112,6 +120,30 @@ type Config struct {
 	AlertmanagerURL string
 	// AlertmanagerToken reads the bearer token required by the alert receiver.
 	AlertmanagerToken func() (string, error)
+	// ConnectorsPath is the connectors ConfigMap file. Empty leaves every
+	// external Connector disabled and assembles no Context Bundle.
+	ConnectorsPath string
+	// AlertmanagerWebhookToken reads the bearer token of the new
+	// POST /v1/webhooks/alerts Alertmanager dialect.
+	AlertmanagerWebhookToken func() (string, error)
+	// GrafanaWebhookSecret reads the HMAC-SHA256 secret of the Grafana dialect.
+	GrafanaWebhookSecret func() (string, error)
+	// DatadogWebhookToken reads the bearer token of the Datadog dialect.
+	DatadogWebhookToken func() (string, error)
+	// GenericWebhookToken reads the bearer token of the generic dialect.
+	GenericWebhookToken func() (string, error)
+	// WebhookTimeout bounds one webhook request. It defaults to ten seconds.
+	WebhookTimeout time.Duration
+	// WebhookMaxAlerts is the number of alerts decoded from one request.
+	WebhookMaxAlerts int
+	// WebhookRequestsPerSecond is the per-source delivery rate.
+	WebhookRequestsPerSecond float64
+	// WebhookBurst is the per-source burst allowance.
+	WebhookBurst int
+	// SNSTopics is the allowlist of SNS topic ARNs.
+	SNSTopics []string
+	// VerifySNSSignature verifies the signature of an SNS delivery.
+	VerifySNSSignature bool
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
 	AgentServiceAccount string
@@ -346,6 +378,10 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			return nil, fmt.Errorf("configure Portal authentication: %w", err)
 		}
 	}
+	setup, err := buildConnectors(restConfig, cfg, mgr.GetAPIReader(), historyStore)
+	if err != nil {
+		return nil, err
+	}
 	metricsAPI := metrics.New(mgr.GetClient())
 	broker := dashboardapi.NewBroker()
 	recorder := &recorder{history: historyStore, metrics: metricsAPI, dashboard: broker}
@@ -404,6 +440,9 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals:    proposals,
 		Clock:        cfg.Clock,
 		PollInterval: cfg.ProposalPollInterval,
+	}
+	if setup.assembler != nil {
+		pages.Evidence = setup.assembler
 	}
 	if err := pages.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the Page controller: %w", err)
@@ -493,6 +532,27 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		}
 		mux.Handle(alerts.Path, receiver)
 	}
+	webhookReceiver := &webhooks.Receiver{
+		Client:             mgr.GetClient(),
+		Status:             store,
+		Namespace:          cfg.Namespace,
+		Namespaces:         cfg.AlertNamespaces,
+		Resolver:           &subject.Resolver{Reader: mgr.GetAPIReader(), Rules: setup.subjectRules},
+		Checker:            &subject.Checker{Reader: mgr.GetAPIReader()},
+		Deliveries:         &webhooks.HistoryDeliveries{Store: historyStore},
+		Clock:              cfg.Clock,
+		Timeout:            cfg.WebhookTimeout,
+		MaxAlerts:          firstPositive(cfg.WebhookMaxAlerts, setup.alerting.MaxAlerts),
+		RequestsPerSecond:  firstPositiveFloat(cfg.WebhookRequestsPerSecond, setup.alerting.RequestsPerSecond),
+		Burst:              firstPositive(cfg.WebhookBurst, setup.alerting.Burst),
+		AlertmanagerToken:  cfg.AlertmanagerWebhookToken,
+		GrafanaSecret:      cfg.GrafanaWebhookSecret,
+		DatadogToken:       cfg.DatadogWebhookToken,
+		GenericToken:       cfg.GenericWebhookToken,
+		SNSTopics:          firstNonEmptyList(cfg.SNSTopics, setup.alerting.SNSTopics),
+		VerifySNSSignature: cfg.VerifySNSSignature || setup.alerting.VerifySNSSignature,
+	}
+	mux.Handle(webhooks.Path, webhookReceiver)
 	mux.Handle("/", handler)
 	if err := mgr.Add(serve("report API", cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
@@ -623,4 +683,87 @@ func (r *recorder) StepRecorded(
 			Step: step, Finding: finding, StepCount: p.Status.StepCount,
 		})
 	}
+}
+
+// connectorSetup is the optional observability stack that the Connector
+// configuration enables. An empty configuration leaves every field zero, so a
+// cluster with no monitoring stack still opens Pages on native evidence.
+type connectorSetup struct {
+	assembler    *contextbundle.Assembler
+	subjectRules []subject.Rule
+	alerting     connectors.AlertingConfig
+}
+
+// buildConnectors loads the Connector configuration and builds the mandatory
+// native collector, the optional Connectors, and the Context Bundle assembler.
+// Every malformed query template or missing credential fails here, at startup,
+// rather than on the first Page.
+func buildConnectors(
+	restConfig *rest.Config, cfg Config, reader client.Reader, store *history.Store,
+) (connectorSetup, error) {
+	if cfg.ConnectorsPath == "" {
+		return connectorSetup{}, nil
+	}
+	config, err := connectors.LoadConfig(cfg.ConnectorsPath)
+	if err != nil {
+		return connectorSetup{}, err
+	}
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return connectorSetup{}, fmt.Errorf("create the Kubernetes client for native logs: %w", err)
+	}
+	credentialsPath := cfg.CredentialsMountPath
+	if credentialsPath == "" {
+		credentialsPath = defaultCredentialsPath
+	}
+	registry, err := connectors.NewRegistry(config, connectors.Deps{
+		Reader:       reader,
+		PodLogs:      &connectorlogs.KubernetesPodLogs{Client: clientset},
+		Credentials:  &base.FileCredentials{Root: credentialsPath, DefaultSecret: "pagerless-credentials"},
+		AllowedHosts: config.AllowedHosts,
+		Version:      "pagerless-server",
+	})
+	if err != nil {
+		return connectorSetup{}, err
+	}
+	sanitizer, err := contextbundle.NewSanitizer(config.Redaction.Patterns)
+	if err != nil {
+		return connectorSetup{}, err
+	}
+	return connectorSetup{
+		assembler: &contextbundle.Assembler{
+			Reader: reader, Native: registry.Native, Logs: registry.Logs, Metrics: registry.Metrics,
+			AlertStates: registry.AlertStates, Sanitizer: sanitizer,
+			Store: &contextbundle.HistoryStore{Store: store}, Clock: cfg.Clock,
+		},
+		subjectRules: config.Subject.Rules,
+		alerting:     config.Alerting,
+	}, nil
+}
+
+// defaultCredentialsPath is where the chart mounts the credentials Secret.
+const defaultCredentialsPath = "/var/run/pagerless/credentials"
+
+// firstPositive returns the first positive value.
+func firstPositive(first, second int) int {
+	if first > 0 {
+		return first
+	}
+	return second
+}
+
+// firstPositiveFloat returns the first positive value.
+func firstPositiveFloat(first, second float64) float64 {
+	if first > 0 {
+		return first
+	}
+	return second
+}
+
+// firstNonEmptyList returns the first non-empty list.
+func firstNonEmptyList(first, second []string) []string {
+	if len(first) > 0 {
+		return first
+	}
+	return second
 }

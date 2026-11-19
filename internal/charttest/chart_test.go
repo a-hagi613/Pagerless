@@ -16,6 +16,8 @@ import (
 	"testing"
 
 	"sigs.k8s.io/yaml"
+
+	"github.com/a-hagi613/pagerless/internal/connectors"
 )
 
 // releaseNamespace is the namespace every namespaced object is installed into.
@@ -400,7 +402,10 @@ func TestTheCredentialsSecretIsPrecreatedEmptyOrOmitted(t *testing.T) {
 	if !ok {
 		t.Fatalf("the credentials Secret has no stringData: %+v", secret.Raw)
 	}
-	want := []string{"AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "GITHUB_API_URL", "GITHUB_REPO", "GITHUB_TOKEN"}
+	want := []string{
+		"AI_API_KEY", "AI_BASE_URL", "AI_MODEL", "ALERTMANAGER_WEBHOOK_TOKEN", "DATADOG_WEBHOOK_TOKEN",
+		"GENERIC_WEBHOOK_TOKEN", "GITHUB_API_URL", "GITHUB_REPO", "GITHUB_TOKEN", "GRAFANA_WEBHOOK_SECRET",
+	}
 	keys := make([]string, 0, len(data))
 	for key, value := range data {
 		keys = append(keys, key)
@@ -616,8 +621,13 @@ func TestValuesSchemaEnforcesAdditionalPropertiesFalseAndRejectsSecrets(t *testi
 		case map[string]any:
 			if typed["type"] == "object" {
 				objectCount++
+				// A boolean true, or an absent value, admits unknown fields. An object
+				// schema is a typed free-form map whose entries are checked below; the
+				// Connector query maps are the only such map.
 				if ap, ok := typed["additionalProperties"].(bool); !ok || ap {
-					t.Errorf("schema object at %s has additionalProperties=%v, want false", path, typed["additionalProperties"])
+					if _, typedMap := typed["additionalProperties"].(map[string]any); !typedMap {
+						t.Errorf("schema object at %s has additionalProperties=%v, want false", path, typed["additionalProperties"])
+					}
 				}
 			}
 			for key, child := range typed {
@@ -856,5 +866,43 @@ func TestRepoWideOnlyOneScopedRoleGrantsSecrets(t *testing.T) {
 	wantHits := []string{filepath.Join("charts", "pagerless", "templates", "rbac.yaml")}
 	if !slices.Equal(hits, wantHits) {
 		t.Errorf("files granting secrets RBAC = %v, want only %v", hits, wantHits)
+	}
+}
+
+func TestNativeLogCollectionIsMandatory(t *testing.T) {
+	t.Parallel()
+	stderr := renderError(t, "connectors.logs.nativeKubernetes.enabled=false")
+	if !strings.Contains(stderr, "native Kubernetes logs are the only evidence source") {
+		t.Errorf("error = %q, want it to explain why native logs cannot be disabled", stderr)
+	}
+
+	documents := render(t)
+	connectorsConfigMap := find(t, documents, "ConfigMap", "pagerless-connectors")
+	data, ok := connectorsConfigMap.Raw["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("the connectors ConfigMap has no data: %+v", connectorsConfigMap.Raw)
+	}
+	rendered, ok := data["connectors.yaml"].(string)
+	if !ok {
+		t.Fatalf("the connectors ConfigMap has no connectors.yaml: %+v", data)
+	}
+	for _, want := range []string{"nativeKubernetes:", "enabled: true", "maxAlerts: 50"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("connectors.yaml lacks %q:\n%s", want, rendered)
+		}
+	}
+	if _, err := connectors.ParseConfig([]byte(rendered)); err != nil {
+		t.Errorf("the rendered connectors.yaml does not parse: %v\n%s", err, rendered)
+	}
+	deployment := find(t, documents, "Deployment", "pagerless-server")
+	server := renderedString(deployment.Raw)
+	for _, want := range []string{
+		"--connectors-config=/etc/pagerless/connectors/connectors.yaml",
+		"--webhook-alertmanager-token-file=/var/run/pagerless/credentials/ALERTMANAGER_WEBHOOK_TOKEN",
+		"name: connectors",
+	} {
+		if !strings.Contains(server, want) {
+			t.Errorf("the Deployment lacks %q", want)
+		}
 	}
 }
