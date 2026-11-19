@@ -119,7 +119,7 @@ func TestStartResolvesEachTargetToItsTarget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			args := append([]string{"-n", sandbox}, tc.args...)
+			args := append([]string{"new", "-n", sandbox}, tc.args...)
 			if _, err := execute(t.Context(), kubeconfig, args...); err != nil {
 				t.Fatalf("start: %v", err)
 			}
