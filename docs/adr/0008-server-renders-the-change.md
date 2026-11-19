@@ -2,7 +2,18 @@
 
 - **Status:** Accepted; its auto-merge delivery clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)
 - **Date:** 2026-11-16
-- **Amended by:** [ADR-0021](0021-rollback-may-revert-declared-dependency-paths.md)
+- **Amended by:** [ADR-0021](0021-rollback-may-revert-declared-dependency-paths.md), [ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md), [ADR-0043](0043-the-github-writer-is-isolated.md)
+
+> Amended in v2.0: the split of duties stands — `pagerless-server` still renders
+> the change deterministically during Validation, and the approver still sees
+> exactly what was validated — and only the component that applied it is gone.
+> The isolated pull request writer in `internal/github/pr`
+> ([ADR-0043](0043-the-github-writer-is-isolated.md)) opens one pull request
+> against the Target Repository, and nothing applies a stored patch any more:
+> the repository's own Checks are authoritative and the Operator merges
+> ([ADR-0041](0041-provenance-is-a-recorded-ladder.md)). The Executor named in
+> the title and the decision below is history
+> ([ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md)).
 
 ## Context
 

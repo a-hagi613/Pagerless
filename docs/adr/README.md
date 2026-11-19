@@ -15,7 +15,7 @@ replaced the rest.
 | [0005](0005-two-go-binaries.md) | Two Go binaries, pagerless-server and pagerless-executor — Superseded by [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md) |
 | [0006](0006-verification-is-decided-by-code.md) | Verification is decided by deterministic code |
 | [0007](0007-keycloak-scope.md) | Keycloak issues dashboard and agent tokens only — Superseded by [0032](0032-single-operator-local-authentication.md) |
-| [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it (its auto-merge clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)) |
+| [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it (the Executor is replaced by the pull request writer in [0043](0043-the-github-writer-is-isolated.md) and [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md); its auto-merge clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)) |
 | [0009](0009-eks-network-without-nat-or-load-balancers.md) | EKS without NAT gateways or load balancers |
 | [0010](0010-cost-model.md) | Near-zero operating cost; its Bedrock model choice is amended by [0023](0023-bedrock-uses-amazon-nova-2-lite.md) |
 | [0011](0011-approval-is-the-only-human-gate.md) | Approval is the only human gate (its auto-merge clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)) |
