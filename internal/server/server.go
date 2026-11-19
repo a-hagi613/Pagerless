@@ -441,9 +441,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Clock:        cfg.Clock,
 		PollInterval: cfg.ProposalPollInterval,
 	}
-	if setup.assembler != nil {
-		pages.Evidence = setup.assembler
-	}
+	pages.Evidence = setup.assembler
 	if err := pages.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the Page controller: %w", err)
 	}
@@ -521,71 +519,15 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals: proposals,
 		Clock:     cfg.Clock,
 	}
-	mux := http.NewServeMux()
-	if cfg.AlertmanagerURL != "" {
-		receiver := &alerts.Receiver{
-			Client:     mgr.GetClient(),
-			Store:      store,
-			Namespace:  cfg.Namespace,
-			Namespaces: cfg.AlertNamespaces,
-			Token:      cfg.AlertmanagerToken,
-		}
-		mux.Handle(alerts.Path, receiver)
-	}
-	webhookReceiver := &webhooks.Receiver{
-		Client:             mgr.GetClient(),
-		Status:             store,
-		Namespace:          cfg.Namespace,
-		Namespaces:         cfg.AlertNamespaces,
-		Resolver:           &subject.Resolver{Reader: mgr.GetAPIReader(), Rules: setup.subjectRules},
-		Checker:            &subject.Checker{Reader: mgr.GetAPIReader()},
-		Deliveries:         &webhooks.HistoryDeliveries{Store: historyStore},
-		Clock:              cfg.Clock,
-		Timeout:            cfg.WebhookTimeout,
-		MaxAlerts:          firstPositive(cfg.WebhookMaxAlerts, setup.alerting.MaxAlerts),
-		RequestsPerSecond:  firstPositiveFloat(cfg.WebhookRequestsPerSecond, setup.alerting.RequestsPerSecond),
-		Burst:              firstPositive(cfg.WebhookBurst, setup.alerting.Burst),
-		AlertmanagerToken:  cfg.AlertmanagerWebhookToken,
-		GrafanaSecret:      cfg.GrafanaWebhookSecret,
-		DatadogToken:       cfg.DatadogWebhookToken,
-		GenericToken:       cfg.GenericWebhookToken,
-		SNSTopics:          firstNonEmptyList(cfg.SNSTopics, setup.alerting.SNSTopics),
-		VerifySNSSignature: cfg.VerifySNSSignature || setup.alerting.VerifySNSSignature,
-	}
-	mux.Handle(webhooks.Path, webhookReceiver)
-	mux.Handle("/", handler)
+	mux := newReportHandler(cfg, mgr.GetClient(), mgr.GetAPIReader(), store, historyStore, setup, handler)
 	if err := mgr.Add(serve("report API", cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
 	}
 	if err := mgr.Add(serve("metrics API", cfg.MetricsListener, metricsAPI.Handler())); err != nil {
 		return nil, fmt.Errorf("add the metrics API: %w", err)
 	}
-	if cfg.DashboardListener != nil {
-		// The dashboard reads through the manager's client, so it inherits the server's
-		// RBAC. Its decision route patches the Page's decision annotations, which the
-		// Page controller reconciles into status (ADR-0031).
-		dashboard := dashboardapi.New(dashboardapi.Config{
-			Namespace:        cfg.Namespace,
-			Reader:           mgr.GetClient(),
-			Writer:           mgr.GetClient(),
-			Targets:          mgr.GetAPIReader(),
-			TargetNamespaces: cfg.TargetNamespaces,
-			Auth:             dashboardAuth,
-			History:          historyStore,
-			Broker:           broker,
-			Clock:            cfg.Clock,
-			Grafana: dashboardapi.GrafanaConfig{
-				BaseURL:             cfg.GrafanaURL,
-				MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
-				LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
-			},
-			Credentials: credentialsStore,
-			Assets:      webassets.Assets(),
-			Version:     cfg.Version,
-		})
-		if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
-			return nil, fmt.Errorf("add the dashboard: %w", err)
-		}
+	if err := addDashboard(mgr, cfg, dashboardAuth, historyStore, broker, credentialsStore); err != nil {
+		return nil, err
 	}
 
 	if cfg.HealthProbeAddress != "" {
@@ -689,7 +631,7 @@ func (r *recorder) StepRecorded(
 // configuration enables. An empty configuration leaves every field zero, so a
 // cluster with no monitoring stack still opens Pages on native evidence.
 type connectorSetup struct {
-	assembler    *contextbundle.Assembler
+	assembler    controller.EvidenceCollector
 	subjectRules []subject.Rule
 	alerting     connectors.AlertingConfig
 }
@@ -766,4 +708,82 @@ func firstNonEmptyList(first, second []string) []string {
 		return first
 	}
 	return second
+}
+
+// newReportHandler builds the report API's routes: the legacy Alertmanager
+// receiver when it is configured, the v2 webhook receiver, and the agent API.
+func newReportHandler(
+	cfg Config, apiClient client.Client, reader client.Reader, status *page.StatusStore,
+	historyStore *history.Store, setup connectorSetup, fallback http.Handler,
+) http.Handler {
+	mux := http.NewServeMux()
+	if cfg.AlertmanagerURL != "" {
+		mux.Handle(alerts.Path, &alerts.Receiver{
+			Client: apiClient, Store: status, Namespace: cfg.Namespace,
+			Namespaces: cfg.AlertNamespaces, Token: cfg.AlertmanagerToken,
+		})
+	}
+	mux.Handle(webhooks.Path, newWebhookReceiver(cfg, apiClient, reader, status, historyStore, setup))
+	mux.Handle("/", fallback)
+	return mux
+}
+
+// newWebhookReceiver builds the five-dialect receiver from the configuration
+// and the Connector catalogue's alerting bounds.
+func newWebhookReceiver(
+	cfg Config, apiClient client.Client, reader client.Reader, status *page.StatusStore,
+	historyStore *history.Store, setup connectorSetup,
+) *webhooks.Receiver {
+	return &webhooks.Receiver{
+		Client: apiClient, Status: status, Namespace: cfg.Namespace, Namespaces: cfg.AlertNamespaces,
+		Resolver:   &subject.Resolver{Reader: reader, Rules: setup.subjectRules},
+		Checker:    &subject.Checker{Reader: reader},
+		Deliveries: &webhooks.HistoryDeliveries{Store: historyStore}, Clock: cfg.Clock,
+		Timeout:            cfg.WebhookTimeout,
+		MaxAlerts:          firstPositive(cfg.WebhookMaxAlerts, setup.alerting.MaxAlerts),
+		RequestsPerSecond:  firstPositiveFloat(cfg.WebhookRequestsPerSecond, setup.alerting.RequestsPerSecond),
+		Burst:              firstPositive(cfg.WebhookBurst, setup.alerting.Burst),
+		AlertmanagerToken:  cfg.AlertmanagerWebhookToken,
+		GrafanaSecret:      cfg.GrafanaWebhookSecret,
+		DatadogToken:       cfg.DatadogWebhookToken,
+		GenericToken:       cfg.GenericWebhookToken,
+		SNSTopics:          firstNonEmptyList(cfg.SNSTopics, setup.alerting.SNSTopics),
+		VerifySNSSignature: cfg.VerifySNSSignature || setup.alerting.VerifySNSSignature,
+	}
+}
+
+// addDashboard registers the Portal and its read-only API when it is enabled.
+func addDashboard(
+	mgr ctrl.Manager, cfg Config, auth dashboardapi.Auth, historyStore *history.Store,
+	broker *dashboardapi.Broker, credentialsStore *credentials.Store,
+) error {
+	if cfg.DashboardListener == nil {
+		return nil
+	}
+	// The dashboard reads through the manager's client, so it inherits the server's
+	// RBAC. Its decision route patches the Page's decision annotations, which the
+	// Page controller reconciles into status (ADR-0031).
+	dashboard := dashboardapi.New(dashboardapi.Config{
+		Namespace:        cfg.Namespace,
+		Reader:           mgr.GetClient(),
+		Writer:           mgr.GetClient(),
+		Targets:          mgr.GetAPIReader(),
+		TargetNamespaces: cfg.TargetNamespaces,
+		Auth:             auth,
+		History:          historyStore,
+		Broker:           broker,
+		Clock:            cfg.Clock,
+		Grafana: dashboardapi.GrafanaConfig{
+			BaseURL:             cfg.GrafanaURL,
+			MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
+			LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
+		},
+		Credentials: credentialsStore,
+		Assets:      webassets.Assets(),
+		Version:     cfg.Version,
+	})
+	if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
+		return fmt.Errorf("add the dashboard: %w", err)
+	}
+	return nil
 }
