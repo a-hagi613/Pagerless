@@ -152,6 +152,31 @@ test.describe("the Portal against the real server", () => {
     await expectNoConsoleErrors(errors);
   });
 
+  test("routes an unfinished installation to onboarding", async ({ page }) => {
+    const errors = watchConsole(page);
+    await signIn(page);
+
+    const session = await (await page.request.get("/api/session")).json();
+    const headers = { "X-CSRF-Token": session.csrfToken as string };
+    // Clear the AI endpoint the way an operator would before finishing setup, then open the cluster view.
+    expect((await page.request.delete("/api/settings/AI_BASE_URL", { headers })).status()).toBe(200);
+    expect((await page.request.delete("/api/settings/AI_API_KEY", { headers })).status()).toBe(200);
+    try {
+      await page.goto("/");
+      await expect(page).toHaveURL(/\/settings\?onboarding=1/);
+      await expect(page.getByText("This installation is unfinished.")).toBeVisible();
+    } finally {
+      // The projects share one server, so the endpoint is restored before this test ends.
+      const restored = await page.request.patch("/api/settings", {
+        headers,
+        data: { ai: { baseUrl: "https://models.example/v1", model: "e2e-model", apiKey: "sk-e2e" } },
+      });
+      expect(restored.status()).toBe(200);
+    }
+
+    await expectNoConsoleErrors(errors);
+  });
+
   test("persists Light, Dark, and System with no wrong first paint", async ({ page }, testInfo) => {
     const errors = watchConsole(page);
     await signIn(page);
