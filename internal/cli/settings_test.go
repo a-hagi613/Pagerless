@@ -249,3 +249,51 @@ func TestRefusedExternallyManagedWriteExitsThree(t *testing.T) {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitExternal)
 	}
 }
+
+func TestApproveInServerModeBindsTheDisplayedHash(t *testing.T) {
+	t.Parallel()
+	cookie := sessionCookie(t)
+	const proposalHash = "5f2c1d0e9b8a7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d"
+	var decision map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/pages/checkout-abc":
+			_, _ = io.WriteString(w, `{"name":"checkout-abc","phase":"Proposed",
+				"target":{"kind":"Deployment","namespace":"shop","name":"checkout"},
+				"trigger":{"source":"CLI"},"createdAt":"2026-11-18T12:00:00Z",
+				"proposal":{"attempt":1,"hash":"`+proposalHash+`","action":"NoAction",
+				"expiresAt":"2026-11-18T13:00:00Z","parameters":null}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/pages/checkout-abc/decision":
+			if r.Header.Get("X-CSRF-Token") != "csrf-1" {
+				http.Error(w, "csrf", http.StatusForbidden)
+				return
+			}
+			_ = json.NewDecoder(r.Body).Decode(&decision)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"name":"checkout-abc","decision":"Approved"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := "server: " + server.URL + "\nsessionToken: " + cookie + "\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, err := runCLI(t, "", "--config", configPath, "approve", "checkout-abc",
+		"--mode", "server", "--yes")
+	if err != nil {
+		t.Fatalf("approve: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, proposalHash) {
+		t.Errorf("output does not show the hash it approved:\n%s", out)
+	}
+	if decision["proposalHash"] != proposalHash {
+		t.Errorf("decision bound hash = %q, want the displayed %q", decision["proposalHash"], proposalHash)
+	}
+	if decision["decision"] != "Approved" {
+		t.Errorf("decision = %q, want Approved", decision["decision"])
+	}
+}
