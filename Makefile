@@ -3,12 +3,16 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart preflight dev down install dashboard-preview
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install dashboard-preview
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-16s %s\n", $$1, $$2}'
 
 CHART_CRD_DIR := charts/pagerless/crds
+RELEASE_TOOLS_DIR := $(CURDIR)/bin/release-tools
+# The snapshot version names the archives and the plugin's reported version. It
+# is never a release version, so a snapshot can never be mistaken for one.
+RELEASE_SNAPSHOT_VERSION ?= 0.0.0-snapshot
 ENVTEST_K8S_VERSION := 1.37.0
 GO_TEST_FLAGS ?= -p 1 -parallel 2
 
@@ -55,6 +59,20 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 	cd agent && uv run --locked ruff check .
 	cd agent && uv run --locked ruff format --check .
 	cd agent && uv run --locked mypy src tests
+
+release-tools: ## Download the pinned GoReleaser and Syft into bin/release-tools.
+	bash scripts/release/tools.sh
+
+release-check: release-tools ## Validate the GoReleaser configuration and the Krew manifest.
+	$(RELEASE_TOOLS_DIR)/goreleaser check
+	bash scripts/release/lint-krew-manifest.sh plugins/page.yaml
+
+release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest locally.
+	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
+	bash scripts/release/render-krew-manifest.sh --checksums dist/checksums.txt --version "$(RELEASE_SNAPSHOT_VERSION)" --output dist/plugins/page.yaml
+	bash scripts/release/lint-krew-manifest.sh dist/plugins/page.yaml dist/checksums.txt
+	bash scripts/release/verify-artifacts.sh --version "$(RELEASE_SNAPSHOT_VERSION)" --checksums dist/checksums.txt --dist dist --skip-krew
+	@echo "archives, checksums, SBOMs, and the plugin manifest are in dist/"
 
 validate: ## Render the chart and validate it with the pinned kubeconform.
 	bash hack/validate-manifests.sh
