@@ -152,7 +152,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Lint the release scripts
-        run: shellcheck scripts/release/*.sh
+        run: shellcheck -x scripts/release/*.sh
       - name: Validate the GoReleaser configuration and the Krew manifest
         run: make release-check
       - name: Build the snapshot archives, checksums, SBOMs, and manifest
