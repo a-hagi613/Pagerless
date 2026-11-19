@@ -409,6 +409,9 @@ func TestIdentitySearchStopsAtTheFileLimit(t *testing.T) {
 	if len(got.Attempts) == 0 {
 		t.Error("an unresolved resolution must record why each rung failed")
 	}
+	if len(got.Attempts) > 10 {
+		t.Errorf("%d attempts exceed the recorded bound of 10", len(got.Attempts))
+	}
 }
 
 func TestAmbiguousIdentitySearchReturnsCandidates(t *testing.T) {

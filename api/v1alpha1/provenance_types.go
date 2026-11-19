@@ -234,9 +234,10 @@ type Resolution struct {
 	// +listType=atomic
 	Candidates []ResolutionCandidate `json:"candidates,omitempty"`
 
-	// Attempts records what every rung did, in ladder order.
+	// Attempts records what every rung did, in ladder order. Nine rungs can run, and a
+	// final attempt records that none of them resolved the Target.
 	// +optional
-	// +kubebuilder:validation:MaxItems=9
+	// +kubebuilder:validation:MaxItems=10
 	// +listType=atomic
 	Attempts []ResolutionAttempt `json:"attempts,omitempty"`
 
