@@ -28,8 +28,7 @@ from tests.fakes import FixedSource, RecordedTools, Spy, StandInServer, tool_key
 ROOT = Path(__file__).resolve().parents[2]
 # The recording is the fixture the isolated end-to-end harness plays, so the
 # Replay test proves the Scenario's Agent behaviour and its kind run agree.
-RECORDING = ROOT / "evals" / "e2e" / "fixtures" / "synthetic-injection.json"
-SCENARIO_PATCH = ROOT / "scenarios" / "injection" / "inject.patch"
+RECORDING = Path(__file__).resolve().parent / "fixtures" / "synthetic-injection.json"
 
 # INJECTION is the exact line the Scenario writes into the memory-holder log.
 INJECTION = (
@@ -176,15 +175,6 @@ async def test_an_injected_log_line_replays_to_patch_resources_and_never_scale(t
         Stage.DIAGNOSE,
         Stage.PROPOSE,
     ]
-
-
-def test_the_scenario_writes_the_injected_line_the_replay_reads() -> None:
-    patch = SCENARIO_PATCH.read_text(encoding="utf-8")
-
-    assert INJECTION in patch
-    # The line must survive the OOM kill that the same patch injects.
-    assert "flush=True" in patch
-    assert "bytearray(48 * 1024 * 1024)" in patch
 
 
 def test_untrusted_evidence_cannot_forge_the_bundles_structure() -> None:

@@ -1,6 +1,6 @@
 // Package testenv is the envtest harness for pagerless-server (seam 2 of the
 // Phase 1 spec). It starts a real API server and etcd, installs the CRDs, the
-// webhook configuration, and the RBAC from deploy/pagerless-server, and runs
+// webhook configuration, and the RBAC that charts/pagerless renders, and runs
 // pagerless-server in process under its own service account identity, so a
 // test exercises the same permissions and admission path as a cluster does.
 //
@@ -43,7 +43,6 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
-	"github.com/a-hagi613/pagerless/internal/executorapi"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
@@ -97,8 +96,6 @@ type Env struct {
 	ArgoCD *FakeArgoCD
 	// Alertmanager is the fake Alertmanager API that pagerless-server asks whether the triggering alert resolved.
 	Alertmanager *FakeAlertmanager
-	// ExecutorURL is the base URL of pagerless-executor, which runs in the harness under its own service account.
-	ExecutorURL string
 	// WebhookInstall describes the installed webhooks, for tests that call them directly.
 	WebhookInstall *envtest.WebhookInstallOptions
 	// Dashboard is the signed-in session that the dashboard tests send.
@@ -194,11 +191,11 @@ func Start(t testing.TB, opts ...Option) *Env {
 	logf.SetLogger(zap.New(zap.WriteTo(os.Stderr), zap.Level(zapcore.ErrorLevel)))
 
 	root := repoRoot(t)
-	deployDir := filepath.Join(root, "deploy", "pagerless-server")
+	rendered := chart(t, root)
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join(deployDir, "crds")},
+		CRDDirectoryPaths:     []string{filepath.Join(root, "charts", "pagerless", "crds")},
 		ErrorIfCRDPathMissing: true,
-		WebhookInstallOptions: envtest.WebhookInstallOptions{Paths: []string{filepath.Join(deployDir, "webhook.yaml")}},
+		WebhookInstallOptions: envtest.WebhookInstallOptions{Paths: []string{rendered.webhooks}},
 	}
 	// Serve the webhooks on a listener that is bound before the API server starts. envtest chooses a port by
 	// binding and immediately closing a listener, and the webhook server does not start until the manager does,
@@ -234,22 +231,13 @@ func Start(t testing.TB, opts ...Option) *Env {
 		t.Fatalf("create clientset: %v", err)
 	}
 	ctx := t.Context()
-	if err := c.Create(ctx, &corev1.Namespace{Name: SandboxNamespace}); err != nil {
-		t.Fatalf("create the allowlisted Workload namespace: %v", err)
-	}
-	executorDir := filepath.Join(root, "deploy", "pagerless-executor")
-	for _, manifest := range []string{
-		filepath.Join(deployDir, "namespace.yaml"),
-		filepath.Join(deployDir, "serviceaccounts.yaml"),
-		filepath.Join(deployDir, "rbac.yaml"),
-		filepath.Join(deployDir, "dry-run-policy.yaml"),
-		filepath.Join(deployDir, "agent-job-policy.yaml"),
-		filepath.Join(executorDir, "serviceaccounts.yaml"),
-		filepath.Join(executorDir, "rbac.yaml"),
-	} {
-		if err := applyManifestFile(ctx, c, manifest); err != nil {
-			t.Fatalf("apply %s: %v", manifest, err)
+	for _, namespace := range []string{Namespace, SandboxNamespace} {
+		if err := c.Create(ctx, &corev1.Namespace{Name: namespace}); err != nil && !errors.IsAlreadyExists(err) {
+			t.Fatalf("create namespace %s: %v", namespace, err)
 		}
+	}
+	if err := applyManifestFile(ctx, c, rendered.objects); err != nil {
+		t.Fatalf("apply the rendered chart: %v", err)
 	}
 
 	serverConfig := rest.CopyConfig(cfg)
@@ -305,8 +293,6 @@ func Start(t testing.TB, opts ...Option) *Env {
 	env.GitHub = NewFakeGitHub(t, env.Sandbox)
 	env.ArgoCD = NewFakeArgoCD(t)
 	env.Alertmanager = NewFakeAlertmanager(t)
-	env.ExecutorURL = startExecutor(t, env)
-
 	validators := proposal.DefaultValidators()
 	if o.validators != nil {
 		validators = o.validators(env)
@@ -324,9 +310,6 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if agentRuntime.KeycloakClientID == "" {
 		agentRuntime.KeycloakClientID = controller.DefaultKeycloakClientID
 	}
-	executorToken := func() (string, error) {
-		return env.issueToken(context.Background(), Namespace, server.DefaultServerServiceAccount, executorapi.Audience)
-	}
 	mgr, err := server.New(serverConfig, server.Config{
 		Namespace:                Namespace,
 		AgentImage:               AgentImage,
@@ -337,8 +320,10 @@ func Start(t testing.TB, opts ...Option) *Env {
 		DashboardListener:        dashboardListener,
 		GrafanaURL:               "http://grafana.monitoring.test",
 		HistoryPath:              historyPath,
-		ExecutorURL:              env.ExecutorURL,
-		ExecutorToken:            executorToken,
+		Sandbox:                  env.SandboxRepository(),
+		GitHubAPIURL:             env.GitHub.URL,
+		GitHubRepository:         GitHubRepository,
+		GitHubToken:              func() (string, error) { return env.GitHub.Token(), nil },
 		AgentDeadline:            o.agentDeadline,
 		ProposalPollInterval:     o.proposalPoll,
 		ExecutionPollInterval:    o.executionPoll,

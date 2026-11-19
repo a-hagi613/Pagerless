@@ -1,8 +1,8 @@
 {{- /*
 RBAC for the release namespace, the cluster, and every Workload namespace.
-The Roles are least-privilege: the server reads Workloads and updates them only
-through a server-side dry run, the Executor deletes pods for RestartWorkload,
-and mcp-kubernetes reads evidence (ADR-0001, ADR-0014).
+The grants are least-privilege: the server reads Workloads, updates them only
+through a server-side dry run, and publishes pull requests with a token it
+mounts from a Secret.
 */ -}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -21,7 +21,7 @@ rules:
     resources: [triages/status]
     verbs: [get, update, patch]
   # Reads each TriageApproval and applies its decision to the Triage. It also creates the TriageApproval for a
-  # dashboard decision under its own identity, asserting the user it verified through Keycloak (ADR-0020).
+  # dashboard decision under its own identity, asserting the user it verified through OIDC (ADR-0020).
   - apiGroups: [pagerless.dev]
     resources: [triageapprovals]
     verbs: [get, list, watch]
@@ -54,38 +54,6 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: pagerless-server
-    namespace: {{ .Release.Namespace }}
----
-# Confirms for itself that a Triage is Approved and that a TriageApproval exists
-# for the exact Proposal hash (ADR-0014). It only reads: Triage status is
-# written by pagerless-server alone (ADR-0001), and a TriageApproval is created
-# only by a human.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-executor
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-rules:
-  - apiGroups: [pagerless.dev]
-    resources: [triages, triageapprovals]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-executor
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-executor
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-executor
     namespace: {{ .Release.Namespace }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -121,33 +89,6 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: pagerless-server
-    namespace: {{ .Release.Namespace }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: pagerless-executor
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-rules:
-  # Verifies the projected token that pagerless-server presents.
-  - apiGroups: [authentication.k8s.io]
-    resources: [tokenreviews]
-    verbs: [create]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: pagerless-executor
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: pagerless-executor
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-executor
     namespace: {{ .Release.Namespace }}
 ---
 # Bind this Role to the people who may approve or reject a Proposal. Creating a
@@ -186,7 +127,8 @@ subjects:
 {{- end }}
 {{- range $namespace := .Values.workloadNamespaces | uniq }}
 ---
-# Admission independently rejects live writes, even when the server can authorize an update for a dry run.
+# Admission independently rejects every live write, even when the server can
+# authorize an update for a server-side dry run.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -221,83 +163,4 @@ subjects:
   - kind: ServiceAccount
     name: pagerless-server
     namespace: {{ $.Release.Namespace }}
----
-# RestartWorkload executes live (ADR-0002): the Executor deletes the Workload's
-# pods one at a time and reads the Workload and its pods to wait for each
-# replacement.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-executor-restart
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list, watch, delete]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-executor-restart
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-executor") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-executor-restart
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-executor
-    namespace: {{ $.Release.Namespace }}
-{{- if $.Values.mcp.bundled.enabled }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-mcp-read
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-mcp") | nindent 4 }}
-rules:
-  - apiGroups: [""]
-    resources: [pods, events]
-    verbs: [get, list, watch]
-  - apiGroups: [""]
-    resources: [pods/log]
-    verbs: [get]
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets, replicasets]
-    verbs: [get, list, watch]
-  - apiGroups: [events.k8s.io]
-    resources: [events]
-    verbs: [get, list, watch]
-  # The agent needs to see an active Chaos Mesh experiment to name the external
-  # cause of a failure (Scenario 9). The group and the kind are both explicit,
-  # so the role cannot read any other custom resource.
-  - apiGroups: [chaos-mesh.org]
-    resources: [stresschaos]
-    verbs: [get, list, watch]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-mcp-read
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-mcp") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-mcp-read
-subjects:
-  - kind: ServiceAccount
-    name: mcp-kubernetes
-    namespace: {{ $.Release.Namespace }}
-{{- end }}
 {{- end }}

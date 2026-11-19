@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks the prerequisites of make up and reports every unmet one before any
+# Checks the prerequisites of make dev and reports every unmet one before any
 # cluster change is made.
 set -uo pipefail
 
@@ -14,14 +14,14 @@ fail() {
 }
 
 if ! command -v docker >/dev/null 2>&1; then
-	fail "docker is not installed. Install Docker Desktop and enable WSL integration."
+	fail "docker is not installed. Install Docker and enable its integration with your shell."
 elif ! docker info >/dev/null 2>&1; then
-	fail "the Docker engine is not reachable. Start Docker Desktop and try again."
+	fail "the Docker engine is not reachable. Start Docker and try again."
 else
 	mem_bytes=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
 	mem_gib=$((mem_bytes / 1024 / 1024 / 1024))
 	if [ "$mem_gib" -lt "$MIN_MEMORY_GIB" ]; then
-		fail "the Docker engine has ${mem_gib} GiB of memory; at least ${MIN_MEMORY_GIB} GiB is required. Raise the memory limit in Docker Desktop or .wslconfig."
+		fail "the Docker engine has ${mem_gib} GiB of memory; at least ${MIN_MEMORY_GIB} GiB is required. Raise the engine's memory limit."
 	fi
 fi
 
@@ -44,6 +44,6 @@ elif ! helm version --short 2>/dev/null | grep -q "^${HELM_VERSION}+"; then
 fi
 
 if [ "$unmet" -gt 0 ]; then
-	die "$unmet preflight requirement(s) unmet. Fix the items above and run make up again."
+	die "$unmet preflight requirement(s) unmet. Fix the items above and run make dev again."
 fi
 echo "preflight: all requirements met"

@@ -20,8 +20,8 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/change"
 	"github.com/a-hagi613/pagerless/internal/proposal"
-	"github.com/a-hagi613/pagerless/internal/remediation"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/sandboxyaml"
 )
@@ -63,14 +63,14 @@ type Config struct {
 
 // Validator validates PatchResources Proposals and renders their patch.
 type Validator struct {
-	change *remediation.Validator
+	change *change.Validator
 	cfg    Config
 }
 
 // New returns a Validator.
 func New(cfg Config) *Validator {
 	return &Validator{
-		change: remediation.New(remediation.Config{
+		change: change.New(change.Config{
 			Reader:            cfg.Reader,
 			Sandbox:           cfg.Sandbox,
 			AllowedNamespaces: cfg.AllowedNamespaces,
@@ -116,7 +116,7 @@ type renderer struct {
 	sandbox sandbox.Repository
 }
 
-var _ remediation.Renderer = (*renderer)(nil)
+var _ change.Renderer = (*renderer)(nil)
 
 func (r *renderer) Action() v1alpha1.Action { return v1alpha1.ActionPatchResources }
 
@@ -126,7 +126,7 @@ func (r *renderer) CheckParameters() []agentapi.ValidationError {
 	return checkParameters(r.params, r.bounds)
 }
 
-func (r *renderer) Check(live *remediation.LiveWorkload) []agentapi.ValidationError {
+func (r *renderer) Check(live *change.LiveWorkload) []agentapi.ValidationError {
 	if findLiveContainer(live.PodSpec, r.params.Container) != nil {
 		return nil
 	}
@@ -138,7 +138,7 @@ func (r *renderer) Check(live *remediation.LiveWorkload) []agentapi.ValidationEr
 
 func (r *renderer) Render(
 	ctx context.Context, src []byte, workload v1alpha1.WorkloadReference,
-	live *remediation.LiveWorkload, sourcePath string,
+	live *change.LiveWorkload, sourcePath string,
 ) ([]byte, []agentapi.ValidationError, error) {
 	rendered, merged, err := render(src, workload, r.params.Container, r.params.Requests, r.params.Limits)
 	if err != nil {
@@ -159,7 +159,7 @@ func (r *renderer) Render(
 // by the API server is a Validation error; any other failure means Validation
 // could not run.
 func (r *renderer) DryRun(
-	ctx context.Context, live *remediation.LiveWorkload,
+	ctx context.Context, live *change.LiveWorkload,
 ) ([]agentapi.ValidationError, error) {
 	container := findLiveContainer(live.PodSpec, r.params.Container)
 	if container == nil {
@@ -260,7 +260,7 @@ var errNoKnownGood = errors.New("the Unschedulable bound cannot be checked again
 // Sandbox's known-good tag declares a request for that resource, no higher
 // than that known-good value.
 func (r *renderer) checkUnschedulable(
-	ctx context.Context, live *remediation.LiveWorkload, workload v1alpha1.WorkloadReference,
+	ctx context.Context, live *change.LiveWorkload, workload v1alpha1.WorkloadReference,
 	sourcePath, container string, merged corev1.ResourceRequirements,
 ) ([]agentapi.ValidationError, error) {
 	var nodes corev1.NodeList

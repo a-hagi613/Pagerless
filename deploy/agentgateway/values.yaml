@@ -1,8 +1,0 @@
-# Values for the agentgateway control plane chart 1.7.0. The data plane image
-# and the Gateway live in deploy/gateway, which is the mcp-gateway Application.
-resources:
-  requests:
-    cpu: 100m
-    memory: 128Mi
-  limits:
-    memory: 256Mi

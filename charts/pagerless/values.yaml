@@ -1,11 +1,10 @@
 # Default values for charts/pagerless.
 #
-# This chart installs the Pagerless control plane (pagerless-server), the
-# isolated Executor (pagerless-executor), the agent's configuration, the web
-# dashboard served by pagerless-server, and, optionally, the bundled read-only
-# MCP servers. It does not install Keycloak, agentgateway, Argo CD, a
-# Prometheus stack, Grafana, or the OpenTelemetry shopping-cart demo
-# (pagerless-sandbox). See README.md for the prerequisites of each mode.
+# This chart installs the Pagerless control plane (pagerless-server), the agent
+# configuration, and the web dashboard served by pagerless-server. It does not
+# install Keycloak, agentgateway, Argo CD, a Prometheus stack, Grafana, MCP
+# servers, or the OpenTelemetry shopping-cart demo (pagerless-sandbox). See
+# README.md for the prerequisites of each mode.
 
 # Container images. The default tag is the chart's appVersion, which matches the
 # images CI publishes for the same release tag (see hack/versions.env).
@@ -15,19 +14,13 @@ images:
     # Empty uses .Chart.AppVersion.
     tag: ""
     pullPolicy: IfNotPresent
-  executor:
-    repository: ghcr.io/a-hagi613/pagerless-executor
-    tag: ""
-    pullPolicy: IfNotPresent
   agent:
     repository: ghcr.io/a-hagi613/pagerless-agent
     tag: ""
     pullPolicy: IfNotPresent
 
-# Namespaces whose Workloads Pagerless may read and, after an Approval,
-# remediate. Every entry receives the pagerless-server-validation,
-# pagerless-executor-restart, and (with the bundled MCP servers)
-# pagerless-mcp-read Roles.
+# Namespaces whose Workloads Pagerless may read and, after an Approval, propose
+# a change for. Every entry receives the pagerless-server-validation Role.
 workloadNamespaces:
   - default
 
@@ -65,10 +58,6 @@ sandbox:
   # sandbox.url that starts with https://github.com/.
   owner: ""
   repo: ""
-  # Explicit owner/name passed to pagerless-executor as
-  # PAGERLESS_GITHUB_REPOSITORY, for a Git service whose URL path is not
-  # exactly owner/repo. Empty derives it from sandbox.url.
-  githubRepository: ""
   # Secret that holds the read-scoped GitHub token in the `token` key.
   readSecretName: github-read
   # Secret that holds the write-scoped GitHub token in the `token` key.
@@ -137,17 +126,8 @@ mcp:
   # github. Empty derives k8s,grafana plus argocd and github when their
   # integrations are configured.
   servers: ""
-  bundled:
-    # Deploy the read-only MCP servers in the release namespace. Disable when
-    # an existing installation already provides them.
-    enabled: true
   # GitHub Enterprise host for mcp-github. Empty selects GitHub.com.
   githubHost: ""
-  # Secret with the backend credentials in the keys `grafana` and, when Argo CD
-  # is enabled, `argocd`.
-  backendTokensSecretName: mcp-backend-tokens
-  # Secret with the caller tokens in the keys `grafana`, `argocd`, and `github`.
-  clientTokensSecretName: mcp-client-tokens
 
 persistence:
   # Keep the append-only Triage history on a PersistentVolumeClaim. When false,

@@ -311,8 +311,8 @@ func requireConfigurationRefused(t *testing.T, runtime controller.AgentRuntimeCo
 	token := func() (string, error) { return "unused", nil }
 	_, err = server.New(&rest.Config{Host: "https://127.0.0.1:1"}, server.Config{
 		Namespace: testenv.Namespace, AgentImage: testenv.AgentImage, AgentServerURL: "http://server",
-		ReportListener: listener, ExecutorURL: "http://executor", ExecutorToken: token,
-		ArgoCDURL: "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
+		ReportListener: listener,
+		ArgoCDURL:      "http://argocd", ArgoCDToken: token, AlertmanagerURL: "http://alerts",
 		AlertmanagerToken: token,
 		AgentRuntime:      runtime,
 	})

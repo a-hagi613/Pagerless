@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/api/meta"
-
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/proposal"
@@ -21,15 +19,6 @@ func withRemediations() testenv.Option {
 	return testenv.WithValidators(func(e *testenv.Env) map[v1alpha1.Action]proposal.ActionValidator {
 		return e.Remediations(sandboxNamespace)
 	})
-}
-
-// restartReport is a report whose Proposal restarts the Workload.
-func restartReport() agentapi.Report {
-	return agentapi.Report{
-		Diagnosis: "The containers are wedged, so the Workload needs a rolling restart.",
-		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal:  v1alpha1.ProposedAction{Action: v1alpha1.ActionRestartWorkload},
-	}
 }
 
 // scaleReport is a report whose Proposal scales the Workload.
@@ -57,118 +46,6 @@ func changedLines(patch string) (removed, added []string) {
 		}
 	}
 	return removed, added
-}
-
-func TestRestartWorkloadDeletesPodsOneAtATimeAndRecovers(t *testing.T) {
-	t.Parallel()
-	env := testenv.Start(t, withRemediations())
-	w := workload{name: checkout, replicas: 3}
-	deploy(t, env, w)
-	// The Deployment controller's view: three ready replicas.
-	env.SetDeploymentReplicas(t, sandboxNamespace, checkout, 3, 3)
-	// The pods, in the order the Deployment created them.
-	want := []string{"checkout-a", "checkout-b", "checkout-c"}
-	for _, name := range want {
-		env.CreateWorkloadPod(t, sandboxNamespace, name, podLabels(checkout), nil)
-		// Creation timestamps order the pods, and they must differ.
-		time.Sleep(10 * time.Millisecond)
-	}
-	head := env.Sandbox.Head()
-
-	name, agent := startTriage(t, env, checkout)
-	result, err := agent.API.PostReport(t.Context(), restartReport())
-	if err != nil || result.StatusCode != http.StatusOK || result.Report.Phase != v1alpha1.PhaseProposed {
-		t.Fatalf("report: %+v, %v, want 200 and phase Proposed", result, err)
-	}
-	proposed := env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
-	p := proposed.Status.Proposal
-	if p.Action != v1alpha1.ActionRestartWorkload || p.Attempt != 1 {
-		t.Errorf("proposal = %+v, want RestartWorkload, attempt 1", p)
-	}
-	if p.RenderedChange != nil {
-		t.Errorf("a live Action holds rendered change %+v, want none", p.RenderedChange)
-	}
-	live := liveDeployment(t, env, checkout)
-	if p.Base == nil || p.Base.WorkloadGeneration != live.Generation || p.Base.Commit != "" {
-		t.Errorf("base = %+v, want the Workload generation %d and no commit", p.Base, live.Generation)
-	}
-	wantHash, err := proposal.Hash(proposed, p.ProposedAction, p.RenderedChange, p.Base)
-	if err != nil || p.Hash != wantHash {
-		t.Errorf("hash = %s, want %s (error %v): it covers the Triage, Action, Workload, and base", p.Hash, wantHash, err)
-	}
-
-	// Play the ReplicaSet controller while the Executor restarts the pods.
-	replacement := env.ReplaceDeletedPods(t, sandboxNamespace, "app="+checkout, 3)
-	approve(t, env, proposed)
-	executed := env.WaitFor(t, name, "the restarted pods are recorded", func(tr *v1alpha1.Triage) bool {
-		return tr.Status.Execution != nil && tr.Status.Execution.ExecutedAt != nil
-	})
-	if err := replacement.Err(); err != nil {
-		t.Fatalf("replace a deleted pod: %v", err)
-	}
-	if got := executed.Status.Execution.RestartedPods; !slices.Equal(got, want) {
-		t.Errorf("restarted pods = %v, want %v in creation order", got, want)
-	}
-	if got := replacement.Deleted(); !slices.Equal(got, want) {
-		t.Errorf("the Executor deleted %v, want %v in creation order", got, want)
-	}
-	if !replacement.WaitedForEveryReplacement() {
-		t.Error("the Executor deleted a pod before the previous replacement was ready")
-	}
-	if executed.Status.Execution.PullRequestURL != "" {
-		t.Errorf("a live Action recorded pull request %q", executed.Status.Execution.PullRequestURL)
-	}
-	// RestartWorkload changes the cluster only: no branch, no pull request, no commit.
-	requireNothingDelivered(t, env)
-	if got := env.Sandbox.Head(); got != head {
-		t.Errorf("the Sandbox head moved from %s to %s", head, got)
-	}
-
-	// The existing Verification path decides the outcome.
-	env.ArgoCD.Sync(head)
-	env.WaitForPhase(t, name, v1alpha1.PhaseVerifying)
-	env.Clock.Step(5 * time.Minute)
-	recovered := env.WaitForPhase(t, name, v1alpha1.PhaseRecovered)
-	requireChecks(t, recovered, map[string]bool{
-		v1alpha1.CheckArgoCDSynced:     true,
-		v1alpha1.CheckRolloutAvailable: true,
-		v1alpha1.CheckNoNewRestarts:    true,
-		v1alpha1.CheckAlertResolved:    true,
-	})
-}
-
-func TestRestartWorkloadProposalBecomesStaleWhenTheWorkloadChanges(t *testing.T) {
-	t.Parallel()
-	env := testenv.Start(t, withRemediations(), testenv.WithProposalPollInterval(proposalPoll))
-	deploy(t, env, workload{name: checkout})
-	name, agent := startTriage(t, env, checkout)
-	if result, err := agent.API.PostReport(t.Context(), restartReport()); err != nil ||
-		result.StatusCode != http.StatusOK {
-		t.Fatalf("report: %+v, %v, want 200", result, err)
-	}
-	before := env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
-
-	// Changing the Workload's spec bumps its generation, so the Proposal's base no longer holds.
-	d := liveDeployment(t, env, checkout)
-	d.Spec.Replicas = new(int32(2))
-	if err := env.Client.Update(t.Context(), d); err != nil {
-		t.Fatal(err)
-	}
-	after := env.WaitFor(t, name, "the Proposal is re-validated under a new hash", func(tr *v1alpha1.Triage) bool {
-		return tr.Status.Proposal != nil && tr.Status.Proposal.Hash != before.Status.Proposal.Hash
-	})
-	condition := meta.FindStatusCondition(after.Status.Conditions, v1alpha1.ConditionProposalRevalidated)
-	if condition == nil || condition.Reason != v1alpha1.ReasonWorkloadGenerationChanged {
-		t.Errorf("revalidated condition = %+v, want reason %s", condition, v1alpha1.ReasonWorkloadGenerationChanged)
-	}
-	if after.Status.Phase != v1alpha1.PhaseProposed || after.Status.Proposal.RenderedChange != nil {
-		t.Errorf("phase = %s, rendered change = %+v, want Proposed with none",
-			after.Status.Phase, after.Status.Proposal.RenderedChange)
-	}
-	wantGeneration := liveDeployment(t, env, checkout).Generation
-	if got := after.Status.Proposal.Base.WorkloadGeneration; got != wantGeneration {
-		t.Errorf("base generation = %d, want %d", got, wantGeneration)
-	}
 }
 
 func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *testing.T) {

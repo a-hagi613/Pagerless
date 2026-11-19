@@ -68,11 +68,12 @@ spec:
             - --sandbox-url={{ .Values.sandbox.url }}
             - --sandbox-branch={{ .Values.sandbox.branch }}
             - --history-path=/var/lib/pagerless/history.db
-            - --executor-url=http://pagerless-executor.{{ .Release.Namespace }}.svc:8080
             - --argocd-url={{ .Values.argocd.url }}
             - --alertmanager-url={{ .Values.alertmanager.url }}
             - --alertmanager-token-file=/var/run/pagerless/alertmanager/token
             - --sandbox-read-token-file=/var/run/pagerless/github-read/token
+            - --github-repository={{ include "pagerless.sandboxSlug" . }}
+            - --github-token-file=/var/run/pagerless/github-write/token
           envFrom:
             - configMapRef:
                 name: pagerless-agent-config
@@ -117,8 +118,8 @@ spec:
               readOnly: true
             - name: webhook-certs
               mountPath: /var/run/pagerless/webhook-certs
-            - name: executor-token
-              mountPath: /var/run/secrets/pagerless/executor
+            - name: github-write
+              mountPath: /var/run/pagerless/github-write
               readOnly: true
             - name: argocd-token
               mountPath: /var/run/secrets/pagerless/argocd
@@ -153,15 +154,11 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 128Mi
-        # The token that authenticates the server to pagerless-executor (ADR-0014). Its audience is the Executor's,
-        # so no other service accepts it, and the kubelet rotates it in place.
-        - name: executor-token
-          projected:
-            sources:
-              - serviceAccountToken:
-                  audience: pagerless-executor
-                  expirationSeconds: 3600
-                  path: token
+        # The write-scoped token that publishes a pull request. It is mounted rather than set on the command
+        # line, and the server reads it for each publication so that a rotated Secret takes effect.
+        - name: github-write
+          secret:
+            secretName: {{ .Values.sandbox.writeSecretName }}
         - name: webhook-certs
           emptyDir:
             medium: Memory

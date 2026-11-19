@@ -184,11 +184,12 @@ dashboard, Workload variables and time range directly.
 | `--grafana-workload-dashboard-uid` | `pagerless-workload` | The dashboard that charts the Workload's metrics. |
 | `--grafana-logs-dashboard-uid` | `pagerless-workload-logs` | The dashboard that shows the Workload's logs. |
 
-The two dashboards are provisioned from `deploy/observability/dashboards/workload-metrics.json` and
-`workload-logs.json`. They take `namespace` and `workload` variables; the API fills those in, with a time window
-that starts fifteen minutes before the Triage and ends five minutes after it, or at the present time while the
-Triage is active. The kube-prometheus-stack values set `security.allow_embedding: true`, because Grafana refuses to
-be framed otherwise, and pin the Loki and Tempo data source UIDs that the log dashboard references.
+The two workload dashboards are provisioned by the showcase repository
+(`pagerless-sandbox`), because they describe the demonstration workloads rather than the product. They take
+`namespace` and `workload` variables; the API fills those in, with a time window that starts fifteen minutes
+before the Triage and ends five minutes after it, or at the present time while the Triage is active. Grafana must
+allow embedding, because it refuses to be framed otherwise. The Pagerless dashboard itself ships in
+`charts/pagerless/dashboards/pagerless.json`.
 
 Local use assumes the Grafana Service is port-forwarded to `localhost:3000`. The dashboard cannot reach a
 cluster-internal Service URL from the browser.

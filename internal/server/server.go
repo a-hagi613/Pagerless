@@ -30,12 +30,12 @@ import (
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
-	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/github"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
-	"github.com/a-hagi613/pagerless/internal/remediation"
+	"github.com/a-hagi613/pagerless/internal/publish"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
 	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
@@ -97,11 +97,6 @@ type Config struct {
 	GrafanaLogsDashboardUID string
 	// HistoryPath is the SQLite file that records Triage snapshots and steps. It is required.
 	HistoryPath string
-	// ExecutorURL is the base URL of pagerless-executor. It is required.
-	ExecutorURL string
-	// ExecutorToken returns the projected service account token, with the audience
-	// executorapi.Audience, that authenticates the server to the Executor. It is required.
-	ExecutorToken func() (string, error)
 	// ArgoCDURL is the base URL of the Argo CD API server, which Verification asks whether the merged change is
 	// synced. It is required.
 	ArgoCDURL string
@@ -129,8 +124,15 @@ type Config struct {
 	// defaults below. When it is nil, Validation accepts NoAction and
 	// RestartWorkload, and also Scale, PatchResources, and Rollback if Sandbox is set.
 	Validators map[v1alpha1.Action]proposal.ActionValidator
-	// Sandbox is the repository that the pull request Actions are rendered against.
+	// Sandbox is the repository that the pull request Actions are rendered against and published to.
 	Sandbox sandbox.Repository
+	// GitHubAPIURL is the base URL of the target repository's GitHub API. It defaults to
+	// github.DefaultGitHubAPI.
+	GitHubAPIURL string
+	// GitHubRepository is the target repository's owner/name. It is required when Sandbox is set.
+	GitHubRepository string
+	// GitHubToken returns the write-scoped token that publishes a Proposal. It is required when Sandbox is set.
+	GitHubToken func() (string, error)
 	// AllowedNamespaces are the namespaces whose Workloads the executable Actions may change.
 	AllowedNamespaces []string
 	// PatchBounds are the permitted ranges of PatchResources requests and limits.
@@ -142,7 +144,7 @@ type Config struct {
 	// ProposalPollInterval is how often a Proposed Triage is checked for a Stale Proposal.
 	// It defaults to controller.DefaultProposalPollInterval.
 	ProposalPollInterval time.Duration
-	// ExecutionPollInterval is how often the Executor is asked whether an open pull request has merged.
+	// ExecutionPollInterval is how often an open pull request is checked for a merge.
 	// It defaults to controller.DefaultExecutionPollInterval.
 	ExecutionPollInterval time.Duration
 	// ArgoCDApplication is the Argo CD application that deploys the Sandbox. It defaults to
@@ -194,10 +196,6 @@ func (c Config) validate() error {
 		return errors.New("agent server URL is required")
 	case c.ReportListener == nil:
 		return errors.New("report listener is required")
-	case c.ExecutorURL == "":
-		return errors.New("executor URL is required")
-	case c.ExecutorToken == nil:
-		return errors.New("executor token source is required")
 	case c.ArgoCDURL == "":
 		return errors.New("an Argo CD URL is required")
 	case c.ArgoCDToken == nil:
@@ -221,6 +219,22 @@ func (c Config) validate() error {
 		return errors.New("a dashboard listener is required")
 	case c.DashboardAuth == nil:
 		return errors.New("dashboard authentication is required")
+	}
+	if c.Sandbox.URL != "" {
+		switch {
+		case c.GitHubRepository == "":
+			return errors.New("a target repository is required for pull request remediation")
+		case c.GitHubToken == nil:
+			return errors.New("a GitHub write token source is required for pull request remediation")
+		}
+	}
+	if c.Sandbox.URL != "" {
+		switch {
+		case c.GitHubRepository == "":
+			return errors.New("a GitHub repository is required when a Sandbox is configured")
+		case c.GitHubToken == nil:
+			return errors.New("a GitHub token source is required when a Sandbox is configured")
+		}
 	}
 	// A Job cannot authenticate to Keycloak or reach the MCP gateway without this.
 	return c.AgentRuntime.ValidateGateway()
@@ -314,12 +328,6 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	validators := cfg.Validators
 	if validators == nil {
 		validators = proposal.DefaultValidators()
-		shared := remediation.Config{
-			Reader:            mgr.GetAPIReader(),
-			Sandbox:           cfg.Sandbox,
-			AllowedNamespaces: cfg.AllowedNamespaces,
-		}
-		validators[v1alpha1.ActionRestartWorkload] = remediation.NewRestart(shared)
 		if cfg.Sandbox.URL != "" {
 			validators[v1alpha1.ActionScale] = scale.New(scale.Config{
 				Reader:            mgr.GetAPIReader(),
@@ -379,15 +387,25 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("set up the TriageApproval controller: %w", err)
 	}
 
-	executions := &controller.ExecutionReconciler{
-		Client:       mgr.GetClient(),
-		Status:       store,
-		Executor:     &executorapi.Client{BaseURL: cfg.ExecutorURL, Token: cfg.ExecutorToken},
-		Clock:        cfg.Clock,
-		PollInterval: cfg.ExecutionPollInterval,
-	}
-	if err := executions.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("set up the execution controller: %w", err)
+	if cfg.Sandbox.URL != "" {
+		executions := &controller.ExecutionReconciler{
+			Client: mgr.GetClient(),
+			Status: store,
+			Clock:  cfg.Clock,
+			Publisher: publish.New(publish.Config{
+				Sandbox: cfg.Sandbox,
+				GitHub: &github.GitHub{
+					APIURL:     cfg.GitHubAPIURL,
+					Repository: cfg.GitHubRepository,
+					Token:      cfg.GitHubToken,
+				},
+				Token: cfg.GitHubToken,
+			}),
+			PollInterval: cfg.ExecutionPollInterval,
+		}
+		if err := executions.SetupWithManager(mgr); err != nil {
+			return nil, fmt.Errorf("set up the execution controller: %w", err)
+		}
 	}
 
 	verifications := &controller.VerificationReconciler{
