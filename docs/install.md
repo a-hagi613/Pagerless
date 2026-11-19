@@ -1,9 +1,9 @@
 # Installing Pagerless
 
 Pagerless installs into one namespace of a Kubernetes cluster you already run.
-The chart is standalone: it needs no database, identity provider, message broker,
-gateway, or admission webhook. Its cluster identity is read-only, and every
-remediation is a pull request.
+Its prerequisites are a cluster and one Secret. It needs no database, identity
+provider, message broker, gateway, or admission webhook, and its cluster identity
+is read-only: every remediation is a pull request.
 
 ## Prerequisites
 
@@ -12,19 +12,16 @@ remediation is a pull request.
 | Kubernetes 1.30 or later | The chart uses a CEL validation rule on the Page CRD. |
 | Helm 3.14 or later | The chart is an `apiVersion: v2` application chart. |
 | A default StorageClass, or `persistence.storageClassName` | The append-only Page history lives on the `pagerless-data` claim. |
+| One Secret | The chart creates `pagerless-credentials` itself, or names one you manage; see [Credentials](#credentials). |
 
-No other service is required. The remaining v2.0 slices add the connectors, the
-agent endpoint, and the Portal, which point at services you already run; none of
-them is installed by this chart.
-
-## Install with Helm
+## Install from the registry
 
 ```bash
 helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
-  --namespace pagerless --create-namespace
+  --namespace pagerless --create-namespace --version 2.0.0
 ```
 
-Or from a checkout:
+Or from a checkout of the matching release:
 
 ```bash
 helm upgrade --install pagerless ./charts/pagerless \
@@ -32,8 +29,8 @@ helm upgrade --install pagerless ./charts/pagerless \
 ```
 
 Helm installs the CRDs in `charts/pagerless/crds/` only when the release is
-created. Apply them explicitly after a chart upgrade, because Helm never upgrades
-a chart's `crds/` directory:
+created. Helm never upgrades a chart's `crds/` directory, so apply the CRD
+explicitly after a chart upgrade:
 
 ```bash
 kubectl apply -f charts/pagerless/crds/pagerless.dev_pages.yaml
@@ -58,7 +55,7 @@ render with a message. Allowlist mode drops the cluster-scoped rules: there is n
 node or namespace read, no `/openapi/v3` validation, and no `tokenreviews`.
 Agent authentication therefore needs cluster-wide mode, or an operator-granted
 `create` on `authentication.k8s.io/tokenreviews`. See
-[ADR-0038](../docs/adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md).
+[ADR-0038](adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md).
 
 ## Credentials
 
@@ -79,29 +76,58 @@ helm upgrade --install pagerless ./charts/pagerless -n pagerless \
 ```
 
 With `credentials.existingSecret` set, the chart renders no Secret at all and the
-Deployment mounts the named one.
+Deployment mounts the named one. The Secret must exist before the pod starts.
+[`docs/onboarding.md`](onboarding.md) covers each way of filling it, including
+finishing an installation that started without credentials.
 
-## Install with hack/install.sh
-
-```bash
-# Render the plan and the manifests without contacting a cluster.
-bash hack/install.sh --dry-run --namespaces shop,payments
-
-# Install after filling the credentials Secret.
-kubectl -n pagerless create secret generic pagerless-credentials --from-env-file=./pagerless.env
-bash hack/install.sh --context my-cluster --namespaces shop,payments
-```
-
-## Verify the release
+## Verify the installation
 
 ```bash
 kubectl -n pagerless rollout status deploy/pagerless-server
-kubectl auth can-i get pods/log -n shop --as=system:serviceaccount:pagerless:pagerless-server  # yes
+kubectl -n pagerless get deploy,svc,pvc,configmap,sa
+kubectl auth can-i get pods/log -n shop --as=system:serviceaccount:pagerless:pagerless-server   # yes
 kubectl auth can-i update deployments -n shop --as=system:serviceaccount:pagerless:pagerless-server  # no
 ```
 
+A healthy installation renders one Deployment, one Service, one
+PersistentVolumeClaim, two ConfigMaps, the two ServiceAccounts, and the read
+identity. It renders no Keycloak, gateway, database, or MCP server, and no
+admission webhook.
+
 `make verify-chart` runs the whole matrix on a throwaway kind cluster, builds the
 server image, and deletes the cluster afterwards.
+
+## Install the plugin
+
+`kubectl page` is a Krew plugin and a Homebrew formula, both published from the
+same release:
+
+```bash
+kubectl krew install page
+brew install a-hagi613/tap/kubectl-page
+```
+
+From a checkout, the repository copy installs without an index:
+
+```bash
+kubectl krew install --manifest=plugins/page.yaml
+```
+
+The plugin reads Pages through the Kubernetes API, so it needs only a kubeconfig
+that can `get`, `list`, and watch `pages.pagerless.dev`. A user who decides
+Proposals needs `patch` on `pages`; `Role pagerless-approver` grants exactly that.
+
+## Uninstall
+
+```bash
+helm uninstall pagerless --namespace pagerless
+kubectl delete namespace pagerless
+kubectl delete crd pages.pagerless.dev
+```
+
+Uninstalling the release removes the credentials Secret the chart created. An
+external secret manager keeps whatever it owns, because the chart never rendered
+that Secret.
 
 ## Values
 

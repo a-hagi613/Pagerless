@@ -1,6 +1,10 @@
 # Architecture Decision Records
 
-Each record captures one significant decision, along with its context and consequences. Records are numbered sequentially and are never renumbered. A reversed decision is marked `Superseded` and links to the record that replaces it.
+Each record captures one significant decision, along with its context and consequences. Records are numbered sequentially and are never renumbered, and a number that was never published is not reused. A record is `Accepted`, `Amended` when a later record changes part of it, or `Superseded` when it no longer binds; both kinds link to the record that changed them.
+
+This index is the v2.0 index: it lists every record that constrains the shipped
+product, including the v1 records that remain binding and the v2 records that
+replaced the rest.
 
 | ADR | Decision |
 | --- | --- |
@@ -36,3 +40,4 @@ Each record captures one significant decision, along with its context and conseq
 | [0031](0031-approval-is-a-decision-on-the-page.md) | An approval is a decision recorded on the Page |
 | [0037](0037-read-only-cluster-identity.md) | The cluster identity is strictly read-only |
 | [0038](0038-one-watch-mode-or-an-explicit-namespace-allowlist.md) | One watch mode or an explicit namespace allowlist |
+| [0039](0039-one-tag-publishes-every-artifact.md) | One tag publishes every artifact, and the published copy is verified |

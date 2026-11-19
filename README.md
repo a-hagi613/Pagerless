@@ -15,40 +15,37 @@ own CI decides whether it may merge. The cluster identity is read-only, so a
 compromised model, a wrong diagnosis, or a bug in Pagerless cannot change a
 workload directly.
 
-## Status: v2.0 in progress
+## Quick start
 
-This tree is the v2.0 product. It is a visible break from v1.0:
-
-- **Landed in this release:** the `Page` API (`pages.pagerless.dev/v1alpha1`),
-  the strictly read-only cluster identity, the standalone single-namespace Helm
-  chart shell with zero admission webhooks, the decision-on-the-Page approval
-  path, the operator's glossary and core ADRs, and the `kubectl page` CLI
-  (including `kubectl page version`).
-- **Being delivered by the remaining v2.0 slices:** the dual-API error watcher
-  and cooldowns, read-only observability connectors and alert webhooks, the
-  OpenAI-compatible agent and tool broker, the GitOps provenance and pull
-  request engine, the auth and onboarding flow, the Variant C Portal, the release
-  channel, and the `pagerless-sandbox` showcase.
-
-Until those slices land, an installation runs the API, the reconcilers, and the
-report and metrics endpoints; it does not yet watch failures or serve the Portal.
-`Triage` and `TriageApproval` are removed with no alias and no migration:
-v1 objects are not converted. The upgrade guide is part of the release slice.
-
-## Install
+Install the operator into one namespace of a cluster you already run:
 
 ```bash
 helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
-  --namespace pagerless --create-namespace
+  --namespace pagerless --create-namespace --version 2.0.0
+```
+
+Install the `kubectl page` plugin with Krew, or with Homebrew on macOS or Linux:
+
+```bash
+kubectl krew install page
+brew install a-hagi613/tap/kubectl-page
+```
+
+Then check the installation and open your first Page:
+
+```console
+kubectl page version
+kubectl page deploy/checkout --namespace shop
+kubectl page list
 ```
 
 The chart installs one `pagerless-server` Deployment, one Service, one
-`pagerless-data` PersistentVolumeClaim, two ConfigMaps, a ServiceAccount, an
-empty `pagerless-credentials` Secret, and exactly one read identity. It installs
-no database, identity provider, message broker, gateway, or admission webhook.
-
-`helm install --set credentials.existingSecret=…` keeps an external secret
-manager as the only writer of the credentials Secret.
+`pagerless-data` PersistentVolumeClaim, two ConfigMaps, a ServiceAccount, and
+exactly one read identity. It needs no database, identity provider, message
+broker, gateway, or admission webhook.
+[`docs/install.md`](docs/install.md) covers the watch modes and the credentials
+Secret; [`docs/onboarding.md`](docs/onboarding.md) finishes an installation that
+starts without credentials.
 
 ## The read-only boundary
 
@@ -81,7 +78,7 @@ runs `kubectl auth can-i` as the server's ServiceAccount.
 ```console
 kubectl page deploy/my-service --namespace payments    # open a Page
 kubectl page list
-kubectl page show <name>
+kubectl page show <name> --watch
 kubectl page approve <name>                            # bind the displayed hash
 kubectl page dismiss <name> --reason "<why>"
 kubectl page version                                   # version, commit, expected chart
@@ -90,19 +87,42 @@ kubectl page version                                   # version, commit, expect
 A decision is an annotation patch on the Page, so it needs only `patch` on
 `pages`; `Role pagerless-approver` grants exactly that. `spec` is immutable and
 `status` is a separate subresource, so a decision cannot change the investigation.
-See [ADR-0031](docs/adr/0031-approval-is-a-decision-on-the-page.md).
+See [ADR-0031](docs/adr/0031-approval-is-a-decision-on-the-page.md) and
+[`docs/cli.md`](docs/cli.md) for every command, flag, and exit code.
+
+## Release status
+
+This tree is the v2.0 product, and it is a visible break from v1.0:
+
+- **Landed:** the `Page` API (`pages.pagerless.dev/v1alpha1`), the strictly
+  read-only cluster identity, the standalone single-namespace chart, the
+  decision-on-the-Page approval path, the `kubectl page` CLI, and the release
+  channel that publishes the plugin, the images, and the chart at one version.
+- **Delivered by the remaining v2.0 slices:** the dual-API error watcher and
+  cooldowns, the read-only observability connectors and alert webhooks, the
+  OpenAI-compatible agent and tool broker, the GitOps provenance and pull
+  request engine, the onboarding flow and Portal settings route, and the
+  Variant C Portal.
+
+Until those slices land, an installation runs the API, the reconcilers, and the
+report and metrics endpoints; it does not yet watch failures or serve the
+Portal. `Triage` and `TriageApproval` are removed with no alias and no
+migration: v1 objects are not converted. [`docs/upgrade.md`](docs/upgrade.md)
+lists every removed value and the replacement path.
 
 ## Repository layout
 
 ```
-api/         Page CRD types (kubebuilder)
-cmd/         pagerless-server and kubectl-page
-internal/    Go packages: reconcilers, CLI, proposal validation, history, metrics
-agent/       Python investigation agent (uv)
-dashboard/   React Portal served by pagerless-server
-charts/      The standalone Helm chart
-hack/        The development and verification scripts
-docs/        ADRs, installation, and operations documentation
+api/          Page CRD types (kubebuilder)
+cmd/          pagerless-server and kubectl-page
+internal/     Go packages: reconcilers, CLI, proposal validation, history, metrics
+agent/        Python investigation agent (uv)
+dashboard/    React Portal served by pagerless-server
+charts/       The standalone Helm chart
+plugins/      The Krew plugin manifest, rendered from the release checksums
+scripts/      The release scripts
+hack/         The development and verification scripts
+docs/         ADRs, installation, and operations documentation
 ```
 
 The demo workloads, Terraform, and the GitOps showcase live in
@@ -118,17 +138,29 @@ make lint-agent test-agent
 make dashboard-check dashboard-build
 make validate             # helm lint, render both watch modes, kubeconform
 make verify-chart         # install on a throwaway kind cluster and prove the grant
+make release-check        # goreleaser check and the Krew manifest lint
+make release-snapshot     # the release archives, checksums, SBOMs, and manifest
 ```
 
-`make test-go` needs the envtest binaries, which `Makefile` downloads through the
-pinned `setup-envtest`. `make verify-chart` needs Docker, kind, Helm, and kubectl,
-and deletes its cluster when it finishes.
+`make test-go` needs the envtest binaries, which the `Makefile` downloads through
+the pinned `setup-envtest`. `make verify-chart` needs Docker, kind, Helm, and
+kubectl, and deletes its cluster when it finishes. `make release-snapshot` needs
+Go and a network connection for the pinned GoReleaser and Syft binaries; it needs
+no tag, no registry credential, and no GitHub token.
 
 ## Documentation
 
 - [GLOSSARY.md](GLOSSARY.md) — the product's vocabulary, used exactly.
 - [docs/adr/](docs/adr/README.md) — the decisions that constrain the design.
 - [docs/install.md](docs/install.md) — installing and configuring the chart.
+- [docs/onboarding.md](docs/onboarding.md) — the paths from an installed chart to
+  a working installation.
+- [docs/auth.md](docs/auth.md) — Portal authentication, sessions, CSRF, and the
+  threat model.
+- [docs/cli.md](docs/cli.md) — every `kubectl page` command, flag, and exit code.
+- [docs/portal.md](docs/portal.md) — the Portal routes and the parity contract.
+- [docs/upgrade.md](docs/upgrade.md) — the v1 to v2 break, in full.
+- [docs/release.md](docs/release.md) — how one tag publishes every artifact.
 - [charts/pagerless/README.md](charts/pagerless/README.md) — every chart value.
 
 ## License
