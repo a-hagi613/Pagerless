@@ -124,17 +124,27 @@ server image, and deletes the cluster afterwards.
 
 ## Install the plugin
 
-Install the plugin from the Krew index, or from Homebrew:
+The release publishes the rendered manifest as the `page.yaml` asset, so install
+that asset directly as soon as the release is published:
+
+```bash
+curl -fLO https://github.com/a-hagi613/pagerless/releases/download/v2.0.0/page.yaml
+kubectl krew install --manifest=page.yaml
+```
+
+`kubectl krew install page` starts working when the release's pull request
+against the Krew index is accepted upstream, and
+`brew install a-hagi613/tap/kubectl-page` when the release's formula pull
+request to `a-hagi613/homebrew-tap` is merged:
 
 ```bash
 kubectl krew install page
 brew install a-hagi613/tap/kubectl-page
 ```
 
-The release also publishes the rendered manifest as the `page.yaml` asset. A
-checkout carries the template that the release renders, because a manifest
-cannot carry checksums before the archives exist; render it from a release's
-checksum file and install it without touching the index:
+A checkout carries `plugins/page.yaml` as a template, because a manifest cannot
+carry checksums before the archives exist. Render it from a release's checksum
+file and install the result without touching the index:
 
 ```bash
 gh release download v2.0.0 --pattern checksums.txt
@@ -143,9 +153,9 @@ kubectl krew install --manifest=/tmp/page.yaml
 ```
 
 The release job rewrites `plugins/page.yaml` to the rendered manifest and opens
-a Pull Request when the copy differs, so a checkout of a later release can
-install `--manifest=plugins/page.yaml` directly. The lint rejects a manifest
-that still contains a template placeholder.
+a Pull Request when the copy differs; once that refresh Pull Request is merged,
+a checkout can install `--manifest=plugins/page.yaml` directly. The lint rejects
+a manifest that still contains a template placeholder.
 
 The plugin reads Pages through the Kubernetes API, so it needs only a kubeconfig
 that can `get`, `list`, and watch `pages.pagerless.dev`. A user who decides
