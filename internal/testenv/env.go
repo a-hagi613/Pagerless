@@ -43,6 +43,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/server"
+	"github.com/a-hagi613/pagerless/internal/watcher"
 )
 
 const (
@@ -54,6 +55,8 @@ const (
 	AgentImage = "registry.invalid/pagerless-agent:test"
 	// AlertmanagerToken is the deterministic bearer token used by alert receiver seam tests.
 	AlertmanagerToken = "pagerless-alertmanager-test-token"
+	// ClusterID is the stable cluster identifier the watcher hashes into every Fingerprint.
+	ClusterID = "cluster-test"
 
 	pollInterval = 50 * time.Millisecond
 	waitTimeout  = 30 * time.Second
@@ -114,6 +117,15 @@ type options struct {
 	dashboardApprover bool
 	dashboardAuth     dashboardapi.Auth
 	dashboardAddress  string
+	watcher           *watcher.Config
+}
+
+// WithWatcher enables the cluster watcher with the given configuration. The
+// harness fills the fields a test must not have to set: the release namespace,
+// the fake clock, and a stable cluster identifier, so a test's Fingerprints are
+// reproducible.
+func WithWatcher(cfg watcher.Config) Option {
+	return func(o *options) { o.watcher = &cfg }
 }
 
 // Option customizes the harness.
@@ -315,6 +327,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		DashboardAuth:            auth,
 		Clock:                    env.Clock,
 		Validators:               validators,
+		Watcher:                  watcherConfig(o.watcher, env.Clock),
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)
@@ -361,6 +374,21 @@ func waitForMetrics(t testing.TB, baseURL string) {
 	if err != nil {
 		t.Fatalf("the metrics API at %s did not start: %v", baseURL, err)
 	}
+}
+
+// watcherConfig fills the watcher settings the harness owns: the release
+// namespace, the fake clock every test steps, and a fixed cluster identifier so
+// a Fingerprint is reproducible across runs. It returns nil when the test did
+// not enable the watcher, which keeps every existing suite unaffected.
+func watcherConfig(cfg *watcher.Config, clock *clocktesting.FakeClock) *watcher.Config {
+	if cfg == nil {
+		return nil
+	}
+	filled := *cfg
+	filled.Namespace = Namespace
+	filled.ClusterID = ClusterID
+	filled.Clock = clock
+	return &filled
 }
 
 // WaitForGone polls until the Page no longer exists.

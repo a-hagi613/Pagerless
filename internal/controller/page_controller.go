@@ -126,7 +126,17 @@ func (r *PageReconciler) initialize(ctx context.Context, p *v1alpha1.Page) error
 // startInvestigation creates the agent Job and moves the Page to
 // Investigating. Creating the Job first and tolerating an existing one makes
 // the step safe to repeat after a crash.
+//
+// A Page whose investigation is suppressed by a guardrail never starts one, and
+// a queued Page waits until the watcher grants a slot; both stay visible with
+// their reason on status.investigation.
 func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Page) error {
+	if investigation := p.Status.Investigation; investigation != nil {
+		switch investigation.State {
+		case v1alpha1.InvestigationSuppressed, v1alpha1.InvestigationQueued:
+			return nil
+		}
+	}
 	job := buildAgentJob(p, r.Job)
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own agent Job: %w", err)
@@ -149,6 +159,10 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 		}
 		latest.Status.Phase = v1alpha1.PhaseInvestigating
 		latest.Status.AgentJobName = job.Name
+		latest.Status.Investigation = &v1alpha1.InvestigationStatus{
+			State: v1alpha1.InvestigationRunning,
+			Job:   job.Name,
+		}
 		return nil
 	})
 	if err == nil && updated.Status.Phase == v1alpha1.PhaseSuperseded {
