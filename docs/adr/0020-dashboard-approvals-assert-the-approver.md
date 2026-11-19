@@ -1,10 +1,10 @@
 # ADR-0020: Dashboard Approvals assert the approver rather than impersonate
 
-- **Status:** Superseded by [ADR-0031](0031-approval-is-a-decision-on-the-page.md). The Keycloak client this record depends on is removed by the onboarding slice, not by this one.
+- **Status:** Superseded by [ADR-0031](0031-approval-is-a-decision-on-the-page.md) and [ADR-0032](0032-single-operator-local-authentication.md).
 - **Date:** 2026-11-16
 - **Supersedes:** the impersonation clause of [ADR-0004](0004-approval-is-a-separate-resource.md)
 
-> Superseded in v2.0: a decision is an annotation on the Page, and the declaration is trusted exactly as far as the caller's RBAC on Pages. `internal/keycloak` stays in the tree, unused, until the onboarding slice replaces the dashboard sign-in and deletes it. See ADR-0031.
+> Superseded in v2.0: a decision is an annotation on the Page, and the declaration is trusted exactly as far as the caller's RBAC on Pages ([ADR-0031](0031-approval-is-a-decision-on-the-page.md)). `internal/keycloak` is removed and Portal authentication uses a bootstrap token and HMAC-signed session cookies ([ADR-0032](0032-single-operator-local-authentication.md)).
 
 ## Context
 

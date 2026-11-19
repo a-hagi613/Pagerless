@@ -62,8 +62,7 @@ There is no approval resource and no admission webhook.
 - `decidedBy` is an audit record, not an authenticated identity. The Portal
   writes the signed-in subject; the CLI writes the kubeconfig user; a hand
   `kubectl annotate` writes whatever it says.
-- `internal/keycloak` remains in the tree, unused by the server, until the
-  onboarding slice that replaces the dashboard's sign-in removes it. The
+- `internal/keycloak` is removed with the onboarding slice ([ADR-0032](0032-single-operator-local-authentication.md)). The
   chart no longer requires an identity provider.
 - The agent-Job admission policy that bounded the Job's shape is gone with the
   webhooks; the Job builder and its tests are now the only enforcement.
