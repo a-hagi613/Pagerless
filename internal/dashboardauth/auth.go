@@ -549,7 +549,9 @@ func (a *Auth) verifyCookie(ctx context.Context, raw string, now time.Time) (sig
 	if !ok || encodedPayload == "" || encodedMAC == "" || strings.Contains(encodedMAC, ".") {
 		return signedClaims{}, false
 	}
-	suppliedMAC, err := base64.RawURLEncoding.DecodeString(encodedMAC)
+	// Strict decoding rejects a non-canonical encoding whose unused trailing
+	// bits are not zero, so exactly one string carries one signature.
+	suppliedMAC, err := base64.RawURLEncoding.Strict().DecodeString(encodedMAC)
 	if err != nil || len(suppliedMAC) != sha256.Size {
 		return signedClaims{}, false
 	}
@@ -566,7 +568,7 @@ func (a *Auth) verifyCookie(ctx context.Context, raw string, now time.Time) (sig
 		return signedClaims{}, false
 	}
 
-	rawPayload, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	rawPayload, err := base64.RawURLEncoding.Strict().DecodeString(encodedPayload)
 	if err != nil {
 		return signedClaims{}, false
 	}
