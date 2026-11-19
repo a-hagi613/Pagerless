@@ -31,6 +31,15 @@ before anything is published when it does not.
 of `kubernetes-sigs/krew-index`. `HOMEBREW_TAP_TOKEN` needs write access to
 `a-hagi613/homebrew-tap`.
 
+## Package visibility
+
+The workflow publishes to GHCR with the repository's `GITHUB_TOKEN`, so the
+`pagerless-server`, `pagerless-agent`, and `charts/pagerless` packages inherit
+the repository's visibility. For the install commands in the README to work
+without a credential, each package must be public. The verification job logs in
+to GHCR, so it proves the artifacts, not anonymous access; check the three
+packages under the repository's package settings after the first release.
+
 ## Before the tag
 
 ```bash
@@ -45,10 +54,12 @@ rather than by a failed release.
 Bump the version in `charts/pagerless/Chart.yaml` (`version` and `appVersion`) in
 the release pull request. `scripts/release/check-versions.sh --version X.Y.Z`
 checks that the chart version, the appVersion, and the image tags agree with the
-version before you tag it. `plugins/page.yaml` is rendered after the tag, because
-it can only describe archives that exist; the release job renders it from the
-published checksums and opens a refresh Pull Request when the committed copy
-differs.
+version before you tag it. `plugins/page.yaml` is the manifest template; no
+committed copy can carry checksums before the archives exist. The release job
+renders it from `dist/checksums.txt` after the tag, publishes the rendered file
+as the `page.yaml` asset, and opens a refresh Pull Request when the committed
+copy differs. The lint fails on a `${...}` placeholder, so an unrendered
+template cannot reach the index or a release.
 
 ## After the tag
 

@@ -63,9 +63,9 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 release-tools: ## Download the pinned GoReleaser and Syft into bin/release-tools.
 	bash scripts/release/tools.sh
 
-release-check: release-tools ## Validate the GoReleaser configuration and the Krew manifest.
+release-check: release-tools ## Validate the GoReleaser configuration and the plugin manifest template.
 	$(RELEASE_TOOLS_DIR)/goreleaser check
-	bash scripts/release/lint-krew-manifest.sh plugins/page.yaml
+	bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
 
 release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest locally.
 	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean

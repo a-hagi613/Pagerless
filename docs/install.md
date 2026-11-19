@@ -99,19 +99,28 @@ server image, and deletes the cluster afterwards.
 
 ## Install the plugin
 
-`kubectl page` is a Krew plugin and a Homebrew formula, both published from the
-same release:
+Install the plugin from the Krew index, or from Homebrew:
 
 ```bash
 kubectl krew install page
 brew install a-hagi613/tap/kubectl-page
 ```
 
-From a checkout, the repository copy installs without an index:
+The release also publishes the rendered manifest as the `page.yaml` asset. A
+checkout carries the template that the release renders, because a manifest
+cannot carry checksums before the archives exist; render it from a release's
+checksum file and install it without touching the index:
 
 ```bash
-kubectl krew install --manifest=plugins/page.yaml
+gh release download v2.0.0 --pattern checksums.txt
+scripts/release/render-krew-manifest.sh --checksums checksums.txt --version 2.0.0 --output /tmp/page.yaml
+kubectl krew install --manifest=/tmp/page.yaml
 ```
+
+The release job rewrites `plugins/page.yaml` to the rendered manifest and opens
+a Pull Request when the copy differs, so a checkout of a later release can
+install `--manifest=plugins/page.yaml` directly. The lint rejects a manifest
+that still contains a template placeholder.
 
 The plugin reads Pages through the Kubernetes API, so it needs only a kubeconfig
 that can `get`, `list`, and watch `pages.pagerless.dev`. A user who decides

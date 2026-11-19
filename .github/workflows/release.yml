@@ -46,7 +46,7 @@ jobs:
           scripts/release/check-versions.sh --version "${{ steps.version.outputs.version }}"
           bash scripts/release/tools.sh goreleaser
           bin/release-tools/goreleaser check
-          bash scripts/release/lint-krew-manifest.sh plugins/page.yaml
+          bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
 
   release:
     name: GoReleaser archives, checksums, SBOMs, and Krew
@@ -242,6 +242,13 @@ jobs:
           sudo install kubectl /usr/local/bin/kubectl
           bash scripts/release/tools.sh krew
           sudo install bin/release-tools/krew /usr/local/bin/kubectl-krew
+      - name: Log in to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            docker login ghcr.io --username "${{ github.actor }}" --password-stdin
       - name: Create a throwaway cluster
         run: |
           set -euo pipefail
@@ -262,7 +269,8 @@ jobs:
           [ "$deployments" = "1" ] || { echo "expected one Deployment, found $deployments"; exit 1; }
           statefulsets="$(kubectl --namespace pagerless get statefulsets --no-headers 2>/dev/null | wc -l)"
           [ "$statefulsets" = "0" ] || { echo "the chart rendered $statefulsets StatefulSets"; exit 1; }
-          helm list --namespace pagerless --output json | grep --quiet "\"version\":\"${VERSION}\"" ||
+          helm list --namespace pagerless --output json |
+            grep --quiet --extended-regexp "\"version\": *\"${VERSION}\"" ||
             { echo "the installed chart version is not ${VERSION}"; exit 1; }
       - name: Download the published plugin manifest and formula
         env:
@@ -306,8 +314,8 @@ jobs:
           gh release download "v${VERSION}" --dir dist --pattern checksums.txt
           scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" \
             --output dist/kubectl-page.rb
+          brew tap a-hagi613/tap
           tap_dir="$(brew --repository)/Library/Taps/a-hagi613/homebrew-tap"
-          mkdir -p "$tap_dir/Formula"
           cp dist/kubectl-page.rb "$tap_dir/Formula/kubectl-page.rb"
           brew audit --strict a-hagi613/tap/kubectl-page
           brew install --build-from-source a-hagi613/tap/kubectl-page

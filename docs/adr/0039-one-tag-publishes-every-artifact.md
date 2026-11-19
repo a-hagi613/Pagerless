@@ -60,6 +60,9 @@ A release is one tag, one builder, one writer per channel, and one proof:
   renders `plugins/page.yaml` from the published checksum file, publishes it as a
   release asset, and opens a Pull Request when the committed copy differs. The
   release asset is the authoritative manifest; the committed copy follows it.
+  The committed copy is a template until a release exists, because a manifest
+  cannot carry checksums before the archives do, and the lint fails when a
+  rendered manifest still contains a placeholder.
 
 ## Consequences
 
