@@ -158,6 +158,7 @@ make build-cli            # bin/kubectl-page
 make lint-go test-go      # Go lint, unit, envtest, and chart tests
 make lint-agent test-agent
 make dashboard-check dashboard-build
+make brand-assets         # regenerate the marks from docs/assets/pagerless-mascot-source.png
 make validate             # helm lint, render both watch modes, kubeconform
 make verify-chart         # install on a throwaway kind cluster and prove the grant
 make release-check        # goreleaser check and the Krew manifest lint
