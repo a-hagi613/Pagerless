@@ -30,7 +30,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
-	"github.com/a-hagi613/pagerless/internal/github"
+	"github.com/a-hagi613/pagerless/internal/github/pr"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
 	"github.com/a-hagi613/pagerless/internal/page"
@@ -371,7 +371,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			Clock:  cfg.Clock,
 			Publisher: publish.New(publish.Config{
 				Sandbox: cfg.Sandbox,
-				GitHub: &github.GitHub{
+				GitHub: &pr.Client{
 					APIURL:     cfg.GitHubAPIURL,
 					Repository: cfg.GitHubRepository,
 					Token:      cfg.GitHubToken,
