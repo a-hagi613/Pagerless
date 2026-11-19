@@ -258,7 +258,7 @@ func (b *Broker) Call(
 func (b *Broker) dispatch(
 	ctx context.Context, page *v1alpha1.Page, scope Scope, tool string, arguments json.RawMessage,
 ) (any, error) {
-	kube := &kubeTools{reader: b.Reader, podLogs: b.PodLogs}
+	kube := &kubeTools{reader: b.Reader, podLogs: b.PodLogs, now: b.now}
 	switch tool {
 	case ToolObjectGet:
 		return kube.get(ctx, page, scope, arguments)
