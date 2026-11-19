@@ -39,6 +39,14 @@
 //
 // Version 2 added the created_at and spec columns; a version 1 database is upgraded in place. Version 3 adds the
 // runtime tables; a version 2 database gains them on first start without rewriting a row.
+//
+// Schema version 6 adds one table, and only adds it:
+//
+//	proposal_contents(proposal_hash, path, content, recorded_at)
+//
+// It holds the complete content of a Proposal's files, keyed by the Proposal hash, because the Page records only
+// each file's digest and rationale. Every statement is idempotent, so a database of any earlier version gains the
+// new tables in place without rewriting a row.
 package history
 
 import (
@@ -58,7 +66,7 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 const (
 	// snapshotsTable holds one row per Phase change.
@@ -71,6 +79,8 @@ const (
 	bundlesTable = "context_bundles"
 	// deliveriesTable holds the idempotency key of every inbound alert.
 	deliveriesTable = "webhook_deliveries"
+	// contentsTable holds the complete content of a Proposal's files.
+	contentsTable = "proposal_contents"
 )
 
 // schema is applied to a new database. It is idempotent so that a restart reopens the same file.
@@ -185,6 +195,20 @@ var schema = []string{
 		reason TEXT
 	)`,
 	`CREATE INDEX IF NOT EXISTS ` + deliveriesTable + `_by_received ON ` + deliveriesTable + ` (received_at)`,
+	// Version 6. The complete content of a Proposal's files, keyed by the Proposal hash.
+	`CREATE TABLE IF NOT EXISTS ` + contentsTable + ` (
+		proposal_hash TEXT NOT NULL,
+		path TEXT NOT NULL,
+		content BLOB NOT NULL,
+		recorded_at TEXT NOT NULL,
+		PRIMARY KEY (proposal_hash, path)
+	)`,
+	`CREATE TRIGGER IF NOT EXISTS ` + contentsTable + `_no_update
+		BEFORE UPDATE ON ` + contentsTable + `
+		BEGIN SELECT RAISE(ABORT, '` + contentsTable + ` is append-only'); END`,
+	`CREATE TRIGGER IF NOT EXISTS ` + contentsTable + `_no_delete
+		BEFORE DELETE ON ` + contentsTable + `
+		BEGIN SELECT RAISE(ABORT, '` + contentsTable + ` is append-only'); END`,
 }
 
 // Store is an append-only history database.
