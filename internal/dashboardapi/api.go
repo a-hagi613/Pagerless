@@ -41,6 +41,12 @@ type Config struct {
 	Namespace string
 	// Reader reads Pages through the server's cache, so the dashboard inherits the server's RBAC.
 	Reader client.Reader
+	// Live reads Pages straight from the API server rather than the cache. A decision is a
+	// check-then-act: the handler reads the Phase and the Proposal hash and then records the decision,
+	// so a cached read can refuse a decision on a Page that is already Proposed and accept one bound to
+	// a Proposal that has been replaced. Only that route needs it; every read that converges is served
+	// from Reader. It defaults to Reader.
+	Live client.Reader
 	// Writer creates Pages and PageApprovals as pagerless-server. It is required for Start Page and
 	// for dashboard decisions.
 	Writer client.Client
@@ -92,6 +98,7 @@ type User = dashboardauth.User
 type Handler struct {
 	namespace   string
 	reader      client.Reader
+	live        client.Reader
 	writer      client.Client
 	targets     client.Reader
 	namespaces  []string
@@ -110,6 +117,7 @@ func New(cfg Config) *Handler {
 	h := &Handler{
 		namespace:   cfg.Namespace,
 		reader:      cfg.Reader,
+		live:        cfg.Live,
 		writer:      cfg.Writer,
 		targets:     cfg.Targets,
 		namespaces:  cfg.TargetNamespaces,
@@ -126,6 +134,9 @@ func New(cfg Config) *Handler {
 	}
 	if h.targets == nil {
 		h.targets = cfg.Reader
+	}
+	if h.live == nil {
+		h.live = cfg.Reader
 	}
 	if h.clock == nil {
 		h.clock = clock.RealClock{}

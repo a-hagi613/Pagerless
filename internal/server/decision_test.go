@@ -198,9 +198,8 @@ func TestASecondActivePageForOneFingerprintIsSuperseded(t *testing.T) {
 // and returns the canonical Page and the superseded one.
 func canonicalAndSuperseded(t *testing.T, env *testenv.Env, names ...string) (*v1alpha1.Page, *v1alpha1.Page) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
 	var canonical, superseded *v1alpha1.Page
-	for time.Now().Before(deadline) {
+	eventually(t, "one Page is superseded while another stays canonical", func() bool {
 		canonical, superseded = nil, nil
 		for _, name := range names {
 			page := env.Get(t, name)
@@ -214,13 +213,9 @@ func canonicalAndSuperseded(t *testing.T, env *testenv.Env, names ...string) (*v
 				}
 			}
 		}
-		if canonical != nil && superseded != nil {
-			return canonical, superseded
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("no Page among %v was superseded while another stayed canonical", names)
-	return nil, nil
+		return canonical != nil && superseded != nil
+	})
+	return canonical, superseded
 }
 
 func TestSupersededPageStartsNoAgentJob(t *testing.T) {
