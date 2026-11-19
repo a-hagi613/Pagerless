@@ -13,3 +13,6 @@ spec:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
+    - name: report
+      port: {{ .Values.service.reportPort }}
+      targetPort: report

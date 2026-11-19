@@ -69,8 +69,8 @@ subjects:
 ---
 {{- /*
 The release-namespace Role. Pages and their status are the product's own objects,
-the agent Jobs are the investigations, and the two named Secrets are the only
-Secrets the server may touch. `pods` is read again here so that Mode B can still
+the agent Jobs are the investigations, and the credentials Secret is the only
+Secret the server may write. `pods` is read again here so that Mode B can still
 read the agent pod that presents a token.
 */}}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -100,16 +100,17 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
-  # Two Secrets by name, never a list or a watch: `resourceNames` cannot
-  # constrain them, so those verbs are never granted.
+  {{- if not .Values.credentials.existingSecret }}
+  # The one Secret the server may write: the credentials Secret, by name. A
+  # credential write reads it, merges the submitted keys, and updates with the
+  # observed resource version. `create`, `list`, and `watch` are never granted,
+  # because `resourceNames` cannot constrain them; the bootstrap token and the
+  # session key are read from their mounted volumes instead.
   - apiGroups: [""]
     resources: [secrets]
-    resourceNames: [pagerless-credentials, pagerless-admin-secret]
-    verbs: [get]
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [pagerless-credentials]
-    verbs: [update, patch]
+    resourceNames: [{{ .Values.credentials.secretName }}]
+    verbs: [get, patch, update]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

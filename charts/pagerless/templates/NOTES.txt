@@ -11,31 +11,60 @@ Watching: every namespace through ClusterRole {{ .Release.Name }}-pagerless-read
 Watching: {{ join ", " .Values.rbac.watchNamespaces }} through a read Role per namespace.
 {{- end }}
 
+{{- if eq .Values.auth.mode "disabled" }}
+
+WARNING: auth.mode=disabled is in effect.
+Every request is anonymous{{ if .Values.auth.proxy.identityHeader }} or attributed by the
+{{ .Values.auth.proxy.identityHeader }} header{{ end }}. Anyone who can reach the Portal can
+record a decision on a Page. Use this mode only behind an authenticating proxy
+that sets the identity header, and never expose it through an Ingress without
+one. The chart refuses to render that combination.
+{{- else }}
+
+Sign in with the bootstrap token. Start the Portal:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:{{ .Values.service.port }}
+
+Open http://localhost:{{ .Values.service.port }}/login and read the token:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.auth.adminSecret.name }} -o go-template='{{ "{{" }}.data.{{ .Values.auth.adminSecret.key }} | base64decode{{ "}}" }}{{ "{{" }}"\n"{{ "}}" }}'
+
+Then finish setup at /settings: the AI endpoint, the Target Repository, and any
+connector. The wizard writes the credentials Secret for you, and `kubectl page
+config` writes the same keys from a terminal.
+
+Once you are signed in, the bootstrap token is no longer needed. Deleting it
+stops any further token sign-in and does not invalidate an existing browser
+session:
+
+  kubectl -n {{ .Release.Namespace }} delete secret {{ .Values.auth.adminSecret.name }}
+{{- end }}
+
 {{- if .Values.credentials.existingSecret }}
 
-Credentials are managed externally by Secret {{ .Values.credentials.existingSecret }}.
-Required keys:
+Credentials are managed externally by Secret {{ .Values.credentials.existingSecret }}
+and are read-only in the Portal and in the CLI. Required keys:
 
   AI_BASE_URL, AI_API_KEY, AI_MODEL
   GITHUB_TOKEN, GITHUB_REPO
+  GITHUB_API_URL                       (optional, for GitHub Enterprise)
   CONNECTOR_<NAME>_TOKEN              (one per configured connector)
 {{- else }}
 
 Credentials live in Secret {{ .Values.credentials.secretName }}, with every key
-present and empty. Fill it before the first Page can be investigated:
+present and empty. Finish onboarding in the Portal at /settings, or write the
+same keys from a terminal:
 
-  kubectl -n {{ .Release.Namespace }} edit secret {{ .Values.credentials.secretName }}
+  kubectl page config set ai
+  kubectl page config set github
 {{- end }}
 
-The Portal and its sign-in are delivered with the authentication and Portal
-slices. This release serves the agent report API and the metrics API:
-
-  kubectl -n {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:{{ .Values.service.port }}
-
-Record a decision on a Page by patching its annotations, or with the CLI:
+Pagerless serves the agent report API and the metrics API on the same pod; the
+Portal is the browser-facing surface. Record a decision by patching a Page's
+annotations, or with the CLI:
 
   kubectl page approve <page>
-  kubectl page dismiss <page> --reason "<why>"
+  kubectl page reject <page> --reason "<why>"
 
 Role pagerless-approver in this namespace grants exactly that permission. Bind
 it to the people who may record decisions.

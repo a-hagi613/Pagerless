@@ -111,6 +111,25 @@ invalid namespace name, and an empty list already means "no allowlist".
 {{- end -}}
 
 {{/*
+Refuses an authentication configuration that would expose an approval surface
+or lose the bootstrap token.
+*/}}
+{{- define "pagerless.validateAuth" -}}
+{{- if not (has .Values.auth.mode (list "token" "disabled")) -}}
+{{- fail (printf "auth.mode must be token or disabled, got %q" .Values.auth.mode) -}}
+{{- end -}}
+{{- if eq .Values.auth.mode "disabled" -}}
+{{- if and .Values.ingress.enabled (eq (trim .Values.auth.proxy.identityHeader) "") -}}
+{{- fail "auth.mode=disabled with ingress.enabled requires auth.proxy.identityHeader, because an anonymous Ingress exposes the approval surface" -}}
+{{- end -}}
+{{- else -}}
+{{- if and (not .Values.auth.adminSecret.create) (eq (trim .Values.auth.adminSecret.name) "") -}}
+{{- fail "auth.adminSecret.name must name the existing Secret when auth.adminSecret.create is false" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The credentials Secret the Deployment mounts: an externally managed one, or the
 one the chart creates.
 */}}

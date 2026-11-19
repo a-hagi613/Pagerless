@@ -19,7 +19,10 @@ helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
 | `PersistentVolumeClaim` | `pagerless-data` | The append-only Page history. |
 | `ConfigMap` | `pagerless-config` | Non-secret server configuration. |
 | `ConfigMap` | `pagerless-connectors` | The connector catalogue that `connectors.seed` declares. |
+| `Secret` | `pagerless-admin-secret` | The bootstrap token, in `token` mode only; kept across `helm uninstall` unless `auth.adminSecret.keep` is false. |
+| `Secret` | `pagerless-session-key` | The HMAC-SHA256 session signing key, in `token` mode only; kept across `helm uninstall`. |
 | `Secret` | `pagerless-credentials` | Every documented key present and empty; omitted when `credentials.existingSecret` is set. |
+| `Ingress` | `pagerless-server` | Rendered only when `ingress.enabled` is true. |
 | `ServiceAccount` | `pagerless-server` | Holds the read identity. |
 | `ServiceAccount` | `pagerless-agent` | Bound to no Role or ClusterRole; never automounts a token. |
 | `ClusterRole`, `ClusterRoleBinding` | `<release>-pagerless-read` | Cluster-wide mode only. |
@@ -45,9 +48,10 @@ Job.
 No rule grants `update`, `patch`, `create`, or `delete` on a workload, Event, or
 Node, or any of `pods/exec`, `pods/attach`, `pods/portforward`,
 `pods/ephemeralcontainers`, `serviceaccounts/token`, `*/scale`, `impersonate`,
-`escalate`, or `bind`. Secret access is limited to `get` on
-`pagerless-credentials` and `pagerless-admin-secret`, and `update`/`patch` on
-`pagerless-credentials`, all by `resourceNames`.
+`escalate`, or `bind`. Secret access is limited to `get`, `update`, and `patch` on
+`pagerless-credentials`, by `resourceNames`, and the rule is omitted when a
+secret manager owns the Secret. The bootstrap token and session signing key are
+read from their mounted volumes, so they need no API grant.
 
 A Go test compares the rendered rules with a checked-in allowlist and fails when
 a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-identity.md).
@@ -70,7 +74,19 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `rbac.watchAllNamespaces` | `true` | Cluster-wide read role. Mutually exclusive with `watchNamespaces`. |
 | `rbac.watchNamespaces` | `[]` | Allowlist; one read Role per entry. Needs `watchAllNamespaces: false`. |
 | `approvers.subjects` | `[]` | Optional binding of `pagerless-approver`; empty renders no binding. |
-| `credentials.existingSecret` | `""` | An externally managed Secret; the chart renders none. |
+| `auth.mode` | `token` | `token` or `disabled`; nothing else is accepted. |
+| `auth.adminSecret.create` | `true` | Render the bootstrap token Secret; set false to supply it out of band. |
+| `auth.adminSecret.name` | `pagerless-admin-secret` | The Secret that holds the bootstrap token. |
+| `auth.adminSecret.key` | `token` | The key inside that Secret. |
+| `auth.adminSecret.length` | `48` | Length of the generated token. |
+| `auth.adminSecret.keep` | `true` | Keep the token Secret across `helm uninstall`. |
+| `auth.session.secretName` | `pagerless-session-key` | The session signing key Secret. |
+| `auth.session.key` | `key` | The key inside that Secret; rotating it signs every session out. |
+| `auth.session.ttl` | `8h` | Lifetime of a signed session cookie. |
+| `auth.session.secure` | `""` | Cookie Secure attribute; empty derives it from `dashboard.baseUrl`. |
+| `auth.bearerToken` | `false` | Accept a Bearer bootstrap token on `/api/*` for scripted calls. |
+| `auth.proxy.identityHeader` | `""` | Trusted header that names the operator in `disabled` mode. |
+| `credentials.existingSecret` | `""` | An externally managed Secret; the chart renders none and the settings are read-only. |
 | `credentials.secretName` | `pagerless-credentials` | The Secret the chart creates and the Deployment mounts. |
 | `credentials.mountPath` | `/var/run/pagerless/credentials` | Read-only mount path. |
 | `connectors.seed` | `[]` | Connector entries persisted into `pagerless-connectors`. |
@@ -78,8 +94,14 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `persistence.storageClassName` | `""` | Empty uses the cluster default. |
 | `persistence.accessModes` | `[ReadWriteOnce]` | |
 | `service.type` | `ClusterIP` | |
-| `service.port` | `8080` | The report API port. |
-| `dashboard.baseUrl` | `http://localhost:8080` | Browser-facing URL used by the Portal once it is served. |
+| `service.port` | `8080` | The Portal port. |
+| `service.reportPort` | `8082` | The agent report API port, separate from the Portal. |
+| `dashboard.baseUrl` | `http://localhost:8080` | Browser-facing Portal URL; scopes the session cookie. |
+| `ingress.enabled` | `false` | Render an Ingress in front of the Portal. |
+| `ingress.className` | `""` | Ingress class. |
+| `ingress.host` | `""` | Optional host. |
+| `ingress.annotations` | `{}` | Ingress annotations. |
+| `ingress.tls` | `[]` | Ingress TLS entries. |
 | `resources` | requests `50m`/`64Mi`, limit `256Mi` | |
 | `podSecurityContext`, `securityContext` | non-root, read-only root, all capabilities dropped | |
 | `replicaCount` | `1` | The server is the single writer of Page status. |
@@ -87,8 +109,16 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 
 ## Notes
 
-- The v2.0 chart shell serves the agent report API and the metrics API. The
-  Portal and its sign-in arrive with the authentication and Portal slices, which
-  add their values and their Secret.
+- `NOTES.txt` prints the port-forward, the exact command that decodes the
+  bootstrap token, the onboarding steps at `/settings`, and the command that
+  deletes the bootstrap Secret once sign-in succeeds. In `disabled` mode it
+  prints a warning block instead; with an external Secret it prints the required
+  key names and the read-only guidance.
 - `helm template` fails with a clear message on an impossible watch
-  configuration, so a partially applied mode cannot be installed.
+  configuration and on `auth.mode: disabled` with an Ingress but no identity
+  header, so neither can be installed by accident.
+- An unaudited `helm install --set auth.adminPassword=…` fails schema
+  validation: `values.schema.json` declares `additionalProperties: false` on
+  every object and contains no property that carries secret material.
+- The bootstrap token and the session signing key are generated once and reused
+  on upgrade through `lookup`, so an upgrade does not rotate either.
