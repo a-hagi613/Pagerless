@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -506,22 +505,6 @@ func (a *Auth) Logout() http.Handler {
 		}
 		a.clearSessionCookie(w)
 		w.WriteHeader(http.StatusNoContent)
-	})
-}
-
-// SignIn handles GET /login for browser navigation. In disabled mode it redirects
-// to /; in token mode it serves a minimal HTML sign-in fallback when the SPA
-// does not intercept /login.
-func (a *Auth) SignIn() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if a.mode == ModeDisabled {
-			http.Redirect(w, r, "/", http.StatusSeeOther)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-store")
-		_, _ = io.WriteString(w, `<!doctype html><html lang="en"><head><meta charset="utf-8">`+
-			`<title>Pagerless Sign In</title></head><body><div id="root">Sign in to Pagerless</div></body></html>`)
 	})
 }
 

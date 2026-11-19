@@ -31,13 +31,18 @@ that, and passes the authentication settings explicitly:
 
 | Route | What it does |
 | --- | --- |
-| `/` | Lists Pages, most recent first, and refreshes them. It starts from the latest history snapshot of every Page and overlays the live resource, so a terminal Page whose resource the retention controller deleted still appears. |
-| `/pages/{name}` | Shows the live steps, Findings with their sources, the Diagnosis, the Proposal with its rendered change, the pull request, the Verification checks, and the Narrative. While the Page is `Proposed` it shows the Approve and Reject controls. |
-| `/start` | Starts a Page for a chosen Deployment or StatefulSet, with an optional Hint. A Page whose Fingerprint already has an Active Page returns that Page instead of starting a second one. |
-| `/login` | The sign-in form. In `disabled` mode it redirects to `/`. |
+| `/` | The cluster view: a dismissible quickstart, the health matrix, and the severity-ordered inbox. A card expands in place into the root cause, Findings, the live trace, the stored Proposal diff, the pull request, and the decision controls. The list refreshes on a timer. |
+| `/settings` | The AI endpoint, the Target Repository, and the Connector credentials, with masked fingerprints, a test action, and `managedBy: external` read-only rendering. An installation that is still onboarding is sent here. |
+| `/login` | The bootstrap-token exchange the Portal renders. `auth.mode: disabled` never reaches it. |
 
-The Variant C Portal adds `/settings`, the onboarding destination that reads and
-writes the credentials Secret. The remaining routes are documented above.
+The namespace and node tiles are the filter control: a tile narrows the inbox to
+its scope, the inbox states that scope in words, and the 40 px brand lockup
+clears every filter. There is no separate cluster endpoint: a tile's status and
+counts are the Pages whose Target is in that scope.
+
+The Variant C Portal replaces the earlier Pages table and the separate Page
+detail and Start Page routes; the inline card carries the same record and opens
+a Page for any supported Target kind.
 
 ## API
 
@@ -46,7 +51,7 @@ writes the credentials Secret. The remaining routes are documented above.
 | `GET /api/auth/session` | The signed-in subject, whether the caller may decide, the authentication mode, and the CSRF token. `/api/session` remains an alias for the embedded Portal. |
 | `POST /api/auth/login` | Exchanges `{token}` for a signed session cookie. |
 | `POST /api/auth/logout` | Revokes the session and clears the cookie. `/logout` remains an alias. |
-| `GET /api/pages` | Page summaries, filtered by `phase`, `target`, `trigger`, and `since`. |
+| `GET /api/pages` | Page summaries, filtered by `phase`, `target`, `trigger`, and `since`; each row carries the Page's `severity`, its `proposalHash`, and its `pullRequest` so a card needs no second read. |
 | `GET /api/pages/{name}` | One Page record, from the live resource or from history. |
 | `GET /api/pages/{name}/events` | Server-Sent Events: steps, Phase changes, and a final snapshot, with a comment every 15 seconds so an idle stream stays open. `/trace` is an alias. |
 | `POST /api/pages` | Starts a Page for `{target, hint}` or `{kind, namespace, name, hint}`. |
@@ -54,6 +59,7 @@ writes the credentials Secret. The remaining routes are documented above.
 | `GET /api/targets` | The Deployments and StatefulSets that Start Page offers. |
 | `GET /api/settings` | The masked credentials: `{configured, fingerprint, updatedAt}` per key, the owner, and whether onboarding is required. |
 | `PATCH /api/settings` | Merges `{values}` or the grouped `{ai, repository, connectors}` form into the credentials Secret. |
+| `POST /api/settings/test` | Probes `{target}` (`ai`, `github`, or `connector:<name>`) with the stored credentials and returns `{ok, detail}`. |
 | `DELETE /api/settings/{key}` | Clears one credential key. |
 | `GET /api/version` | The server version and authentication mode. |
 | `GET /healthz`, `GET /readyz` | On the health port. `/readyz` stays `200` and lists the subsystems that still need onboarding. |

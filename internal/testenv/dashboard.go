@@ -80,13 +80,6 @@ func (a *fakeAuth) User(r *http.Request) *dashboardapi.User {
 	return &copied
 }
 
-// SignIn implements dashboardapi.Auth.
-func (a *fakeAuth) SignIn() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	})
-}
-
 // ValidateCSRF implements dashboardapi.Auth. The harness signs a user in
 // without a browser, so it compares the CSRF token directly.
 func (a *fakeAuth) ValidateCSRF(r *http.Request, user *dashboardapi.User) bool {

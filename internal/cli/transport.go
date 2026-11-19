@@ -409,6 +409,30 @@ func (s *session) writeSettings(ctx context.Context, values map[string]string) (
 	}, nil
 }
 
+// settingsTestResult is the body of POST /api/settings/test.
+type settingsTestResult struct {
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// testSetting probes one configured dependency. The probe runs in the server's
+// network with the credentials the Secret holds, so it is available in server
+// mode only.
+func (s *session) testSetting(ctx context.Context, target string) (settingsTestResult, error) {
+	if s.api == nil {
+		return settingsTestResult{}, usagef(
+			"config test needs --server: the probe runs in the server's network with the stored credentials")
+	}
+	var result settingsTestResult
+	body := struct {
+		Target string `json:"target"`
+	}{Target: target}
+	if err := s.api.do(ctx, http.MethodPost, "/api/settings/test", body, &result); err != nil {
+		return settingsTestResult{}, err
+	}
+	return result, nil
+}
+
 // clearSetting empties one credential key.
 func (s *session) clearSetting(ctx context.Context, key string) (serverSettings, error) {
 	if s.api != nil {

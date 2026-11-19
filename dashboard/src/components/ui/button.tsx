@@ -1,23 +1,28 @@
-import type { ComponentProps } from "react";
 import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
+import type { ComponentProps } from "react";
 
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-[color,background-color,border-color] disabled:pointer-events-none disabled:opacity-60 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-sky-700 text-white hover:bg-sky-800",
-        outline: "border border-slate-300 bg-white text-slate-800 hover:bg-slate-100",
-        ghost: "text-slate-700 hover:bg-slate-200",
-        link: "text-sky-700 underline-offset-4 hover:underline",
+        default: "bg-primary text-primary-foreground hover:bg-primary-hover",
+        secondary: "border border-border bg-secondary text-secondary-foreground hover:bg-accent",
+        outline: "border border-border-strong bg-card text-foreground hover:bg-accent",
+        ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+        destructive: "border border-destructive/40 bg-danger-surface text-destructive hover:bg-destructive/15",
+        link: "text-mint underline-offset-4 hover:underline",
       },
       size: {
         default: "h-9 px-3",
-        sm: "h-8 px-2.5 text-xs",
+        sm: "h-8 px-2.5 text-sm",
+        xs: "h-7 gap-1 px-2 text-xs",
+        lg: "h-10 px-4",
         icon: "size-9",
+        "icon-sm": "size-8",
       },
     },
     defaultVariants: {
@@ -36,11 +41,7 @@ function Button({
 }: ComponentProps<"button"> & VariantProps<typeof buttonVariants> & { asChild?: boolean }) {
   const Component = asChild ? Slot : "button";
   return (
-    <Component
-      data-slot="button"
-      className={cn(buttonVariants({ variant, size }), className)}
-      {...props}
-    />
+    <Component data-slot="button" className={cn(buttonVariants({ variant, size }), className)} {...props} />
   );
 }
 

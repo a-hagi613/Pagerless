@@ -2,6 +2,7 @@ package dashboardapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +27,9 @@ const (
 	testNamespace = "pagerless"
 	testSecret    = "pagerless-credentials"
 	testCSRF      = "csrf-token"
+	testSession   = "session"
+	testSigned    = "signed"
+	testAIBaseURL = "testAIBaseURL"
 )
 
 // fakeAuth signs in one user when the request carries its cookie.
@@ -42,7 +46,6 @@ func (fakeAuth) ValidateCSRF(r *http.Request, user *dashboardapi.User) bool {
 	return r.Header.Get("X-CSRF-Token") == user.CSRF
 }
 
-func (fakeAuth) SignIn() http.Handler { return http.NotFoundHandler() }
 func (fakeAuth) Login() http.Handler  { return http.NotFoundHandler() }
 func (fakeAuth) Logout() http.Handler { return http.NotFoundHandler() }
 func (fakeAuth) Mode() string         { return "token" }
@@ -97,14 +100,20 @@ func newHandler(t *testing.T, external string) (*dashboardapi.Handler, client.Cl
 // request performs one API call with a session and its CSRF token.
 func request(t *testing.T, handler http.Handler, method, body string) (*httptest.ResponseRecorder, []byte) {
 	t.Helper()
+	return requestPath(t, handler, method, "/api/settings", body)
+}
+
+// requestPath performs one API call against an explicit path.
+func requestPath(t *testing.T, handler http.Handler, method, path, body string) (*httptest.ResponseRecorder, []byte) {
+	t.Helper()
 	var reader *strings.Reader
 	if body == "" {
 		reader = strings.NewReader("")
 	} else {
 		reader = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, "/api/settings", reader)
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req := httptest.NewRequest(method, path, reader)
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	if method != http.MethodGet {
 		req.Header.Set("X-CSRF-Token", testCSRF)
 	}
@@ -117,7 +126,7 @@ func TestSettingsMasksEveryCredential(t *testing.T) {
 	t.Parallel()
 	handler, _ := newHandler(t, "")
 	rec, body := request(t, handler, http.MethodPatch,
-		`{"ai":{"apiKey":"sk-super-secret","baseUrl":"https://models.example/v1","model":"novalite"}}`)
+		fmt.Sprintf(`{"ai":{"apiKey":"sk-super-secret","baseUrl":%q,"model":"novalite"}}`, testAIBaseURL))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH /api/settings = %d: %s", rec.Code, body)
 	}
@@ -143,7 +152,7 @@ func TestSettingsMasksEveryCredential(t *testing.T) {
 	if !answer.Onboarding {
 		t.Error("onboarding is complete although no Target Repository is configured")
 	}
-	if answer.AI.BaseURL != "https://models.example/v1" {
+	if answer.AI.BaseURL != testAIBaseURL {
 		t.Errorf("ai.baseUrl = %q, want the non-secret value", answer.AI.BaseURL)
 	}
 	if !answer.Fields[credentials.KeyAIAPIKey].Configured {
@@ -194,9 +203,9 @@ func TestBothSurfacesWriteTheIdenticalKeySet(t *testing.T) {
 
 	// The Portal path: one grouped PATCH, exactly what the settings form posts.
 	rec, body := request(t, apiHandler, http.MethodPatch,
-		`{"ai":{"apiKey":"sk-1","baseUrl":"https://models.example/v1","model":"m"},
+		fmt.Sprintf(`{"ai":{"apiKey":"sk-1","baseUrl":%q,"model":"m"},
 		  "repository":{"owner":"acme","repo":"shop","token":"ghp_1"},
-		  "connectors":[{"name":"loki","token":"loki-token"}]}`)
+		  "connectors":[{"name":"loki","token":"loki-token"}]}`, testAIBaseURL))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH /api/settings = %d: %s", rec.Code, body)
 	}
@@ -220,7 +229,7 @@ func TestBothSurfacesWriteTheIdenticalKeySet(t *testing.T) {
 	}
 	if _, err := cliStore.Write(t.Context(), map[string]string{
 		credentials.KeyAIAPIKey:               "sk-1",
-		credentials.KeyAIBaseURL:              "https://models.example/v1",
+		credentials.KeyAIBaseURL:              "testAIBaseURL",
 		credentials.KeyAIModel:                "m",
 		credentials.KeyGitHubToken:            "ghp_1",
 		credentials.KeyGitHubRepo:             "acme/shop",
@@ -266,7 +275,7 @@ func TestSettingsWritesRequireASessionAndCSRF(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"values":{"AI_API_KEY":"x"}}`))
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -283,5 +292,152 @@ func TestUnknownSettingKeyIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "unknown credential key") {
 		t.Errorf("error = %s, want it to name the unknown key", body)
+	}
+}
+
+// TestTheOnboardingWizardConvergesOnTheCLIKeySet writes the same three sections the Portal's onboarding
+// wizard writes, in the order an operator fills them in, and asserts the Secret ends with exactly the
+// key set `kubectl page config set` writes in one pass.
+func TestTheOnboardingWizardConvergesOnTheCLIKeySet(t *testing.T) {
+	t.Parallel()
+	apiHandler, apiClient := newHandler(t, "")
+
+	steps := []string{
+		`{"ai":{"baseUrl":"testAIBaseURL","model":"m","apiKey":"sk-1"}}`,
+		`{"repository":{"owner":"acme","repo":"shop","token":"ghp_1"}}`,
+		`{"connectors":[{"name":"loki","token":"loki-token"}]}`,
+	}
+	for _, step := range steps {
+		rec, body := request(t, apiHandler, http.MethodPatch, step)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PATCH %s = %d: %s", step, rec.Code, body)
+		}
+	}
+
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	secretMeta := metav1.ObjectMeta{Namespace: testNamespace, Name: testSecret}
+	cliSecret := &corev1.Secret{
+		ObjectMeta: secretMeta,
+		Data:       map[string][]byte{},
+	}
+	for _, key := range credentials.Keys() {
+		cliSecret.Data[key] = []byte("")
+	}
+	cliClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cliSecret).Build()
+	cliStore, err := credentials.New(credentials.Config{
+		Client: cliClient, Namespace: testNamespace, SecretName: testSecret,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cliStore.Write(t.Context(), map[string]string{
+		credentials.KeyAIBaseURL:              "testAIBaseURL",
+		credentials.KeyAIModel:                "m",
+		credentials.KeyAIAPIKey:               "sk-1",
+		credentials.KeyGitHubRepo:             "acme/shop",
+		credentials.KeyGitHubToken:            "ghp_1",
+		credentials.ConnectorTokenKey("loki"): "loki-token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var fromAPI, fromCLI corev1.Secret
+	if err := apiClient.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: testSecret}, &fromAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := cliClient.Get(t.Context(), client.ObjectKey{Namespace: testNamespace, Name: testSecret}, &fromCLI); err != nil {
+		t.Fatal(err)
+	}
+	apiKeys, cliKeys := make([]string, 0, len(fromAPI.Data)), make([]string, 0, len(fromCLI.Data))
+	for key := range fromAPI.Data {
+		apiKeys = append(apiKeys, key)
+	}
+	for key := range fromCLI.Data {
+		cliKeys = append(cliKeys, key)
+	}
+	slices.Sort(apiKeys)
+	slices.Sort(cliKeys)
+	if !slices.Equal(apiKeys, cliKeys) {
+		t.Fatalf("the wizard's incremental writes produced a different key set:\nwizard %v\nCLI    %v", apiKeys, cliKeys)
+	}
+}
+
+// TestSettingsTestProbesEachTarget exercises the test action with a real HTTP server standing in for the
+// provider, so the answer reflects an actual request and not a hard-coded result.
+func TestSettingsTestProbesEachTarget(t *testing.T) {
+	t.Parallel()
+	var answered []string
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		answered = append(answered, r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/models"):
+			if r.Header.Get("Authorization") != "Bearer sk-1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/shop"):
+			if r.Header.Get("Authorization") != "Bearer ghp_1" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer provider.Close()
+
+	handler, _ := newHandler(t, "")
+	rec, body := request(t, handler, http.MethodPatch, `{
+		"ai":{"baseUrl":"`+provider.URL+`","model":"m","apiKey":"sk-1"},
+		"repository":{"owner":"acme","repo":"shop","token":"ghp_1","apiUrl":"`+provider.URL+`"},
+		"connectors":[{"name":"loki","token":"loki-token"}]
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, body)
+	}
+
+	for _, test := range []struct {
+		target string
+		want   bool
+	}{
+		{"ai", true},
+		{"github", true},
+		{"connector:loki", true},
+		{"connector:prometheus", false},
+	} {
+		rec, body := requestPath(t, handler, http.MethodPost, "/api/settings/test", `{"target":"`+test.target+`"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("POST /api/settings/test %s = %d: %s", test.target, rec.Code, body)
+		}
+		var answer struct {
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		}
+		if err := json.Unmarshal(body, &answer); err != nil {
+			t.Fatal(err)
+		}
+		if answer.OK != test.want {
+			t.Errorf("%s: ok = %v, want %v (%s)", test.target, answer.OK, test.want, answer.Detail)
+		}
+	}
+	if !slices.Contains(answered, "/models") || !slices.Contains(answered, "/repos/acme/shop") {
+		t.Errorf("the probes reached %v, want the model list and the repository", answered)
+	}
+}
+
+func TestSettingsTestRefusesAnUnknownTarget(t *testing.T) {
+	t.Parallel()
+	handler, _ := newHandler(t, "")
+	rec, body := requestPath(t, handler, http.MethodPost, "/api/settings/test", `{"target":"cluster"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /api/settings/test = %d, want 400: %s", rec.Code, body)
+	}
+	if !strings.Contains(string(body), "settings_test_target") {
+		t.Errorf("error = %s, want settings_test_target", body)
 	}
 }

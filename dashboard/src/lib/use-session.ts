@@ -1,13 +1,11 @@
 import { useContext } from "react";
 
-import type { Session } from "./api";
-import { SessionContext } from "./session-context";
+import { SessionContext, type SessionState } from "./session-context";
 
-// useSession returns the signed-in user. It must be called below the provider.
-export function useSession(): Session {
-  const session = useContext(SessionContext);
-  if (session === null) {
-    throw new Error("useSession requires a SessionProvider");
+export function useSession(): SessionState {
+  const state = useContext(SessionContext);
+  if (state === null) {
+    throw new Error("useSession must be used inside SessionProvider");
   }
-  return session;
+  return state;
 }

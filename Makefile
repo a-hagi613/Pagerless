@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
 
 
 help: ## List the available targets.
@@ -45,6 +45,10 @@ test: test-go test-agent ## Run the Go and Python test suites.
 
 test-go: ## Run the Go test suite, including the envtest and chart suites.
 	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" go test $(GO_TEST_FLAGS) ./...
+
+portal-e2e: dashboard-build ## Run the Portal browser suite against the real pagerless-server.
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" \
+		PAGERLESS_PORTAL_E2E=1 go test -count=1 -run TestPortalBrowserFlows ./internal/server
 
 test-agent: ## Run the Python test suite.
 	cd agent && uv run --locked pytest -c pyproject.toml tests

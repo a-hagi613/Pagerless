@@ -3,9 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <title>Pagerless</title>
+    <title>Pagerless — cluster pages</title>
+    <script>
+      // Resolve Light, Dark, or System before the first paint so the Portal never flashes the other
+      // palette. The stored choice wins; ?theme= is a per-load override for screenshots and deep links
+      // and is never persisted.
+      (() => {
+        const root = document.documentElement;
+        const stored = (() => {
+          try {
+            return window.localStorage.getItem("pagerless.theme");
+          } catch {
+            return null;
+          }
+        })();
+        const override = new URLSearchParams(window.location.search).get("theme");
+        const theme =
+          override === "light" || override === "dark" || override === "system"
+            ? override
+            : stored === "light" || stored === "dark" || stored === "system"
+              ? stored
+              : "system";
+        const dark =
+          theme === "dark" ||
+          (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        root.classList.remove("light", "dark");
+        root.classList.add(dark ? "dark" : "light");
+        root.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -19,6 +19,7 @@ kubectl page approve <page>      approve the displayed Proposal hash
 kubectl page reject <page>       reject it (synonym: dismiss)
 kubectl page config get          print the masked settings
 kubectl page config set …        write one section of the credentials Secret
+kubectl page config test …       probe one configured dependency
 kubectl page config unset <KEY>  clear one credential key
 kubectl page login               store a session for server mode
 kubectl page version             print build, expected chart, and mode
@@ -119,7 +120,14 @@ rejection is final: the Page ends as Rejected, and a new attempt is a new Page.
 | `config set github` | `--github-repo`, `--github-api-url`, and the token from the same sources. |
 | `config set connector --name <name>` | The connector's `CONNECTOR_<NAME>_TOKEN`. |
 | `config set server` | Stores a session; the same as `login`. |
+| `config test --target ai\|github\|connector:<name>` | Runs the settings route's connection test in the server's network; server mode only. |
 | `config unset <KEY>` | Clears one key without touching the others. |
+
+`config test` probes what the credentials Secret owns. For `ai` it reads the
+endpoint's model list, for `github` it reads the configured repository, and for
+a Connector it confirms the token is stored and well formed: a Connector's type,
+endpoint, and enablement are deployment configuration, not credentials. The
+command exits `1` when the probe refuses.
 
 A write merges only the submitted keys. When `credentials.existingSecret` names
 an externally managed Secret, every write is refused with `409`, the manager's
