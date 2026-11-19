@@ -1,26 +1,41 @@
-import { AlertTriangle, Inbox } from "lucide-react";
+import { CircleCheck, CircleExclamationPoint, Info } from "lucide-react";
 import type { ReactNode } from "react";
 
-import { Card, CardContent } from "./ui/card";
+import { cn } from "@/lib/utils";
 
-export function ErrorNotice({ children }: { children: ReactNode }) {
-  return (
-    <Card className="border-rose-200 bg-rose-50">
-      <CardContent className="flex items-start gap-2 text-sm text-rose-800">
-        <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-        <div role="alert">{children}</div>
-      </CardContent>
-    </Card>
-  );
-}
+type Tone = "info" | "success" | "error";
 
-export function EmptyNotice({ children }: { children: ReactNode }) {
+const toneStyle: Record<Tone, string> = {
+  info: "border-info/40 bg-info-surface text-foreground",
+  success: "border-primary/40 bg-primary-soft text-primary-soft-foreground",
+  error: "border-destructive/40 bg-danger-surface text-destructive",
+};
+
+const toneIcon = {
+  info: Info,
+  success: CircleCheck,
+  error: CircleExclamationPoint,
+};
+
+// Errors and results render inline, beside the control that caused them. Neither the Portal nor the
+// settings page raises a dialog for a refusal.
+export function Notice({
+  tone = "info",
+  children,
+  className,
+}: {
+  tone?: Tone;
+  children: ReactNode;
+  className?: string;
+}) {
+  const Icon = toneIcon[tone];
   return (
-    <Card>
-      <CardContent className="flex flex-col items-center gap-2 py-10 text-center text-sm text-slate-500">
-        <Inbox aria-hidden="true" className="size-6 text-slate-400" />
-        <div>{children}</div>
-      </CardContent>
-    </Card>
+    <p
+      role={tone === "error" ? "alert" : "status"}
+      className={cn("flex items-start gap-2 rounded-md border px-3 py-2 text-sm leading-relaxed", toneStyle[tone], className)}
+    >
+      <Icon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <span className="min-w-0">{children}</span>
+    </p>
   );
 }

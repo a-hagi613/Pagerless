@@ -8,7 +8,7 @@ function Input({ className, type, ...props }: ComponentProps<"input">) {
       type={type}
       data-slot="input"
       className={cn(
-        "h-9 w-full min-w-0 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-sm text-slate-900 shadow-xs transition-colors placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-50",
+        "h-9 w-full min-w-0 rounded-md border border-input bg-card px-2.5 py-1 text-sm text-foreground transition-colors placeholder:text-muted-foreground hover:border-border-strong focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-70 read-only:bg-muted",
         className,
       )}
       {...props}
@@ -16,4 +16,17 @@ function Input({ className, type, ...props }: ComponentProps<"input">) {
   );
 }
 
-export { Input };
+function Textarea({ className, ...props }: ComponentProps<"textarea">) {
+  return (
+    <textarea
+      data-slot="textarea"
+      className={cn(
+        "min-h-16 w-full resize-y rounded-md border border-input bg-card px-2.5 py-1.5 text-sm text-foreground transition-colors placeholder:text-muted-foreground hover:border-border-strong focus-visible:border-ring disabled:cursor-not-allowed disabled:opacity-70",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+export { Input, Textarea };
