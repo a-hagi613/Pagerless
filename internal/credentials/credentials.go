@@ -172,6 +172,10 @@ type Config struct {
 	// externally managed Secret is read from the mounted volume instead, but the
 	// client is still needed to report its absence.
 	Client client.Client
+	// Reader reads the Secret for a merge. It defaults to Client. The server
+	// passes its uncached reader, because a merge that read a stale object would
+	// conflict on every write that follows another one.
+	Reader client.Reader
 	// Namespace is the release namespace. It is required.
 	Namespace string
 	// SecretName is the credentials Secret. It is required.
@@ -191,6 +195,7 @@ type Config struct {
 // Store reads the masked credentials and writes the Secret.
 type Store struct {
 	client          client.Client
+	reader          client.Reader
 	namespace       string
 	secretName      string
 	externalManager string
@@ -217,8 +222,13 @@ func New(cfg Config) (*Store, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	reader := cfg.Reader
+	if reader == nil {
+		reader = cfg.Client
+	}
 	return &Store{
 		client:          cfg.Client,
+		reader:          reader,
 		namespace:       cfg.Namespace,
 		secretName:      cfg.SecretName,
 		externalManager: strings.TrimSpace(cfg.ExternalManager),
@@ -383,7 +393,7 @@ func (s *Store) Clear(ctx context.Context, keys []string) (View, error) {
 func (s *Store) secret(ctx context.Context) (*corev1.Secret, error) {
 	var secret corev1.Secret
 	key := client.ObjectKey{Namespace: s.namespace, Name: s.secretName}
-	if err := s.client.Get(ctx, key, &secret); err != nil {
+	if err := s.reader.Get(ctx, key, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, &MissingError{Secret: s.secretName}
 		}

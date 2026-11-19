@@ -318,6 +318,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 
 	credentialsStore, err := credentials.New(credentials.Config{
 		Client:          mgr.GetClient(),
+		Reader:          mgr.GetAPIReader(),
 		Namespace:       cfg.Namespace,
 		SecretName:      cfg.CredentialsSecretName,
 		ExternalManager: cfg.CredentialsExternalManager,
