@@ -39,7 +39,7 @@ export const CLI_VERBS: readonly CliVerb[] = [
     id: "list",
     group: "Pages",
     invocation: "kubectl page list --phase Proposed",
-    description: "Prints the same rows, order, and columns the inbox renders.",
+    description: "Prints the same rows, order, and columns the inbox renders, narrowed by phase when asked.",
   },
   {
     id: "get",
@@ -80,7 +80,7 @@ export const CLI_VERBS: readonly CliVerb[] = [
   {
     id: "config-test",
     group: "Setup",
-    invocation: "kubectl page config test --target ai|github|connector:<name>",
+    invocation: "kubectl page config test --server <url> --target ai|github|connector:<name>",
     description: "Runs the same connection test the settings buttons run.",
   },
   {
