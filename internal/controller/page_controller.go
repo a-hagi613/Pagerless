@@ -50,6 +50,9 @@ type PageReconciler struct {
 	// Evidence assembles the Page's Context Bundle before its agent Job starts.
 	// It is optional; when it is nil the Page starts with no stored bundle.
 	Evidence EvidenceCollector
+	// Runtime refreshes the model endpoint from the credentials Secret, so a
+	// settings write takes effect on the next Page. It is optional.
+	Runtime RuntimeSource
 }
 
 // EvidenceCollector assembles and stores the Context Bundle of a Page. The
@@ -166,7 +169,7 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 			evidence = bundle.Summary()
 		}
 	}
-	job := AgentJob(p, r.Job)
+	job := AgentJob(p, r.Runtime.jobConfig(ctx, r.Job))
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own agent Job: %w", err)
 	}

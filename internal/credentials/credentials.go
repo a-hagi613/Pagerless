@@ -183,8 +183,14 @@ type Config struct {
 	// ExternalManager is the name of the secret manager that owns SecretName.
 	// Empty means the Secret is Pagerless's.
 	ExternalManager string
+	// ReadThroughAPI reads an externally managed Secret through the Kubernetes
+	// API instead of the mounted volume. The server leaves it false, because it
+	// holds no Secret RBAC when a manager owns the Secret; the CLI sets it true,
+	// because it runs outside the pod with the operator's kubeconfig.
+	ReadThroughAPI bool
 	// MountPath is where the Secret is mounted, keyed by file name. It is read
-	// when ExternalManager is set, because the server holds no Secret RBAC then.
+	// when ExternalManager is set and ReadThroughAPI is false, because the server
+	// holds no Secret RBAC then.
 	MountPath string
 	// Now returns the current time. It defaults to time.Now.
 	Now func() time.Time
@@ -200,6 +206,7 @@ type Store struct {
 	secretName      string
 	externalManager string
 	mountPath       string
+	readThroughAPI  bool
 	now             func() time.Time
 	logger          *slog.Logger
 }
@@ -233,21 +240,24 @@ func New(cfg Config) (*Store, error) {
 		secretName:      cfg.SecretName,
 		externalManager: strings.TrimSpace(cfg.ExternalManager),
 		mountPath:       strings.TrimSpace(cfg.MountPath),
+		readThroughAPI:  cfg.ReadThroughAPI,
 		now:             now,
 		logger:          logger,
 	}, nil
 }
 
 // Hermetic reports whether the Secret's state comes from the mounted volume
-// rather than the API. It is true exactly when a secret manager owns it.
+// rather than the API. It is true exactly when a secret manager owns the Secret
+// and the caller cannot read it through the API.
 func (s *Store) Hermetic() bool {
-	return s.externalManager != ""
+	return s.externalManager != "" && !s.readThroughAPI
 }
 
 // Read returns the current values, keyed by Secret key. A caller must not echo
-// a value. In external mode the values come from the mounted volume.
+// a value. A hermetic, externally managed Secret is read from the mounted
+// volume.
 func (s *Store) Read(ctx context.Context) (map[string]string, error) {
-	if s.externalManager != "" {
+	if s.Hermetic() {
 		return s.readMounted()
 	}
 	secret, err := s.secret(ctx)
@@ -406,7 +416,7 @@ func (s *Store) secret(ctx context.Context) (*corev1.Secret, error) {
 // external mode. The mounted volume is wrapped in a Secret-shaped value so the
 // masking code is shared.
 func (s *Store) secretForView(ctx context.Context) (*corev1.Secret, error) {
-	if s.externalManager == "" {
+	if !s.Hermetic() {
 		return s.secret(ctx)
 	}
 	values, err := s.readMounted()

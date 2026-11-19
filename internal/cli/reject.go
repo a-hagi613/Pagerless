@@ -33,7 +33,6 @@ new Page, optionally with a hint.`,
 	cmd.Flags().StringVar(&o.reason, "reason", "", "why the Proposal is rejected (required)")
 	cmd.Flags().StringVar(&o.by, "by", "",
 		"identity to record in kubeconfig mode (default: the kubeconfig user; server mode records the session user)")
-	_ = cmd.MarkFlagRequired("reason")
 	return cmd
 }
 

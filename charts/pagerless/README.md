@@ -15,19 +15,20 @@ helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
 | --- | --- | --- |
 | `CustomResourceDefinition` | `pages.pagerless.dev` | Installed from `crds/`; Helm never upgrades it. |
 | `Deployment` | `pagerless-server` | One replica, `Recreate`, because it is the single writer of Page status. |
-| `Service` | `pagerless-server` | ClusterIP on the chart's `service.port`. |
+| `Service` | `pagerless-server` | `ClusterIP` by default; `service.type` changes it. |
 | `PersistentVolumeClaim` | `pagerless-data` | The append-only Page history. |
-| `ConfigMap` | `pagerless-config` | Non-secret server configuration. |
-| `ConfigMap` | `pagerless-connectors` | The connector catalogue that `connectors.seed` declares. |
+| `ConfigMap` | `pagerless-config` | Non-secret server and CLI configuration: the allowlist and the credentials Secret's name and manager. |
+| `ConfigMap` | `pagerless-connectors` | The catalogue rendered from `connectors.*`. |
 | `Secret` | `pagerless-admin-secret` | The bootstrap token, in `token` mode only; kept across `helm uninstall` unless `auth.adminSecret.keep` is false. |
 | `Secret` | `pagerless-session-key` | The HMAC-SHA256 session signing key, in `token` mode only; kept across `helm uninstall`. |
-| `Secret` | `pagerless-credentials` | Every documented key present and empty; omitted when `credentials.existingSecret` is set. |
+| `Secret` | `pagerless-credentials` | Every fixed credential key and the four webhook tokens, present and empty; omitted when `credentials.existingSecret` is set. |
+| `NetworkPolicy` | `pagerless-agent-egress` | The agent Job's two-destination egress policy; `agentEgress.enabled` controls it. |
 | `Ingress` | `pagerless-server` | Rendered only when `ingress.enabled` is true. |
 | `ServiceAccount` | `pagerless-server` | Holds the read identity. |
 | `ServiceAccount` | `pagerless-agent` | Bound to no Role or ClusterRole; never automounts a token. |
 | `ClusterRole`, `ClusterRoleBinding` | `<release>-pagerless-read` | Cluster-wide mode only. |
 | `Role`, `RoleBinding` | `<release>-pagerless-read` | One per entry in `rbac.watchNamespaces`, in allowlist mode. |
-| `Role`, `RoleBinding` | `pagerless-server` | Pages, agent Jobs, and the two named Secrets in the release namespace. |
+| `Role`, `RoleBinding` | `pagerless-server` | Pages, the agent Jobs, and the credentials Secret in the release namespace. |
 | `Role` | `pagerless-approver` | `get`/`list`/`watch` and `patch` on `pages`. |
 | `RoleBinding` | `pagerless-approvers` | Rendered only when `approvers.subjects` is set. |
 
@@ -65,6 +66,7 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `images.server.pullPolicy` | `IfNotPresent` | |
 | `images.agent.repository` | `ghcr.io/a-hagi613/pagerless-agent` | Agent Job image. |
 | `images.agent.tag` | `""` | Empty uses `Chart.appVersion`. |
+| `images.agent.pullPolicy` | `IfNotPresent` | |
 | `images.pullSecrets` | `[]` | Names of imagePullSecrets in the release namespace. |
 | `serviceAccount.create` | `true` | Render the server ServiceAccount. |
 | `serviceAccount.name` | `pagerless-server` | Fixed; the RBAC and documented checks refer to it. |
@@ -86,10 +88,22 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `auth.session.secure` | `""` | Cookie Secure attribute; empty derives it from `dashboard.baseUrl`. |
 | `auth.bearerToken` | `false` | Accept a Bearer bootstrap token on `/api/*` for scripted calls. |
 | `auth.proxy.identityHeader` | `""` | Trusted header that names the operator in `disabled` mode. |
-| `credentials.existingSecret` | `""` | An externally managed Secret; the chart renders none and the settings are read-only. |
+| `credentials.existingSecret` | `""` | An externally managed Secret; the chart renders no credentials Secret and the settings are read-only. |
 | `credentials.secretName` | `pagerless-credentials` | The Secret the chart creates and the Deployment mounts. |
 | `credentials.mountPath` | `/var/run/pagerless/credentials` | Read-only mount path. |
-| `connectors.seed` | `[]` | Connector entries persisted into `pagerless-connectors`. |
+| `connectors.logs.nativeKubernetes.enabled` | `true` | Mandatory; the chart refuses to render it as false. |
+| `connectors.logs.nativeKubernetes.tailLines`, `limitBytes`, `sinceSeconds`, `maxPods`, `maxContainersPerPod`, `concurrency` | `500`, `262144`, `3600`, `5`, `4`, `8` | Bounds of the native log collector. |
+| `connectors.logs.<backend>.enabled` | `false` | `loki`, `grafana`, `cloudwatchLogs`, `datadogLogs`, `opensearch`, `mcp`. |
+| `connectors.metrics.<backend>.enabled` | `false` | `prometheus`, `grafana`, `cloudwatch`, `datadog`, `mcp`. |
+| `connectors.alertState.<backend>.enabled` | `false` | `alertmanager`, `grafana`. |
+| `connectors.<backend>.*` | empty | Each disabled Connector takes its own `url`, query or template, bounds, and `auth` reference. |
+| `connectors.subject.rules` | `[]` | Alert-to-Target extraction rules. |
+| `connectors.redaction.patterns` | `[]` | Sanitization patterns applied before a bundle is stored. |
+| `connectors.alerting.snsTopics` | `[]` | The only SNS topics the receiver accepts; empty refuses every delivery. |
+| `connectors.alerting.verifySNSSignature` | `false` | Verify the SNS signature. |
+| `connectors.alerting.maxAlerts`, `requestsPerSecond`, `burst` | `50`, `10`, `20` | Receiver bounds. |
+| `connectors.allowedHosts` | `[]` | When set, the only hosts a Connector may reach. |
+| `connectors.clusterName`, `connectors.environment` | `""` | Values substituted for `{{ .ClusterName }}` and `{{ .Environment }}`. |
 | `persistence.size` | `1Gi` | History claim size. |
 | `persistence.storageClassName` | `""` | Empty uses the cluster default. |
 | `persistence.accessModes` | `[ReadWriteOnce]` | |
@@ -103,6 +117,8 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `ingress.annotations` | `{}` | Ingress annotations. |
 | `ingress.tls` | `[]` | Ingress TLS entries. |
 | `resources` | requests `50m`/`64Mi`, limit `256Mi` | |
+| `agentEgress.enabled` | `true` | Render the agent Job's egress NetworkPolicy. |
+| `agentEgress.modelPort` | `443` | The only remote port the agent Job may reach. |
 | `podSecurityContext`, `securityContext` | non-root, read-only root, all capabilities dropped | |
 | `replicaCount` | `1` | The server is the single writer of Page status. |
 | `nodeSelector`, `tolerations`, `affinity`, `podAnnotations`, `podLabels`, `commonLabels`, `commonAnnotations` | empty | Standard scheduling and labelling. |

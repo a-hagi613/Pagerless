@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -270,9 +271,9 @@ func (c Config) validate() error {
 	if c.Sandbox.URL != "" {
 		switch {
 		case c.GitHubRepository == "":
-			return errors.New("a GitHub repository is required when a Sandbox is configured")
+			return errors.New("a GitHub repository is required when a Target Repository is configured")
 		case c.GitHubToken == nil:
-			return errors.New("a GitHub token source is required when a Sandbox is configured")
+			return errors.New("a GitHub token source is required when a Target Repository is configured")
 		}
 	}
 	return nil
@@ -370,6 +371,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure the credentials store: %w", err)
 	}
+	runtimeSource := newRuntimeSource(credentialsStore)
 
 	historyStore, err := history.Open(cfg.HistoryPath)
 	if err != nil {
@@ -451,6 +453,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals:    proposals,
 		Clock:        cfg.Clock,
 		PollInterval: cfg.ProposalPollInterval,
+		Runtime:      runtimeSource,
 	}
 	pages.Evidence = setup.assembler
 	if err := pages.SetupWithManager(mgr); err != nil {
@@ -503,6 +506,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			Deadline:       int64(cfg.NarrativeDeadline.Seconds()),
 			Runtime:        cfg.AgentRuntime,
 		},
+		Runtime: runtimeSource,
 	}
 	if err := verifications.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the verification controller: %w", err)
@@ -583,6 +587,29 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	return mgr, nil
 }
 
+// newRuntimeSource reads the model endpoint from the credentials Secret when a
+// Job is created, so a settings write through the Portal or the CLI reaches the
+// next Page without a Deployment restart. The chart's environment variables are
+// the fallback for a Secret that does not carry the keys.
+func newRuntimeSource(store *credentials.Store) controller.RuntimeSource {
+	return func(
+		ctx context.Context, fallback controller.AgentRuntimeConfig,
+	) controller.AgentRuntimeConfig {
+		values, err := store.Read(ctx)
+		if err != nil {
+			return fallback
+		}
+		resolved := fallback
+		if value, ok := values[credentials.KeyAIBaseURL]; ok {
+			resolved.ModelBaseURL = strings.TrimSpace(value)
+		}
+		if value, ok := values[credentials.KeyAIModel]; ok {
+			resolved.ModelName = strings.TrimSpace(value)
+		}
+		return resolved
+	}
+}
+
 // cacheOptions returns the manager's cache configuration. Pages and the objects
 // the page lifecycle reads stay in the release namespace, while the watcher's
 // observed kinds are cached across the namespaces the installation may read: a
@@ -640,6 +667,8 @@ func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Pag
 	if before.Status.Phase == after.Status.Phase {
 		return
 	}
+	logf.FromContext(ctx).Info("Page phase changed",
+		"page", after.Name, "from", before.Status.Phase, "to", after.Status.Phase)
 	if err := r.history.AppendSnapshot(ctx, after, now); err != nil {
 		logf.FromContext(ctx).Error(err, "record the Page snapshot", "page", after.Name)
 	}

@@ -123,6 +123,9 @@ func (p *Publisher) push(ctx context.Context, tr *v1alpha1.Page, branch string) 
 	if change == nil {
 		return errors.New("the Page's Proposal holds no rendered change")
 	}
+	if tr.Status.Proposal.Base == nil || tr.Status.Proposal.Base.Commit == "" {
+		return errors.New("the Page's Proposal records no base commit, so it cannot be published")
+	}
 	token, err := p.cfg.Token()
 	if err != nil {
 		return fmt.Errorf("read the GitHub token: %w", err)

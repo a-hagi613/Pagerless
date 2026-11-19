@@ -327,6 +327,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ProposalPollInterval:     o.proposalPoll,
 		PullRequestPollInterval:  o.pullRequestPoll,
 		ArgoCDURL:                env.ArgoCD.URL,
+		ArgoCDApplication:        ArgoCDApplication,
 		ArgoCDToken:              func() (string, error) { return env.ArgoCD.Token(), nil },
 		AlertmanagerURL:          env.Alertmanager.URL,
 		AlertmanagerToken:        o.alertToken,

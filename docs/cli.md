@@ -45,8 +45,8 @@ kubectl page version             print build, expected chart, and mode
 | `--release-namespace` | `pagerless` | Namespace that holds Pages and the credentials Secret. |
 | `--mode` | `kubeconfig`, or `server` when `--server` is given | Transport. |
 | `--server` | empty | Portal base URL; implies `--mode server`. |
-| `--config` | `${XDG_CONFIG_HOME:-~/.config}/pagerless/config.yaml` | Local configuration file. |
-| `--credentials-secret` | `pagerless-credentials` | Secret written by `config` in kubeconfig mode. |
+| `--config` | `${XDG_CONFIG_HOME:-~/.config}/pagerless/config.yaml`, or `$PAGERLESS_CONFIG` | Local configuration file. |
+| `--credentials-secret` | `pagerless-credentials` | Secret written by `config` in kubeconfig mode; overrides the name in `pagerless-config`. |
 
 The local configuration holds only a server URL and an optional session token,
 is written with mode `0600`, and never contains an AI or repository credential.
@@ -125,7 +125,7 @@ rejection is final: the Page ends as Rejected, and a new attempt is a new Page.
 | `config set ai` | `--ai-base-url`, `--ai-model`, and the API key from a prompt, stdin, a file, or an env file. |
 | `config set github` | `--github-repo`, `--github-api-url`, and the token from the same sources. |
 | `config set connector --name <name>` | The connector's `CONNECTOR_<NAME>_TOKEN`. |
-| `config set server` | Stores a session; the same as `login`. |
+| `config set server` | Stores a session; the same as `login`, and needs `--server` the first time. |
 | `config test --target ai\|github\|connector:<name>` | Runs the settings route's connection test in the server's network; server mode only. |
 | `config unset <KEY>` | Clears one key without touching the others. |
 
@@ -136,8 +136,11 @@ endpoint, and enablement are deployment configuration, not credentials. The
 command exits `1` when the probe refuses.
 
 A write merges only the submitted keys. When `credentials.existingSecret` names
-an externally managed Secret, every write is refused with `409`, the manager's
-name, and exit code `3`, and no write is attempted.
+an externally managed Secret, the chart records the manager in the
+`pagerless-config` ConfigMap; every write is then refused with `409`, the
+manager's name, and exit code `3`, and no write is attempted. The CLI reads the
+ConfigMap with the operator's kubeconfig, so a caller who cannot read it falls
+back to `--credentials-secret`.
 
 ### Secrets are never flags
 
@@ -156,8 +159,9 @@ manifest.
 
 Exchanges the bootstrap token from `pagerless-admin-secret` for a session and
 stores the server URL and the session in the local configuration with mode
-`0600`. The token is read from the same four sources as a credential and is
-never stored. The command prints the step that deletes the bootstrap Secret.
+`0600`. The first sign-in needs `--server <url>`; later runs reuse the stored
+URL. The token is read from the same four sources as a credential and is never
+stored. The command prints the step that deletes the bootstrap Secret.
 
 ## `kubectl page version`
 

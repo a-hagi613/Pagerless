@@ -8,11 +8,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/a-hagi613/pagerless/internal/verification"
 )
 
 const (
 	// ArgoCDApplication is the application that the fake Argo CD serves, as in a cluster.
-	ArgoCDApplication = "sandbox"
+	ArgoCDApplication = verification.DefaultApplication
 	// ArgoCDToken is the only bearer token that the fake Argo CD accepts.
 	ArgoCDToken = "argocd_fake_api_token"
 	// errorKey and statusKey are the JSON keys that the fakes repeat across their responses.

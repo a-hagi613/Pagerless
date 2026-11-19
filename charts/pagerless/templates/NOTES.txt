@@ -3,6 +3,11 @@ Pagerless {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespac
 The cluster identity is read-only. Pagerless reads failures and proposes every
 remediation as a pull request; it never writes to a workload, Event, or Node.
 
+This release diagnoses Pages and records decisions. It does not yet open the
+Pull Request that carries an approved Proposal, because the chart does not wire
+the Target Repository into the pull-request reconciler. The README's Current
+limitation note is the source of truth for that gap.
+
 {{- if .Values.rbac.watchAllNamespaces }}
 
 Watching: every namespace through ClusterRole {{ .Release.Name }}-pagerless-read.
@@ -48,6 +53,8 @@ and are read-only in the Portal and in the CLI. Required keys:
   AI_BASE_URL, AI_API_KEY, AI_MODEL
   GITHUB_TOKEN, GITHUB_REPO
   GITHUB_API_URL                       (optional, for GitHub Enterprise)
+  ALERTMANAGER_WEBHOOK_TOKEN, GRAFANA_WEBHOOK_SECRET,
+  DATADOG_WEBHOOK_TOKEN, GENERIC_WEBHOOK_TOKEN  (one per enabled webhook dialect)
   CONNECTOR_<NAME>_TOKEN              (one per configured connector)
 {{- else }}
 

@@ -20,10 +20,21 @@ import (
 const (
 	testNamespace = "pagerless"
 	testSecret    = "pagerless-credentials"
+	testAPIKey    = "sk-test"
 )
 
 // newStore builds a store over a fake client that holds secret.
 func newStore(t *testing.T, secret *corev1.Secret, external string) (*credentials.Store, client.Client) {
+	t.Helper()
+	return newStoreWith(t, secret, external, false)
+}
+
+// newStoreWith builds a store and chooses whether an externally managed Secret
+// is read through the API, as the CLI does, or from a mounted volume, as the
+// server does.
+func newStoreWith(
+	t *testing.T, secret *corev1.Secret, external string, readThroughAPI bool,
+) (*credentials.Store, client.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -39,6 +50,7 @@ func newStore(t *testing.T, secret *corev1.Secret, external string) (*credential
 		Namespace:       testNamespace,
 		SecretName:      testSecret,
 		ExternalManager: external,
+		ReadThroughAPI:  readThroughAPI,
 		Now:             func() time.Time { return time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
@@ -122,7 +134,7 @@ func TestAnExternalSecretRefusesEveryWrite(t *testing.T) {
 	t.Parallel()
 	store, cl := newStore(t, emptySecret(), "team-credentials")
 
-	_, err := store.Write(context.Background(), map[string]string{credentials.KeyAIAPIKey: "sk-test"})
+	_, err := store.Write(context.Background(), map[string]string{credentials.KeyAIAPIKey: testAPIKey})
 	var external *credentials.ExternalError
 	if !errors.As(err, &external) {
 		t.Fatalf("error = %v, want an ExternalError", err)
@@ -144,7 +156,7 @@ func TestAMissingSecretIsAMisconfigurationNotACreate(t *testing.T) {
 	t.Parallel()
 	store, cl := newStore(t, nil, "")
 
-	_, err := store.Write(context.Background(), map[string]string{credentials.KeyAIAPIKey: "sk-test"})
+	_, err := store.Write(context.Background(), map[string]string{credentials.KeyAIAPIKey: testAPIKey})
 	if _, ok := errors.AsType[*credentials.MissingError](err); !ok {
 		t.Fatalf("error = %v, want a MissingError", err)
 	}
@@ -200,5 +212,32 @@ func TestClearEmptiesAKeyAndKeepsItPresent(t *testing.T) {
 	}
 	if len(value) != 0 {
 		t.Errorf("cleared value = %q, want empty", value)
+	}
+}
+
+// TestReadThroughAPIViewsAnExternalSecret keeps the CLI able to show a masked,
+// read-only view of a Secret a secret manager owns without a mounted volume.
+func TestReadThroughAPIViewsAnExternalSecret(t *testing.T) {
+	t.Parallel()
+	secret := emptySecret()
+	secret.Data[credentials.KeyAIBaseURL] = []byte("https://models.example/v1")
+	store, _ := newStoreWith(t, secret, "team-credentials", true)
+
+	if store.Hermetic() {
+		t.Error("ReadThroughAPI must not read the mounted volume")
+	}
+	view, err := store.View(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.ManagedBy != "external" || view.Manager != "team-credentials" || view.WriteCredentials {
+		t.Errorf("view = %+v, want an external, read-only view", view)
+	}
+	if !view.Fields[credentials.KeyAIBaseURL].Configured {
+		t.Error("the API-read key is not reported as configured")
+	}
+	if _, err := store.Write(context.Background(),
+		map[string]string{credentials.KeyAIAPIKey: testAPIKey}); !errors.As(err, new(*credentials.ExternalError)) {
+		t.Errorf("write error = %v, want an ExternalError", err)
 	}
 }

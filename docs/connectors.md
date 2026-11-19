@@ -51,6 +51,11 @@ every delivery rather than accepting one anonymously.
 The receiver never confirms an SNS subscription. Confirm it deliberately in the
 AWS console, then add its ARN to `connectors.alerting.snsTopics`.
 
+The four webhook tokens are not part of the Portal settings route or
+`kubectl page config`: they are not AI or repository credentials. Write them to
+the credentials Secret with your secret manager, or with `kubectl` when
+Pagerless owns the Secret, before you enable a dialect.
+
 ## Joining a Page
 
 An alert must carry `pagerless.dev/watch: "true"` (or the v1 `pagerless_triage`

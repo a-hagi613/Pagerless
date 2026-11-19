@@ -106,6 +106,9 @@ type options struct {
 	configPath string
 	// credentialsSecret is the Secret that holds the credentials in kubeconfig mode.
 	credentialsSecret string
+	// credentialsSecretSet reports whether --credentials-secret was given, so it
+	// outranks the name the chart records in pagerless-config.
+	credentialsSecretSet bool
 }
 
 // NewRootCommand returns the kubectl-page command.
@@ -233,6 +236,7 @@ func resolveMode(cmd *cobra.Command, opts *options) error {
 		return usagef("unknown mode %q: use kubeconfig or server", mode)
 	}
 	opts.mode = mode
+	opts.credentialsSecretSet = cmd.Root().PersistentFlags().Changed("credentials-secret")
 	if cmd.Name() == "login" {
 		return nil
 	}

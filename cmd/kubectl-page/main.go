@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 
@@ -15,6 +16,10 @@ func main() {
 	err := cli.NewRootCommand().ExecuteContext(ctx)
 	stop()
 	if err != nil {
-		os.Exit(1)
+		// The root command silences cobra's own error printing so that the exit
+		// code is the only contract, so the message is printed here once and the
+		// documented code is returned to the shell.
+		fmt.Fprintln(os.Stderr, "kubectl-page:", err)
+		os.Exit(cli.ExitCode(err))
 	}
 }

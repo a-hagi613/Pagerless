@@ -148,7 +148,7 @@ func renderProposal(w io.Writer, rec *record) error {
 	case proposal.RenderedChange != nil && proposal.RenderedChange.Patch != "":
 		field("File", proposal.RenderedChange.Path)
 		if proposal.Base != nil {
-			field("Base", fmt.Sprintf("Sandbox commit %s, Target generation %d",
+			field("Base", fmt.Sprintf("Target Repository commit %s, Target generation %d",
 				proposal.Base.Commit, proposal.Base.TargetGeneration))
 		}
 		b.WriteString("\nChange:\n")

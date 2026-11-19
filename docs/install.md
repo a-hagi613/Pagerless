@@ -69,8 +69,9 @@ generates two Secrets:
 - `pagerless-session-key` signs the session cookies. Rotating it signs every
   session out.
 
-Both are kept across `helm uninstall` so a reinstall does not rotate them. Set
-`auth.adminSecret.create=false` in GitOps to supply the token out of band.
+The session key is always kept across `helm uninstall`; the token Secret is kept
+unless `auth.adminSecret.keep=false`. Set `auth.adminSecret.create=false` in
+GitOps to supply the token out of band.
 
 To authenticate with a reverse proxy instead, set `auth.mode: disabled` and
 `auth.proxy.identityHeader`. The chart refuses to render that mode with an
@@ -79,13 +80,18 @@ records the design and [`docs/auth.md`](auth.md) documents the flags.
 
 ## Credentials
 
-The chart pre-creates `pagerless-credentials` with every documented key present
-and empty, so an unconfigured installation is a normal state rather than a
-missing-file error:
+The chart pre-creates `pagerless-credentials` with every fixed key present and
+empty, plus the four webhook tokens, so an unconfigured installation is a normal
+state rather than a missing-file error:
 
 ```
 AI_BASE_URL  AI_API_KEY  AI_MODEL  GITHUB_TOKEN  GITHUB_REPO  GITHUB_API_URL
+ALERTMANAGER_WEBHOOK_TOKEN  GRAFANA_WEBHOOK_SECRET
+DATADOG_WEBHOOK_TOKEN  GENERIC_WEBHOOK_TOKEN
 ```
+
+Connector tokens are not pre-created: write `CONNECTOR_<UPPER_NAME>_TOKEN` for
+each configured Connector.
 
 Finish onboarding at `/settings` in the Portal, or write the same keys from a
 terminal with `kubectl page config set ai` and `kubectl page config set github`.
@@ -98,9 +104,9 @@ helm upgrade --install pagerless ./charts/pagerless -n pagerless \
   --set credentials.existingSecret=team-credentials
 ```
 
-With `credentials.existingSecret` set, the chart renders no Secret at all and the
-Deployment mounts the named one. The Secret must exist before the pod starts,
-and the Portal and the CLI report the settings as read-only.
+With `credentials.existingSecret` set, the chart renders no credentials Secret
+at all and the Deployment mounts the named one. The Secret must exist before the
+pod starts, and the Portal and the CLI report the settings as read-only.
 [`docs/onboarding.md`](onboarding.md) covers each way of filling it, including
 finishing an installation that started without credentials.
 
@@ -114,10 +120,11 @@ kubectl auth can-i update deployments -n shop --as=system:serviceaccount:pagerle
 ```
 
 A healthy installation renders one Deployment, one Service, one
-PersistentVolumeClaim, two ConfigMaps, the two ServiceAccounts, the credentials
-Secret and (in token mode) the two authentication Secrets, and the read
-identity. It renders no identity provider, gateway, database, or MCP server, and
-no admission webhook.
+PersistentVolumeClaim, two ConfigMaps, two ServiceAccounts, one
+NetworkPolicy, the `pages.pagerless.dev` CRD, the credentials Secret (omitted
+with `credentials.existingSecret`) and, in token mode, the two authentication
+Secrets, plus the read identity. It renders no identity provider, gateway,
+database, or MCP server, and no admission webhook.
 
 `make verify-chart` runs the whole matrix on a throwaway kind cluster, builds the
 server image, and deletes the cluster afterwards.
@@ -170,10 +177,10 @@ kubectl delete crd pages.pagerless.dev
 ```
 
 Uninstalling the release removes the credentials Secret the chart created. The
-bootstrap token and session key Secrets carry `helm.sh/resource-policy: keep`, so
-they survive until the namespace is deleted or their `keep` value is false. An
-external secret manager keeps whatever it owns, because the chart never rendered
-that Secret.
+session key always carries `helm.sh/resource-policy: keep`, and the bootstrap
+token Secret carries it unless `auth.adminSecret.keep=false`, so both survive
+until the namespace is deleted or keep is disabled. An external secret manager
+keeps whatever it owns, because the chart never rendered that Secret.
 
 ## Values
 

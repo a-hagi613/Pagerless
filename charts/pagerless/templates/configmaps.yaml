@@ -18,6 +18,10 @@ metadata:
 data:
   PAGERLESS_DASHBOARD_BASE_URL: {{ .Values.dashboard.baseUrl | quote }}
   PAGERLESS_ALLOWED_NAMESPACES: {{ include "pagerless.allowlist" . | quote }}
+  # Read by `kubectl page config` in kubeconfig mode, so the CLI writes the
+  # Secret the Deployment mounts and refuses a Secret an external manager owns.
+  PAGERLESS_CREDENTIALS_SECRET: {{ include "pagerless.credentialsSecret" . | quote }}
+  PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER: {{ .Values.credentials.existingSecret | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

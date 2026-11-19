@@ -49,6 +49,9 @@ type VerificationReconciler struct {
 	PollInterval time.Duration
 	// NarrativeJob configures the Job that writes the Narrative of a concluded Page.
 	NarrativeJob AgentJobConfig
+	// Runtime refreshes the model endpoint from the credentials Secret, so a
+	// settings write takes effect on the next Narrative. It is optional.
+	Runtime RuntimeSource
 }
 
 // SetupWithManager registers the reconciler for Pages and the Jobs it watches.
@@ -254,7 +257,7 @@ func (r *VerificationReconciler) ensureNarrative(ctx context.Context, p *v1alpha
 	if p.Status.Narrative != "" {
 		return nil
 	}
-	job := NarrativeJob(p, r.NarrativeJob)
+	job := NarrativeJob(p, r.Runtime.jobConfig(ctx, r.NarrativeJob))
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own the Narrative Job: %w", err)
 	}

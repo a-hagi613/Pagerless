@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -73,6 +74,21 @@ type AgentJobConfig struct {
 	Deadline int64
 	// Runtime configures the model endpoint and the budgets.
 	Runtime AgentRuntimeConfig
+}
+
+// RuntimeSource returns the model settings to record in a Job, so that a
+// settings write through the Portal or the CLI takes effect on the next Page
+// without restarting pagerless-server. It receives the startup configuration
+// and may return it unchanged when the credentials Secret has no override.
+type RuntimeSource func(ctx context.Context, fallback AgentRuntimeConfig) AgentRuntimeConfig
+
+// jobConfig returns the Job configuration with the current model settings.
+func (r RuntimeSource) jobConfig(ctx context.Context, cfg AgentJobConfig) AgentJobConfig {
+	if r == nil {
+		return cfg
+	}
+	cfg.Runtime = r(ctx, cfg.Runtime)
+	return cfg
 }
 
 // jobSpec is what distinguishes the investigation Job from the Narrative Job.

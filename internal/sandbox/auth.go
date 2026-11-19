@@ -27,10 +27,11 @@ func (r Repository) readEnvironment() ([]string, error) {
 		}
 		token, err := r.ReadToken()
 		if err != nil {
-			return nil, fmt.Errorf("read the Sandbox token: %w", err)
+			return nil, fmt.Errorf("read the Target Repository token: %w", err)
 		}
 		if token == "" || strings.ContainsAny(token, "\x00\r\n\t ") {
-			return nil, errors.New("the Sandbox read token must be nonempty and contain no spaces, tabs, CR, LF, or NUL")
+			return nil, errors.New(
+				"the Target Repository read token must be nonempty and contain no spaces, tabs, CR, LF, or NUL")
 		}
 		credentials := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		config = append(config, [2]string{
@@ -52,7 +53,8 @@ func readURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
 		u.RawQuery != "" || u.Fragment != "" || u.Path == "" || path.Clean(u.Path) != strings.TrimSuffix(u.Path, "/") {
-		return nil, errors.New("a Sandbox read token requires a clean HTTPS URL without credentials, query, or fragment")
+		return nil, errors.New(
+			"a Target Repository read token requires a clean HTTPS URL without credentials, query, or fragment")
 	}
 	return u, nil
 }

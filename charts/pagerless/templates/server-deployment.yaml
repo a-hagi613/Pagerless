@@ -69,7 +69,7 @@ spec:
             {{- if not .Values.rbac.watchAllNamespaces }}
             - --watcher-node-pages-mode=ignore
             {{- end }}
-            - --sandbox-url=
+            - --target-repository-url=
             - --argocd-url=
             - --alertmanager-url=
             - --connectors-config=/etc/pagerless/connectors/connectors.yaml

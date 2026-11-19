@@ -16,6 +16,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
@@ -47,10 +49,10 @@ const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
 const defaultAlertmanagerTokenFile = "/var/run/pagerless/alertmanager/token"
 
 // defaultAdminTokenFile is where the chart mounts the bootstrap token Secret.
-const defaultAdminTokenFile = "/var/run/pagerless/auth/admin-token"
+const defaultAdminTokenFile = "/var/run/pagerless/auth/admin/token"
 
 // defaultSessionKeyFile is where the chart mounts the session signing key Secret.
-const defaultSessionKeyFile = "/var/run/pagerless/auth/session-key"
+const defaultSessionKeyFile = "/var/run/pagerless/auth/session/session-key"
 
 // defaultCredentialsMountPath is where the chart mounts the credentials Secret.
 const defaultCredentialsMountPath = "/var/run/pagerless/credentials"
@@ -130,11 +132,11 @@ func run() error {
 		agentDeadline     = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
 		narrativeDeadline = flag.Duration("narrative-deadline", server.DefaultNarrativeDeadline,
 			"active deadline of a Narrative Job")
-		sandboxURL = flag.String("sandbox-url", os.Getenv("PAGERLESS_TARGET_REPOSITORY_URL"),
+		sandboxURL = flag.String("target-repository-url", os.Getenv("PAGERLESS_TARGET_REPOSITORY_URL"),
 			"git URL of the Target Repository; the git-backed Actions are accepted only when it is set")
-		sandboxBranch = flag.String("sandbox-branch", "main",
+		sandboxBranch = flag.String("target-repository-branch", "main",
 			"branch of the Target Repository that pull requests target")
-		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
+		sandboxReadTokenFile = flag.String("target-repository-read-token-file", "",
 			"optional file that holds the read-only token for the HTTPS Target Repository")
 		patchable = flag.String("patch-namespaces", os.Getenv("PAGERLESS_ALLOWED_NAMESPACES"),
 			"comma-separated namespaces whose Targets PatchResources and Rollback may change")
@@ -153,7 +155,7 @@ func run() error {
 		githubAPIURL = flag.String("github-api-url", github.DefaultGitHubAPI,
 			"base URL of the Target Repository's GitHub API")
 		githubRepository = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
-			"owner/name of the Target Repository; empty derives it from --sandbox-url")
+			"owner/name of the Target Repository; empty derives it from --target-repository-url")
 		githubTokenFile = flag.String("github-token-file", defaultGitHubTokenFile,
 			"file that holds the write-scoped token that publishes a Proposal")
 		argoCDURL = flag.String("argocd-url", "",
@@ -247,9 +249,9 @@ func run() error {
 	if envDashboardBaseURL := strings.TrimSpace(os.Getenv("PAGERLESS_DASHBOARD_BASE_URL")); envDashboardBaseURL != "" {
 		*dashboardBaseURL = envDashboardBaseURL
 	}
-	restConfig, err := ctrl.GetConfig()
+	restConfig, err := loadKubernetesConfig()
 	if err != nil {
-		return fmt.Errorf("load Kubernetes configuration: %w", err)
+		return err
 	}
 	ctx := ctrl.SetupSignalHandler()
 
@@ -340,6 +342,15 @@ func run() error {
 			SessionTTL:     *authSessionTTL,
 		}
 		cfg.DashboardListener = dashboardListener
+		if strings.EqualFold(strings.TrimSpace(*authMode), dashboardauth.ModeDisabled) {
+			// The chart refuses an Ingress without an identity header, but a
+			// port-forward or an in-cluster caller can still reach the anonymous
+			// approval surface, so the running server says so once at startup.
+			ctrl.Log.WithName("setup").Info(
+				"WARNING: auth.mode=disabled records every decision as anonymous or as the identity header; "+
+					"expose the Portal only behind an authenticating proxy",
+				"identityHeader", *authIdentityHeader)
+		}
 	}
 	if *watcherEnabled {
 		watchConfig, err := watcherConfig(*watcherInclude, *watcherExclude, *kubeSystemMode, *nodePagesMode,
@@ -360,6 +371,34 @@ func run() error {
 		return fmt.Errorf("run manager: %w", err)
 	}
 	return nil
+}
+
+// loadKubernetesConfig returns the client configuration: the in-cluster
+// ServiceAccount when the pod supplies one, otherwise the kubeconfig named by
+// --kubeconfig, $KUBECONFIG, or the default path. The check runs before the
+// controller-runtime loader so that an operator who started the binary by hand
+// gets one actionable line instead of a logged stack trace.
+func loadKubernetesConfig() (*rest.Config, error) {
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" && os.Getenv("KUBERNETES_SERVICE_PORT") != "" {
+		config, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf(
+				"load the in-cluster Kubernetes configuration from the ServiceAccount token: %w", err)
+		}
+		return config, nil
+	}
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig := flag.Lookup("kubeconfig"); kubeconfig != nil {
+		rules.ExplicitPath = kubeconfig.Value.String()
+	}
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		rules, &clientcmd.ConfigOverrides{}).ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"no Kubernetes configuration: run pagerless-server inside a cluster with a ServiceAccount token "+
+				"(the chart does this), or point --kubeconfig or $KUBECONFIG at a kubeconfig: %w", err)
+	}
+	return config, nil
 }
 
 // parsePatchBounds validates the resource quantities supplied through the server's flags.
