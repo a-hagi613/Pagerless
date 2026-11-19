@@ -147,12 +147,32 @@ from standard input, from a file, or from an env file.`,
 			}
 			values := map[string]string{}
 			var wanted []string
+			interactive := !source.chosen() && stdinIsTerminal(cmd.InOrStdin())
 			switch args[0] {
 			case "ai":
+				if interactive {
+					base, err := promptVisible(cmd, credentials.KeyAIBaseURL)
+					if err != nil {
+						return err
+					}
+					model, err := promptVisible(cmd, credentials.KeyAIModel)
+					if err != nil {
+						return err
+					}
+					putIfSet(values, credentials.KeyAIBaseURL, base)
+					putIfSet(values, credentials.KeyAIModel, model)
+				}
 				putIfSet(values, credentials.KeyAIBaseURL, aiBaseURL)
 				putIfSet(values, credentials.KeyAIModel, aiModel)
 				wanted = []string{credentials.KeyAIAPIKey}
 			case "github":
+				if interactive {
+					repo, err := promptVisible(cmd, credentials.KeyGitHubRepo)
+					if err != nil {
+						return err
+					}
+					putIfSet(values, credentials.KeyGitHubRepo, repo)
+				}
 				putIfSet(values, credentials.KeyGitHubRepo, githubRepo)
 				putIfSet(values, credentials.KeyGitHubAPIURL, githubAPIURL)
 				wanted = []string{credentials.KeyGitHubToken}

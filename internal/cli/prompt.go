@@ -125,6 +125,17 @@ func promptSecrets(cmd *cobra.Command, wanted []string) (map[string]string, erro
 	return values, nil
 }
 
+// promptVisible reads one non-secret line from the terminal, such as a base
+// URL or a model name.
+func promptVisible(cmd *cobra.Command, label string) (string, error) {
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: ", label)
+	line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if err != nil && line == "" {
+		return "", fmt.Errorf("read %s: %w", label, err)
+	}
+	return strings.TrimSpace(line), nil
+}
+
 // stdinIsTerminal reports whether the input is an interactive terminal.
 func stdinIsTerminal(in io.Reader) bool {
 	file, ok := in.(*os.File)
