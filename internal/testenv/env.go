@@ -92,7 +92,7 @@ type Env struct {
 	Clock *clocktesting.FakeClock
 	// Sandbox is a local bare git repository that stands in for the Sandbox.
 	Sandbox *BareRepo
-	// GitHub is the fake GitHub API that pagerless-executor opens pull requests on. Its repository is Sandbox.
+	// GitHub is the fake GitHub API the pull-request writer opens requests on. Its repository is Sandbox.
 	GitHub *FakeGitHub
 	// ArgoCD is the fake Argo CD API that pagerless-server asks whether the merged change is synced.
 	ArgoCD *FakeArgoCD
@@ -173,8 +173,8 @@ func WithRetentionPollInterval(d time.Duration) Option {
 	return func(o *options) { o.retentionPoll = d }
 }
 
-// Start runs the API server, installs the manifests of pagerless-server and
-// pagerless-executor, and runs both. It stops everything when the test ends.
+// Start runs the API server, installs the manifests of pagerless-server, and
+// runs it. It stops everything when the test ends.
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
 	o := options{
