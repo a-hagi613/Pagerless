@@ -1,0 +1,16 @@
+{
+  "status": "firing",
+  "name": "PVCAlmostFull",
+  "fingerprint": "generic-pvc-orders",
+  "severity": "warning",
+  "startsAt": "2026-11-16T12:04:00Z",
+  "labels": {
+    "namespace": "shop",
+    "persistentvolumeclaim": "orders-data",
+    "pagerless.dev/workload-kind": "PersistentVolumeClaim",
+    "pagerless.dev/workload-name": "orders-data",
+    "pagerless.dev/watch": "true"
+  },
+  "annotations": {"summary": "orders-data is 92% full"},
+  "message": "orders-data is 92% full"
+}
