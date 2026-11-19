@@ -1,191 +1,181 @@
 <p align="center">
-  <img src="docs/assets/pagerless-icon.png" alt="Pagerless" width="96" height="96">
+  <img src="docs/assets/pagerless-mascot.png" alt="Pagerless mascot: a dark handheld terminal with a green smiling screen and a >_ key" width="128">
 </p>
 
 <h1 align="center">Pagerless</h1>
 
 <p align="center">
-  <strong>A standalone, read-only Kubernetes remediation operator that proposes every change as a pull request and never writes to your cluster.</strong>
+  <strong>A standalone, read-only Kubernetes remediation operator that turns a failing Target into a diagnosis and one reviewable pull request.</strong>
 </p>
 
-Pagerless watches a Kubernetes cluster for failing **Targets**, diagnoses them
-with an AI agent, and opens a **Pull Request** against the Git repository that
-owns the Target. A human approves one specific **Proposal** hash; the repository's
-own CI decides whether it may merge. The cluster identity is read-only, so a
-compromised model, a wrong diagnosis, or a bug in Pagerless cannot change a
-workload directly.
+<p align="center">
+  <a href="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/a-hagi613/pagerless/releases"><img alt="Release" src="https://img.shields.io/github/v/release/a-hagi613/pagerless?label=release"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/github/license/a-hagi613/pagerless"></a>
+  <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/a-hagi613/pagerless"></a>
+  <a href="https://github.com/a-hagi613/pagerless/pkgs/container/pagerless-server"><img alt="Container image: ghcr.io/a-hagi613/pagerless-server" src="https://img.shields.io/badge/ghcr.io-pagerless--server-2496ED?logo=docker&logoColor=white"></a>
+  <a href="charts/pagerless"><img alt="Chart version: 2.0.0" src="https://img.shields.io/badge/chart-2.0.0-0F1689?logo=helm&logoColor=white"></a>
+</p>
 
-## Quick start
+Kubernetes failures arrive as alerts, and the repair still starts with a human
+reading logs, guessing which repository owns the workload, and writing the patch
+by hand. Pagerless turns that into a **Page**: one investigation of one Target,
+with a diagnosis, the evidence behind it, and a single reviewable **Proposal**.
+A human approves one exact hash, the repository's own CI decides whether the
+change may merge, and nothing in Pagerless can change a workload directly.
 
-Install the operator into one namespace of a cluster you already run:
+## The Portal
+
+The Portal is embedded in `pagerless-server` and reads the same Pages the CLI
+reads, so the two surfaces cannot disagree about a diagnosis or a decision.
+
+<p align="center">
+  <img src="docs/assets/portal-light-1440x900.png" alt="Pagerless Portal in light mode: cluster health tiles for the sandbox, shop, and nodes scopes above an inbox of seven Pages, with Proposed rows offering Review diff and Create PR actions." width="820">
+</p>
+
+<p align="center">
+  <img src="docs/assets/portal-dark-1440x900.png" alt="The same Portal in dark mode, showing the same cluster health tiles and Page inbox." width="820">
+</p>
+
+<p align="center">
+  <img src="docs/assets/portal-light-390x844.png" alt="The Portal at 390 pixels wide: header, quickstart, and the cluster health tiles stacked as cards." width="260">
+</p>
+
+## How it works
+
+1. A Warning Event, a Target status transition, or an authenticated alert from a
+   Connector opens or joins the Page for that failure's Fingerprint.
+2. The server creates an ephemeral agent Job with a per-Page token and a fixed
+   catalogue of read-only tools.
+3. The agent reads logs, Events, metrics, and repository files, and returns a
+   report that cites the evidence it used.
+4. The server validates the Proposal — schema, path policy, identity, and diff
+   bounds — and stores it with a hash.
+5. A human reviews the diff and approves that exact hash in the Portal or with
+   `kubectl page approve`.
+6. The isolated writer opens one branch and one pull request. The repository's
+   CI and reviewers decide the merge; after it, deterministic checks record
+   whether the Target recovered.
+
+```mermaid
+flowchart LR
+  signal["Signal<br/>Event, status, alert"] --> page["Page<br/>one failing Target"]
+  page --> agent["Agent Job<br/>read-only tools"]
+  agent --> proposal["Proposal<br/>validated diff"]
+  proposal --> approval{"Human approval<br/>one hash"}
+  approval --> pr["Pull request<br/>isolated writer"]
+  pr -->|"repository CI"| verify["Verification<br/>code decides"]
+```
+
+Verification is not the model grading itself: the rollout, the GitOps sync, new
+restarts, and the triggering alert are checked by code.
+
+## Install
+
+Pagerless installs into one namespace of a cluster you already run: Kubernetes
+1.30 or later, Helm 3.14 or later, and a default StorageClass.
 
 ```bash
 helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
   --namespace pagerless --create-namespace --version 2.0.0
 ```
 
-Install the `kubectl page` plugin with Krew, or with Homebrew on macOS or Linux:
+The chart and both images (`pagerless-server` and `pagerless-agent`) are
+published at that version. The release job publishes the plugin archives, the
+Krew index entry, and the Homebrew formula from the same tag:
 
 ```bash
 kubectl krew install page
 brew install a-hagi613/tap/kubectl-page
 ```
 
-Then check the installation and open your first Page:
+`kubectl page version` prints the plugin, the chart version it expects, and the
+Go version. [`docs/install.md`](docs/install.md) covers the namespace allowlist,
+an externally managed credentials Secret, the rendered `page.yaml` manifest, and
+uninstall.
 
-```console
-kubectl page version
-kubectl page new deploy/checkout --namespace shop
-kubectl page list
-```
+## One capability, two surfaces
 
-The chart installs one `pagerless-server` Deployment, one Service, one
-`pagerless-data` PersistentVolumeClaim, two ConfigMaps, a ServiceAccount, an
-empty `pagerless-credentials` Secret, the bootstrap token and session key
-Secrets, and exactly one read identity. It installs no database, identity
-provider, message broker, gateway, or admission webhook.
+Every Portal action has one CLI verb and every verb has one Portal path; a test
+fails the build when the two drift. Both read the same `Page` resource, and both
+record the same decision.
 
-The release notes print the sign-in steps: port-forward the Portal, decode the
-bootstrap token, open `/settings`, and finish onboarding. The Portal writes the
-same credentials Secret that `kubectl page config` writes from a terminal, and
-`helm install --set credentials.existingSecret=…` keeps an external secret
-manager as the only writer: both surfaces then report the settings as read-only.
+| Action | Portal | `kubectl page` |
+| --- | --- | --- |
+| Open a Page | **Page a workload** | `kubectl page new deployment/checkout -n shop` |
+| Read the Proposal | **Review diff** | `kubectl page diff <page>` |
+| Approve and open the PR | **Approve & create PR** | `kubectl page approve <page>` |
+| Dismiss a Page | **Dismiss** | `kubectl page dismiss <page> --reason "<why>"` |
+| Read or change settings | **Settings** | `kubectl page config get`, `config set ai` |
 
-[`docs/install.md`](docs/install.md) covers the watch modes and the credentials
-Secret; [`docs/onboarding.md`](docs/onboarding.md) finishes an installation that
-starts without credentials.
+Every command exists in `cmd/kubectl-page`; [`docs/cli.md`](docs/cli.md) lists
+each command, flag, exit code, and the two transports.
 
-## The read-only boundary
+## The safety model
 
-The rendered grant is compared against a checked-in allowlist on every pull
-request, so widening it is a reviewed act:
+Pagerless opens one pull request and never merges it.
 
-- `get`/`list`/`watch` on pods, services, endpoints, endpoint slices,
-  ConfigMaps, PVCs, both Event APIs, `apps` workloads including replica sets,
-  `batch` jobs and cron jobs, ingresses, nodes, and namespaces; `get` on
-  `pods/log`; `get` on `/openapi/v3` for schema validation.
-- The product's own `pages` and `pages/status`, and the agent Jobs, in the
-  release namespace.
-- `get`, `update`, and `patch` on the credentials Secret only, by
-  `resourceNames`. The bootstrap token and session key are read from their
-  mounted volumes, so they need no API grant.
+- **A read-only cluster identity.** The server can `get`, `list`, and `watch`
+  workloads, Events, logs, and the OpenAPI schema, and write only its own Pages,
+  the agent Jobs, one token review per agent call, and the credentials Secret.
+  It has no write verb on any watched workload and no `exec`, `attach`,
+  `port-forward`, `impersonate`, or `bind`. The agent's ServiceAccount holds no
+  RBAC at all.
+- **An isolated writer.** The GitHub credential lives in `internal/github/pr`,
+  which no read path can reach; a dependency test fails if the read client,
+  Validation, the Proposal model, or the Page store gains a route to it. The
+  writer accepts a server-validated Page identity, approval hash, base commit,
+  and file contents, never model text.
+- **A human gate.** A decision binds to the hash the human saw. If the Proposal
+  changes first, the CLI exits `4` and the Portal answers `409
+  proposal_changed`; the repository's CI and reviewers own the merge.
+- **Explicitly out of scope.** No auto-merge, no cluster writes, no exec, and no
+  bundled platform services — no database, identity provider, message broker,
+  gateway, admission webhook, or MCP server — and no sidecar.
 
-There is no `update`, `patch`, `create`, or `delete` on any workload, Event, or
-Node; no `pods/exec`, `pods/attach`, `pods/portforward`, or
-`pods/ephemeralcontainers`; no `serviceaccounts/token`; no `impersonate`,
-`escalate`, or `bind`; no `*/scale`; and no Secret read outside the credentials
-Secret. The evidence is [ADR-0037](docs/adr/0037-read-only-cluster-identity.md),
-a chart test that fails when a rule widens, an envtest authorization matrix, and
-`make verify-chart`, which installs the chart on a throwaway kind cluster and
-runs `kubectl auth can-i` as the server's ServiceAccount.
+The evidence is [ADR-0037](docs/adr/0037-read-only-cluster-identity.md), a chart
+test that fails when a rule widens, and `make verify-chart`, which installs the
+chart on a throwaway kind cluster and runs `kubectl auth can-i` as the server.
 
-## Command line
+## Connectors
 
-`cmd/kubectl-page` builds `kubectl-page`, which kubectl resolves as
-`kubectl page`:
+Native Kubernetes logs are always on. Every other backend is opt-in and
+read-only, configured with a URL, bounds, and an `auth` reference to the
+credentials Secret; alert senders authenticate independently.
 
-```console
-kubectl page new deploy/my-service -n payments   # open a Page for a Target
-kubectl page list                                # the resource's printer columns
-kubectl page get <name> -o yaml                  # the Page record
-kubectl page diff <name>                         # the Proposal against its base
-kubectl page approve <name>                      # bind the displayed hash
-kubectl page reject <name> --reason "<why>"      # close it without a change
-kubectl page config get                          # masked credentials and fingerprints
-kubectl page config set ai                       # write the AI endpoint
-kubectl page login --server https://portal       # store a session for server mode
-kubectl page version                             # version, commit, expected chart
+| Backend | What it contributes |
+| --- | --- |
+| Loki | Log queries. |
+| Grafana | Logs, and metrics through the datasource proxy or unified query API. |
+| CloudWatch | Logs and metrics. |
+| Datadog | Logs and metrics, with a shipped webhook template for alerts. |
+| OpenSearch | Log queries. |
+| Prometheus | Metric queries. |
+| Alertmanager | Firing alerts, authenticated with a bearer token. |
+| Grafana alerting | Firing alerts, authenticated with an HMAC-SHA256 signature. |
+| MCP | Exactly one configured read-only tool per Connector; the tool name never comes from model output. |
 
-```
-
-Commands use the kubeconfig by default and the Portal API with `--mode server`,
-and every run reports which mode it used. No command accepts a secret value as a
-flag: a credential is read from an interactive prompt without echo, standard
-input, a file, or an env file. The exit codes are `0` success, `1` failure, `2`
-invalid command line, `3` a write refused because a secret manager owns the
-credentials Secret, and `4` a Proposal that changed before it was decided.
-
-A decision is an annotation patch on the Page, so it needs only `patch` on
-`pages`; `Role pagerless-approver` grants exactly that. `spec` is immutable and
-`status` is a separate subresource, so a decision cannot change the investigation.
-See [ADR-0031](docs/adr/0031-approval-is-a-decision-on-the-page.md) and
-[`docs/cli.md`](docs/cli.md) for every command, flag, and exit code.
-
-## Release status
-
-This tree is the v2.0 product, and it is a visible break from v1.0:
-
-- **Landed:** the `Page` API (`pages.pagerless.dev/v1alpha1`), the dual-API
-  error watcher, canonical Target resolution, the SQLite Cooldown store, the
-  strictly read-only cluster identity, the standalone single-namespace chart,
-  the decision-on-the-Page approval path, the `kubectl page` CLI, bootstrap-token
-  authentication with signed session cookies, the credentials Secret that the
-  Portal and the CLI write, and the release channel that publishes the plugin,
-  the images, and the chart at one version.
-- **Delivered by the remaining v2.0 slices:** the read-only observability
-  connectors and alert webhooks, the OpenAI-compatible agent and tool broker,
-  the GitOps provenance and pull request engine, and the Variant C Portal.
-
-Until those slices land, an installation watches for failures, opens Pages, and
-serves the Portal and its settings route, but it does not yet diagnose them.
-`Triage` and `TriageApproval` are removed with no alias and no migration: v1
-objects are not converted. [`docs/upgrade.md`](docs/upgrade.md) lists every removed value and the
-replacement path.
-
-## Repository layout
-
-```
-api/          Page CRD types (kubebuilder)
-cmd/          pagerless-server and kubectl-page
-internal/     Go packages: reconcilers, CLI, proposal validation, history, metrics
-agent/        Python investigation agent (uv)
-dashboard/    React Portal served by pagerless-server
-charts/       The standalone Helm chart
-plugins/      The Krew plugin manifest, rendered from the release checksums
-scripts/      The release scripts
-hack/         The development and verification scripts
-docs/         ADRs, installation, and operations documentation
-```
-
-The demo workloads, Terraform, and the GitOps showcase live in
-`a-hagi613/pagerless-sandbox`.
-
-## Development
-
-```bash
-make generate manifests   # deepcopy and the CRDs in charts/pagerless/crds
-make build-cli            # bin/kubectl-page
-make lint-go test-go      # Go lint, unit, envtest, and chart tests
-make lint-agent test-agent
-make dashboard-check dashboard-build
-make brand-assets         # regenerate the marks from docs/assets/pagerless-mascot-source.png
-make validate             # helm lint, render both watch modes, kubeconform
-make verify-chart         # install on a throwaway kind cluster and prove the grant
-make release-check        # goreleaser check and the Krew manifest lint
-make release-snapshot     # the release archives, checksums, SBOMs, and manifest
-```
-
-`make test-go` needs the envtest binaries, which the `Makefile` downloads through
-the pinned `setup-envtest`. `make verify-chart` needs Docker, kind, Helm, and
-kubectl, and deletes its cluster when it finishes. `make release-snapshot` needs
-Go and a network connection for the pinned GoReleaser and Syft binaries; it needs
-no tag, no registry credential, and no GitHub token.
+[`docs/connectors.md`](docs/connectors.md) documents every key, the webhook
+dialects, the subject rules, and the Context Bundle bounds.
 
 ## Documentation
 
-- [GLOSSARY.md](GLOSSARY.md) — the product's vocabulary, used exactly.
-- [docs/adr/](docs/adr/README.md) — the decisions that constrain the design.
-- [docs/install.md](docs/install.md) — installing and configuring the chart.
-- [docs/onboarding.md](docs/onboarding.md) — the paths from an installed chart to
-  a working installation.
-- [docs/auth.md](docs/auth.md) — Portal authentication, sessions, CSRF, and the
-  threat model.
-- [docs/cli.md](docs/cli.md) — every `kubectl page` command, flag, and exit code.
-- [docs/portal.md](docs/portal.md) — the Portal routes and the parity contract.
-- [docs/upgrade.md](docs/upgrade.md) — the v1 to v2 break, in full.
-- [docs/release.md](docs/release.md) — how one tag publishes every artifact.
-- [charts/pagerless/README.md](charts/pagerless/README.md) — every chart value.
+| Page | What it answers |
+| --- | --- |
+| [docs/install.md](docs/install.md) | Prerequisites, watch modes, credentials, verification, uninstall. |
+| [docs/onboarding.md](docs/onboarding.md) | The three ways to fill the credentials Secret. |
+| [docs/auth.md](docs/auth.md) | Bootstrap token, sessions, CSRF, proxy mode, threat model. |
+| [docs/cli.md](docs/cli.md) | Every `kubectl page` command, flag, and exit code. |
+| [docs/portal.md](docs/portal.md) | Portal routes, API, and the parity contract. |
+| [docs/connectors.md](docs/connectors.md) | Evidence Connectors, alert senders, Context Bundles. |
+| [docs/release.md](docs/release.md) | What one tag publishes, and how to verify it. |
+| [docs/upgrade.md](docs/upgrade.md) | The full v1 to v2 break. |
+| [docs/adr/](docs/adr/README.md) | The decisions that constrain the design. |
+| [GLOSSARY.md](GLOSSARY.md) | The vocabulary the code and documentation use exactly. |
+| [charts/pagerless/README.md](charts/pagerless/README.md) | Every chart value and rendered object. |
+
+The documentation index is also published as [`docs/README.md`](docs/README.md).
 
 ## License
 
-[Apache-2.0](LICENSE)
+[Apache-2.0](LICENSE). Issues and pull requests are welcome.
