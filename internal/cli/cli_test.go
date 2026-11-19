@@ -355,7 +355,7 @@ func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
 func TestShowRefusesAnUnknownPage(t *testing.T) {
 	_, kubeconfig := startCluster(t)
 	_, err := execute(t.Context(), kubeconfig, "show", "missing")
-	if err == nil || !strings.Contains(err.Error(), `no Page named "missing" in namespace "pagerless"`) {
+	if err == nil || !strings.Contains(err.Error(), `page "missing" not found in namespace "pagerless"`) {
 		t.Fatalf("show missing: error = %v", err)
 	}
 }

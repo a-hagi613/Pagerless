@@ -410,14 +410,14 @@ export function PageDetailPage() {
                     Reject
                   </Button>
                   <span className="text-xs text-slate-500">
-                    Recorded as {session.username}, verified through Keycloak.
+                    Recorded as {session.username}, the signed-in operator account.
                   </span>
                 </div>
               </>
             ) : (
               <p className="text-sm text-slate-600">
-                Your account is not a member of the Keycloak approvers group, so it can read this Page but not
-                decide it.
+                Your account can read this Page but not decide it. A decision needs <code>patch</code> on Pages;
+                ask the operator to grant it.
               </p>
             )}
           </CardContent>

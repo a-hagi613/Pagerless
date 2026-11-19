@@ -2,6 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
+- **Amended by:** [ADR-0032](0032-single-operator-local-authentication.md)
+
+> Amended in v2.0: the dashboard is the Portal, it embeds no Grafana panels in
+> the v2 contract, and both it and the API authenticate with a bootstrap token
+> and a signed session cookie rather than Keycloak (ADR-0032).
 
 ## Context
 

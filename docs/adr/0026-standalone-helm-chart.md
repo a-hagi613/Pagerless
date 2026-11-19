@@ -6,11 +6,12 @@
 - **Amended by:** [ADR-0032](0032-single-operator-local-authentication.md)
 
 > Amended in v2.0: the chart is now the only install path. `hack/install.sh` runs
-> `helm upgrade --install` and provisions no platform service; Keycloak,
+> `helm upgrade --install` and provisions no platform service; the Executor,
+> admission policies and webhooks, the bundled MCP servers, Keycloak,
 > agentgateway, and their databases are gone (ADR-0030, ADR-0032), and the
 > installer no longer applies CRDs or a values file of its own. The decision
-> below stands, and its references to the v1 installer describe the context it
-> replaced.
+> below stands, and the bullets that describe the v1 control plane record the
+> context it replaced.
 
 ## Context
 
@@ -27,7 +28,7 @@ A cluster install also has a lifecycle problem. The objects the installer create
 - The chart renders the CRDs, ServiceAccounts, release-namespace and per-namespace RBAC, both admission policies, the webhook configurations, the two ConfigMaps, the history claim, the server and Executor Services and Deployments, and the bundled read-only MCP servers. Every container flag is a value rendered into the Deployment's argument list, so no post-render patch exists.
 - The CRDs live in `charts/pagerless/crds/` as byte-identical copies of `deploy/pagerless-server/crds/`. `make manifests` writes both copies, and `make validate` fails when they differ.
 - Cluster-scoped names stay fixed (`pagerless-server`, `pagerless-executor`, `pagerless-server-dry-run-only`, `pagerless-server-agent-jobs`) because the admission policies, webhook configurations, and RBAC refer to each other by name. Only the namespace is a release parameter.
-- `hack/install.sh` keeps its job of provisioning the platform services that outlive a Pagerless release: Keycloak and its realm, agentgateway and the gateway routes, and the integration Secrets. It then runs `helm upgrade --install` with a private temporary values file, applies `charts/pagerless/crds/` directly, and skips chart CRD installation so that removing the release does not remove the CRDs.
+- In v1, `hack/install.sh` provisioned the platform services that outlived a release: Keycloak and its realm, agentgateway and its routes, and the integration Secrets. In v2 it only runs `helm upgrade --install`; the chart creates the bootstrap-token and session-key Secrets itself (ADR-0032).
 - `hack/validate-manifests.sh` lints the chart and validates three renderings through kubeconform: the default live-only mode, GitOps mode with placeholder Secrets, and the installer's own `--dry-run` output.
 - The release workflow publishes the packaged chart to `oci://ghcr.io/a-hagi613/charts` at the tag's version, after the Go, agent, and manifest jobs succeed. `hack/install.sh` and the documentation still install from the checkout.
 - The existing `deploy/` kustomize bases remain, unchanged in behaviour, because `make up`, `make cloud-up`, `make e2e`, and the Argo CD reference stack consume them.
@@ -37,6 +38,6 @@ A cluster install also has a lifecycle problem. The objects the installer create
 - One source of truth for the server and Executor flags. A new flag is added to the chart, the binary, and the kustomize base; the installer no longer needs a matching JSON patch, and a missing value shows up in the rendered chart rather than in a running pod.
 - Two copies of each CRD exist. That is deliberate: a standalone install must not need the kustomize bases, and `make manifests` plus the `cmp` check make drift a validation failure rather than a review responsibility.
 - Helm owns every object it creates. A cluster bootstrapped by an earlier installer holds those objects outside Helm ownership, so an upgrade requires removing the old bases once; `docs/install.md` documents that step. Deleting the release removes the Deployments, RBAC, policies, and webhooks but not the CRDs or the `Triages` they describe.
-- The chart does not install Keycloak, agentgateway, or the integration Secrets, because those are platform services or operator credentials with their own lifecycle. A standalone install is therefore not a single command unless the operator supplies them; `hack/install.sh` remains the path that does.
+- The chart installs no database, identity provider, gateway, or integration Secrets. Credentials live in one Secret that the Portal and the CLI write (ADR-0033), and a standalone install is one command from a bare cluster.
 - The chart's namespace is effectively `pagerless` unless the operator also changes the gateway manifests, which address `mcp-*.pagerless.svc` and read `mcp-client-tokens` from that namespace. Defaulting the chart's values to that namespace keeps the two consistent, and the README states the constraint.
 - The published OCI chart and the repository's `deploy/` stack are two supported artifacts. A change that only updates one of them fails `make validate` (chart) or the reference end-to-end suite (kustomize), so both stay live.
