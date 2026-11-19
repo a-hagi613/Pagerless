@@ -283,6 +283,16 @@ jobs:
             { echo "the installed chart version is not ${VERSION}"; exit 1; }
           grep --quiet --extended-regexp "\"app_version\": *\"${VERSION}\"" <<<"$listing" ||
             { echo "the installed chart appVersion is not ${VERSION}"; exit 1; }
+      # The published install uses credentials.existingSecret, so the chart
+      # renders no Secret rule and the server must be denied every verb on the
+      # named Secret. The same matrix runs against the local chart in the kind
+      # job, in the managed shape.
+      - name: Prove the published chart's read-only grant
+        run: |
+          set -euo pipefail
+          bash hack/verify-read-only-grants.sh --shape existing \
+            --context "kind-${KIND_CLUSTER_NAME}" --namespace pagerless \
+            --secret-name pagerless-credentials
       - name: Download the published plugin manifest and formula
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
