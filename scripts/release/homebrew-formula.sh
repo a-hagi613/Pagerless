@@ -169,7 +169,8 @@ git clone --quiet --depth=1 "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github
 mkdir -p "$work/tap/Formula"
 render_formula >"$work/tap/Formula/kubectl-page.rb"
 
-if git -C "$work/tap" diff --quiet -- Formula/kubectl-page.rb; then
+if git -C "$work/tap" ls-files --error-unmatch Formula/kubectl-page.rb >/dev/null 2>&1 &&
+	git -C "$work/tap" diff --quiet -- Formula/kubectl-page.rb; then
 	echo "Formula/kubectl-page.rb in $tap already describes v${version}; nothing to do."
 	exit 0
 fi
