@@ -13,9 +13,9 @@ import (
 // bodyInput returns a body input with the given number of Findings.
 func bodyInput(findings int) proposal.BodyInput {
 	input := proposal.BodyInput{
-		PageName: "checkout", PageNamespace: "pagerless",
+		PageName: checkoutName, PageNamespace: pageNamespace,
 		Target: v1alpha1.TargetReference{
-			Kind: v1alpha1.TargetKindDeployment, Namespace: "shop", Name: "checkout",
+			Kind: v1alpha1.TargetKindDeployment, Namespace: "shop", Name: checkoutName,
 		},
 		Trigger: v1alpha1.Trigger{
 			Source: v1alpha1.TriggerSourceEvent, Reason: "Unhealthy", Message: "Readiness probe failed",
@@ -23,11 +23,11 @@ func bodyInput(findings int) proposal.BodyInput {
 		Diagnosis: "The memory limit is below the working set.",
 		Resolution: v1alpha1.Resolution{
 			Source: v1alpha1.ResolutionSourceArgoCDTrackingID, Confidence: v1alpha1.ConfidenceExact,
-			Path: "apps/checkout/base/deployment.yaml", EditTarget: "apps/checkout/overlays/prod/replicas.yaml",
+			Path: "apps/checkout/base/deployment.yaml", EditTarget: overlayPath,
 			EditTargetKind: v1alpha1.EditTargetOverlayPatch,
 		},
 		Files: []v1alpha1.FileEdit{{
-			Path:          "apps/checkout/overlays/prod/replicas.yaml",
+			Path:          overlayPath,
 			ContentDigest: strings.Repeat("a", 64),
 			Rationale:     "the overlay that targets the Deployment",
 		}},
@@ -64,7 +64,7 @@ func TestPullRequestBodyHasItsSections(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		"Deployment shop/checkout", "Unhealthy", "The memory limit is below the working set.",
-		"ArgoCDTrackingID", "confidence **exact**", "apps/checkout/overlays/prod/replicas.yaml",
+		"ArgoCDTrackingID", "confidence **exact**", overlayPath,
 		"the overlay that targets the Deployment", v1alpha1.AdmissionNotEvaluated,
 		"**Image**", "Approved by operator@example.com",
 	} {

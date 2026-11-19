@@ -131,8 +131,8 @@ func (c *Client) Tree(ctx context.Context, ref string) (Tree, error) {
 		Tree      []Entry `json:"tree"`
 		Truncated bool    `json:"truncated"`
 	}
-	path := "/repos/" + c.Repository + "/git/trees/" + url.PathEscape(ref) + "?" + query.Encode()
-	if _, err := c.do(ctx, http.MethodGet, path, &answer); err != nil {
+	apiPath := "/repos/" + c.Repository + "/git/trees/" + url.PathEscape(ref) + "?" + query.Encode()
+	if err := c.do(ctx, http.MethodGet, apiPath, &answer); err != nil {
 		return Tree{}, fmt.Errorf("list the tree at %s: %w", ref, err)
 	}
 	return Tree{Entries: answer.Tree, Truncated: answer.Truncated}, nil
@@ -153,7 +153,7 @@ func (c *Client) File(ctx context.Context, ref, filePath string) (File, error) {
 		Content  string `json:"content"`
 	}
 	apiPath := "/repos/" + c.Repository + "/contents" + cleaned + "?" + query.Encode()
-	if _, err := c.do(ctx, http.MethodGet, apiPath, &answer); err != nil {
+	if err := c.do(ctx, http.MethodGet, apiPath, &answer); err != nil {
 		return File{}, fmt.Errorf("read %s at %s: %w", filePath, ref, err)
 	}
 	if answer.Size > MaxFileBytes {
@@ -188,7 +188,7 @@ func (c *Client) Commits(ctx context.Context, filePath string, limit int) ([]Com
 		} `json:"commit"`
 	}
 	apiPath := "/repos/" + c.Repository + "/commits?" + query.Encode()
-	if _, err := c.do(ctx, http.MethodGet, apiPath, &answer); err != nil {
+	if err := c.do(ctx, http.MethodGet, apiPath, &answer); err != nil {
 		return nil, fmt.Errorf("list commits of %s: %w", filePath, err)
 	}
 	commits := make([]Commit, 0, len(answer))
@@ -206,15 +206,15 @@ func (c *Client) baseURL() string {
 }
 
 // do sends one read request and decodes its JSON answer into out.
-func (c *Client) do(ctx context.Context, method, apiPath string, out any) (int, error) {
+func (c *Client) do(ctx context.Context, method, apiPath string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL()+apiPath, nil)
 	if err != nil {
-		return 0, fmt.Errorf("build request: %w", err)
+		return fmt.Errorf("build request: %w", err)
 	}
 	if c.Token != nil {
 		token, err := c.Token()
 		if err != nil {
-			return 0, fmt.Errorf("read the GitHub token: %w", err)
+			return fmt.Errorf("read the GitHub token: %w", err)
 		}
 		if token != "" {
 			req.Header.Set("Authorization", "Bearer "+token)
@@ -228,22 +228,22 @@ func (c *Client) do(ctx context.Context, method, apiPath string, out any) (int, 
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("send request: %w", err)
+		return fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	if err != nil {
-		return resp.StatusCode, fmt.Errorf("read response: %w", err)
+		return fmt.Errorf("read response: %w", err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusNotFound:
-		return resp.StatusCode, fmt.Errorf("GitHub answered 404: %w", ErrNotFound)
+		return fmt.Errorf("GitHub answered 404: %w", ErrNotFound)
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return resp.StatusCode, fmt.Errorf("GitHub answered %d: %w", resp.StatusCode, ErrPermissionDenied)
+		return fmt.Errorf("GitHub answered %d: %w", resp.StatusCode, ErrPermissionDenied)
 	case resp.StatusCode < 200 || resp.StatusCode > 299:
-		return resp.StatusCode, fmt.Errorf("GitHub answered %d: %s", resp.StatusCode, summarize(raw))
+		return fmt.Errorf("GitHub answered %d: %s", resp.StatusCode, summarize(raw))
 	}
-	return resp.StatusCode, json.Unmarshal(raw, out)
+	return json.Unmarshal(raw, out)
 }
 
 // summarize shortens an error body for a status message.

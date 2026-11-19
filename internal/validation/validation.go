@@ -54,7 +54,7 @@ type Blob struct {
 type Repository interface {
 	// File returns the blob at the commit, or an error when the file does not
 	// exist there.
-	File(ctx context.Context, commit, path string) (Blob, error)
+	File(ctx context.Context, commit, filePath string) (Blob, error)
 }
 
 // Schemas validates one single-resource document against the API server's own
@@ -171,7 +171,8 @@ func (d document) identity() string {
 	return strings.Join([]string{d.apiVersion, d.kind, d.namespace, d.name}, "/")
 }
 
-// Validate runs Validation in its documented order.
+// Validate runs Validation in its documented order. Every stage is cheap and
+// read-only; a stage that refuses ends Validation before the next runs.
 func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 	result := Result{Passed: true}
 	if len(req.Files) == 0 {
@@ -188,9 +189,47 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 	if req.Repository == nil {
 		return Result{}, errors.New("validation needs the base repository")
 	}
-	base := make(map[string]document, len(req.Files))
-	proposed := make(map[string][]document, len(req.Files))
-	values := make(map[string]bool, len(req.Files))
+	state := v.checkFiles(ctx, req, &result)
+	if !result.Passed {
+		return result, nil
+	}
+	checkIdentities(req, &result, state)
+	if !result.Passed {
+		return result, nil
+	}
+	if err := v.checkSchemas(ctx, req, &result, state); err != nil {
+		return Result{}, err
+	}
+	if !result.Passed {
+		return result, nil
+	}
+	if err := v.checkValuesSchema(ctx, req, &result); err != nil {
+		return Result{}, err
+	}
+	if !result.Passed {
+		return result, nil
+	}
+	if err := checkDiffs(ctx, req, &result); err != nil {
+		return Result{}, err
+	}
+	return result, nil
+}
+
+// fileState is what the cheap checks learned about each file.
+type fileState struct {
+	base     map[string]document
+	proposed map[string][]document
+	values   map[string]bool
+}
+
+// checkFiles runs the path, size, digest, base-blob, kind, and strict-YAML
+// checks for every file, cheap before expensive.
+func (v *Validator) checkFiles(ctx context.Context, req Request, result *Result) fileState {
+	state := fileState{
+		base:     make(map[string]document, len(req.Files)),
+		proposed: make(map[string][]document, len(req.Files)),
+		values:   make(map[string]bool, len(req.Files)),
+	}
 	for index, file := range req.Files {
 		field := fmt.Sprintf("files[%d]", index)
 		if refusal := checkPathPolicy(file.Path); refusal != "" {
@@ -223,7 +262,7 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 			continue
 		}
 		if isValuesFile(file.Path) {
-			values[file.Path] = true
+			state.values[file.Path] = true
 			continue
 		}
 		baseDocs, errs := parseDocuments(file.Path, blob.Content)
@@ -232,7 +271,8 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 			continue
 		}
 		if len(baseDocs) != 1 {
-			result.refuse(field+".path", "%s must hold exactly one Kubernetes document, not %d", file.Path, len(baseDocs))
+			result.refuse(field+".path",
+				"%s must hold exactly one Kubernetes document, not %d", file.Path, len(baseDocs))
 			continue
 		}
 		proposedDocs, errs := parseDocuments(file.Path, content)
@@ -247,28 +287,30 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 				result.refuse(field+".updatedContent", "%s", refusal)
 			}
 		}
-		base[file.Path] = baseDocs[0]
-		proposed[file.Path] = proposedDocs
+		state.base[file.Path] = baseDocs[0]
+		state.proposed[file.Path] = proposedDocs
 	}
-	if !result.Passed {
-		return result, nil
-	}
-	// Identity preservation and the forbidden differences.
+	return state
+}
+
+// checkIdentities preserves the document set and each document's identity, and
+// records the forbidden and permitted differences.
+func checkIdentities(req Request, result *Result, state fileState) {
 	for _, file := range req.Files {
-		if values[file.Path] {
+		if state.values[file.Path] {
 			continue
 		}
-		field := "files"
-		baseDoc := base[file.Path]
-		proposedDocs := proposed[file.Path]
+		baseDoc := state.base[file.Path]
+		proposedDocs := state.proposed[file.Path]
 		if len(proposedDocs) != 1 {
-			result.refuse(field, "%s must hold exactly one Kubernetes document, not %d", file.Path, len(proposedDocs))
+			result.refuse("files", "%s must hold exactly one Kubernetes document, not %d",
+				file.Path, len(proposedDocs))
 			continue
 		}
 		proposedDoc := proposedDocs[0]
 		if baseDoc.identity() != proposedDoc.identity() {
-			result.refuse(field,
-				"%s changes the document identity from %s to %s", file.Path, baseDoc.identity(), proposedDoc.identity())
+			result.refuse("files", "%s changes the document identity from %s to %s",
+				file.Path, baseDoc.identity(), proposedDoc.identity())
 			continue
 		}
 		for _, refusal := range compareIdentity(baseDoc.value, proposedDoc.value) {
@@ -276,51 +318,48 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 		}
 		result.checkDifferences(file.Path, baseDoc.value, proposedDoc.value)
 	}
-	if !result.Passed {
-		return result, nil
-	}
-	// OpenAPI schema validation, cached per group and version.
+}
+
+// checkSchemas validates each proposed document against the API server's own
+// OpenAPI schema. A schema that is unavailable degrades the Proposal instead of
+// blocking it, because the repository's Checks remain authoritative.
+func (v *Validator) checkSchemas(ctx context.Context, req Request, result *Result, state fileState) error {
 	if v.schemas == nil {
 		result.Degraded = true
 		result.warn(v1alpha1.WarningDegraded, "openapi",
 			"OpenAPI schema validation did not run: admission is not evaluated and the repository's Checks are authoritative")
-	} else {
-		for _, file := range req.Files {
-			if values[file.Path] {
-				continue
-			}
-			doc := proposed[file.Path][0]
-			findings, err := v.schemas.Validate(ctx, doc.apiVersion, doc.kind, doc.value)
-			switch {
-			case errors.Is(err, ErrSchemaUnavailable):
-				result.Degraded = true
-				result.warn(v1alpha1.WarningDegraded, "openapi",
-					"%s %s: no OpenAPI schema is available, so schema validation degraded", doc.apiVersion, doc.kind)
-			case err != nil:
-				return Result{}, fmt.Errorf("validate %s against OpenAPI: %w", file.Path, err)
-			default:
-				for _, finding := range findings {
-					result.refuse("files", "%s: %s", file.Path, finding)
-				}
+		return nil
+	}
+	for _, file := range req.Files {
+		if state.values[file.Path] {
+			continue
+		}
+		doc := state.proposed[file.Path][0]
+		findings, err := v.schemas.Validate(ctx, doc.apiVersion, doc.kind, doc.value)
+		switch {
+		case errors.Is(err, ErrSchemaUnavailable):
+			result.Degraded = true
+			result.warn(v1alpha1.WarningDegraded, "openapi",
+				"%s %s: no OpenAPI schema is available, so schema validation degraded", doc.apiVersion, doc.kind)
+		case err != nil:
+			return fmt.Errorf("validate %s against OpenAPI: %w", file.Path, err)
+		default:
+			for _, finding := range findings {
+				result.refuse("files", "%s: %s", file.Path, finding)
 			}
 		}
 	}
-	if !result.Passed {
-		return result, nil
-	}
-	// The chart's own values schema, for a Helm values edit.
-	if err := v.checkValuesSchema(ctx, req, &result); err != nil {
-		return Result{}, err
-	}
-	if !result.Passed {
-		return result, nil
-	}
-	// The derived Diff bounds.
+	return nil
+}
+
+// checkDiffs derives each file's Diff from the base content and bounds the
+// result, so a model-supplied patch cannot be inconsistent with the base.
+func checkDiffs(ctx context.Context, req Request, result *Result) error {
 	byPath := make(map[string]Blob, len(req.Files))
 	for _, file := range req.Files {
 		blob, err := req.Repository.File(ctx, req.BaseCommit, file.Path)
 		if err != nil {
-			return Result{}, fmt.Errorf("read %s at %s: %w", file.Path, req.BaseCommit, err)
+			return fmt.Errorf("read %s at %s: %w", file.Path, req.BaseCommit, err)
 		}
 		byPath[file.Path] = blob
 	}
@@ -333,7 +372,8 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 		}
 		diff, err := unifiedDiff(file.Path, byPath[file.Path].Content, content)
 		if err != nil {
-			return Result{}, err
+			result.refuse("files", "the Diff for %s cannot be derived: %s", file.Path, err)
+			continue
 		}
 		if diff.Diff == "" {
 			result.refuse("files", "%s is unchanged", file.Path)
@@ -350,7 +390,7 @@ func (v *Validator) Validate(ctx context.Context, req Request) (Result, error) {
 	if changed > MaxChangedLines {
 		result.refuse("files", "the Diff changes %d lines, above the %d-line limit", changed, MaxChangedLines)
 	}
-	return result, nil
+	return nil
 }
 
 // ChangedLines returns the number of changed lines across the derived diffs.

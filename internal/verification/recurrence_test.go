@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/verification"
 )
@@ -16,11 +14,12 @@ func hash(seed int) string { return strings.Repeat(fmt.Sprintf("%x", seed%16), 6
 
 // page returns a Page with the given proposal hash and exclusions.
 func page(name, proposal string, excluded ...string) *v1alpha1.Page {
-	return &v1alpha1.Page{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "pagerless"},
-		Spec:       v1alpha1.PageSpec{ExcludedProposalHashes: excluded},
-		Status:     v1alpha1.PageStatus{Proposal: &v1alpha1.Proposal{Hash: proposal}},
+	page := &v1alpha1.Page{
+		Spec:   v1alpha1.PageSpec{ExcludedProposalHashes: excluded},
+		Status: v1alpha1.PageStatus{Proposal: &v1alpha1.Proposal{Hash: proposal}},
 	}
+	page.Name, page.Namespace = name, "pagerless"
+	return page
 }
 
 func TestRecurrenceLinksThePredecessorAndExcludesItsHash(t *testing.T) {
@@ -46,7 +45,7 @@ func TestRecurrenceCarriesTheChainForward(t *testing.T) {
 
 func TestRecurrenceBoundsTheChain(t *testing.T) {
 	t.Parallel()
-	var chain []string
+	chain := make([]string, 0, 12)
 	for seed := range 12 {
 		chain = append(chain, hash(seed))
 	}

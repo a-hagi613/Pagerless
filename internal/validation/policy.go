@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path"
 	"reflect"
-	"sort"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -33,25 +33,32 @@ var deniedKinds = map[string]bool{
 	"ResourceQuota": true, "NetworkPolicy": true,
 }
 
+// The reasons that most refused paths share, so the policy table stays legible.
+const (
+	automationReason  = "Pagerless never edits repository automation"
+	kustomizeReason   = "Kustomize wiring is never an edit target"
+	chartWiringReason = "chart wiring is never an edit target"
+)
+
 // refusedPaths are the path patterns that Validation never edits.
 var refusedPaths = []struct {
 	pattern string
 	reason  string
 }{
-	{".github/", "Pagerless never edits repository automation"},
-	{".gitlab-ci.yml", "Pagerless never edits repository automation"},
-	{".circleci/", "Pagerless never edits repository automation"},
-	{".buildkite/", "Pagerless never edits repository automation"},
-	{"jenkinsfile", "Pagerless never edits repository automation"},
-	{"azure-pipelines.yml", "Pagerless never edits repository automation"},
-	{".drone.yml", "Pagerless never edits repository automation"},
-	{"bitbucket-pipelines.yml", "Pagerless never edits repository automation"},
-	{"kustomization.yaml", "Kustomize wiring is never an edit target"},
-	{"kustomization.yml", "Kustomize wiring is never an edit target"},
-	{"chart.yaml", "chart wiring is never an edit target"},
-	{"chart.lock", "chart wiring is never an edit target"},
-	{"requirements.yaml", "chart wiring is never an edit target"},
-	{"requirements.lock", "chart wiring is never an edit target"},
+	{".github/", automationReason},
+	{".gitlab-ci.yml", automationReason},
+	{".circleci/", automationReason},
+	{".buildkite/", automationReason},
+	{"jenkinsfile", automationReason},
+	{"azure-pipelines.yml", automationReason},
+	{".drone.yml", automationReason},
+	{"bitbucket-pipelines.yml", automationReason},
+	{"kustomization.yaml", kustomizeReason},
+	{"kustomization.yml", kustomizeReason},
+	{"chart.yaml", chartWiringReason},
+	{"chart.lock", chartWiringReason},
+	{"requirements.yaml", chartWiringReason},
+	{"requirements.lock", chartWiringReason},
 	{"values.schema.json", "a values schema is never an edit target"},
 	{"templates/", "chart templates are never edit targets"},
 	{"crds/", "CustomResourceDefinition manifests are never edit targets"},
@@ -167,7 +174,7 @@ func compareIdentity(base, proposed map[string]any) []string {
 // fieldValue returns the value at a dotted path, and whether it is present.
 func fieldValue(object map[string]any, dotted string) (any, bool) {
 	current := any(object)
-	for _, key := range strings.Split(dotted, ".") {
+	for key := range strings.SplitSeq(dotted, ".") {
 		mapping, ok := current.(map[string]any)
 		if !ok {
 			return nil, false
@@ -483,11 +490,21 @@ func asInt(value any) (int64, bool) {
 // SortedWarnings returns the warnings in a stable order, for a Pull Request body.
 func SortedWarnings(warnings []v1alpha1.ProposalWarning) []v1alpha1.ProposalWarning {
 	out := append([]v1alpha1.ProposalWarning(nil), warnings...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Class != out[j].Class {
-			return out[i].Class < out[j].Class
+	slices.SortStableFunc(out, func(a, b v1alpha1.ProposalWarning) int {
+		if a.Class != b.Class {
+			if a.Class < b.Class {
+				return -1
+			}
+			return 1
 		}
-		return out[i].Field < out[j].Field
+		switch {
+		case a.Field < b.Field:
+			return -1
+		case a.Field > b.Field:
+			return 1
+		default:
+			return 0
+		}
 	})
 	return out
 }

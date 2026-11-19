@@ -14,9 +14,9 @@ const patchedPath = "a.yaml"
 
 func page() *v1alpha1.Page {
 	return &v1alpha1.Page{
-		Namespace: "pagerless", Name: "page-1", UID: "uid-1",
+		Namespace: pageNamespace, Name: "page-1", UID: "uid-1",
 		Spec: v1alpha1.PageSpec{Target: v1alpha1.TargetReference{
-			Kind: v1alpha1.TargetKindDeployment, Namespace: "sandbox", Name: "checkout",
+			Kind: v1alpha1.TargetKindDeployment, Namespace: "sandbox", Name: checkoutName,
 		}},
 	}
 }

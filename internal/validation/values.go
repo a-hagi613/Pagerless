@@ -71,7 +71,7 @@ func validateValuesSchema(schema, values []byte) ([]string, error) {
 	}
 	if err := compiled.Validate(value); err != nil {
 		var findings []string
-		for _, line := range strings.Split(err.Error(), "\n") {
+		for line := range strings.SplitSeq(err.Error(), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "jsonschema validation failed") {
 				continue

@@ -13,7 +13,16 @@ import (
 	"github.com/a-hagi613/pagerless/internal/provenance"
 )
 
-const repositoryURL = "https://github.com/acme/gitops"
+const (
+	repositoryURL     = "https://github.com/acme/gitops"
+	defaultBranch     = "main"
+	targetName        = "checkout"
+	targetNS          = "shop"
+	deploymentFile    = "apps/checkout/deployment.yaml"
+	manifestsCheckout = "manifests/shop/checkout.yaml"
+	manifestsPatch    = "manifests/shop/patch.yaml"
+	prodValues        = "environments/prod/checkout-values.yaml"
+)
 
 // fakeRepo is a Target Repository held in memory.
 type fakeRepo struct {
@@ -56,8 +65,8 @@ func (o *fakeObjects) HelmRelease(_ context.Context, namespace, name string) (*p
 	return o.releases[namespace+"/"+name], nil
 }
 
-// deployment is a Deployment manifest, with the given name and namespace.
-func deployment(name, namespace, extra string) string {
+// deployment is a Deployment manifest of the fixture namespace.
+func deployment(name string) string {
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,7 +74,7 @@ metadata:
   namespace: %s
 spec:
   replicas: 2
-%s`, name, namespace, extra)
+`, name, targetNS)
 }
 
 // resolver returns a Resolver over the fixtures.
@@ -75,7 +84,7 @@ func resolver(t *testing.T, repo provenance.Repository, objects provenance.Objec
 		Repository: repo,
 		Objects:    objects,
 		URL:        repositoryURL,
-		Branch:     "main",
+		Branch:     defaultBranch,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +95,7 @@ func resolver(t *testing.T, repo provenance.Repository, objects provenance.Objec
 // checkout is the failing Deployment that most fixtures use.
 func checkout() provenance.Object {
 	return provenance.Object{Reference: v1alpha1.TargetReference{
-		APIVersion: "apps/v1", Kind: v1alpha1.TargetKindDeployment, Namespace: "shop", Name: "checkout",
+		APIVersion: "apps/v1", Kind: v1alpha1.TargetKindDeployment, Namespace: targetNS, Name: targetName,
 	}}
 }
 
@@ -115,7 +124,7 @@ func resolve(t *testing.T, r *provenance.Resolver, object provenance.Object) v1a
 func TestArgoCDTrackingIDResolvesTheOverlayPatch(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"apps/checkout/base/deployment.yaml": deployment("checkout", "shop", ""),
+		"apps/checkout/base/deployment.yaml": deployment(targetName),
 		"apps/checkout/overlays/prod/kustomization.yaml": `resources:
   - ../../base
 patches:
@@ -135,10 +144,10 @@ spec:
 `,
 	})
 	objects := &fakeObjects{applications: map[string]*provenance.Application{
-		"checkout": {
-			Namespace: "argocd", Name: "checkout",
+		targetName: {
+			Namespace: "argocd", Name: targetName,
 			Sources: []provenance.ApplicationSource{{
-				RepoURL: repositoryURL, Path: "apps/checkout/overlays/prod", TargetRevision: "main",
+				RepoURL: repositoryURL, Path: "apps/checkout/overlays/prod", TargetRevision: defaultBranch,
 			}},
 		},
 	}}
@@ -159,7 +168,7 @@ spec:
 	if got.Ambiguous {
 		t.Error("the resolution is ambiguous, want one overlay patch")
 	}
-	if got.URL != repositoryURL || got.Branch != "main" {
+	if got.URL != repositoryURL || got.Branch != defaultBranch {
 		t.Errorf("repository = %s/%s, want %s/main", got.URL, got.Branch, repositoryURL)
 	}
 }
@@ -167,12 +176,12 @@ spec:
 func TestArgoCDMultiSourceApplicationIsAmbiguous(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"apps/checkout/deployment.yaml":  deployment("checkout", "shop", ""),
-		"apps/checkout2/deployment.yaml": deployment("checkout", "shop", ""),
+		deploymentFile:                   deployment(targetName),
+		"apps/checkout2/deployment.yaml": deployment(targetName),
 	})
 	objects := &fakeObjects{applications: map[string]*provenance.Application{
-		"checkout": {
-			Namespace: "argocd", Name: "checkout",
+		targetName: {
+			Namespace: "argocd", Name: targetName,
 			Sources: []provenance.ApplicationSource{
 				{RepoURL: repositoryURL, Path: "apps/checkout"},
 				{RepoURL: repositoryURL, Path: "apps/checkout2"},
@@ -200,8 +209,8 @@ func TestArgoCDMultiSourceApplicationIsAmbiguous(t *testing.T) {
 func TestVerifiedHintWins(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"manifests/shop/checkout.yaml": deployment("checkout", "shop", ""),
-		"manifests/shop/patch.yaml": `apiVersion: apps/v1
+		manifestsCheckout: deployment(targetName),
+		manifestsPatch: `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: checkout
@@ -211,17 +220,17 @@ spec:
 `,
 	})
 	object := withAnnotations(checkout(), map[string]string{
-		v1alpha1.AnnotationSourcePath:   "manifests/shop/checkout.yaml",
-		provenance.AnnotationEditTarget: "manifests/shop/patch.yaml",
+		v1alpha1.AnnotationSourcePath:   manifestsCheckout,
+		provenance.AnnotationEditTarget: manifestsPatch,
 	})
 	got := resolve(t, resolver(t, repo, &fakeObjects{}), object)
 	if got.Source != v1alpha1.ResolutionSourceHint || got.Confidence != v1alpha1.ConfidenceExact {
 		t.Fatalf("source = %s, confidence = %s, want Hint/exact", got.Source, got.Confidence)
 	}
-	if got.Path != "manifests/shop/checkout.yaml" {
+	if got.Path != manifestsCheckout {
 		t.Errorf("path = %q, want the hinted manifest", got.Path)
 	}
-	if got.EditTarget != "manifests/shop/patch.yaml" || got.EditTargetKind != v1alpha1.EditTargetBaseManifest {
+	if got.EditTarget != manifestsPatch || got.EditTargetKind != v1alpha1.EditTargetBaseManifest {
 		t.Errorf("editTarget = %q (%s), want the hinted patch", got.EditTarget, got.EditTargetKind)
 	}
 }
@@ -229,9 +238,9 @@ spec:
 func TestWrongHintIsIgnoredAndTheLadderContinues(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"apps/checkout/deployment.yaml": deployment("checkout", "shop", ""),
+		deploymentFile: deployment(targetName),
 	})
-	repo.files["apps/other/deployment.yaml"] = deployment("payments", "shop", "")
+	repo.files["apps/other/deployment.yaml"] = deployment("payments")
 	object := withAnnotations(checkout(), map[string]string{
 		v1alpha1.AnnotationSourcePath: "apps/other/deployment.yaml",
 	})
@@ -239,7 +248,7 @@ func TestWrongHintIsIgnoredAndTheLadderContinues(t *testing.T) {
 	if got.Source != v1alpha1.ResolutionSourceIdentitySearch || got.Confidence != v1alpha1.ConfidenceIdentity {
 		t.Fatalf("source = %s, confidence = %s, want IdentitySearch/identity", got.Source, got.Confidence)
 	}
-	if got.Path != "apps/checkout/deployment.yaml" {
+	if got.Path != deploymentFile {
 		t.Errorf("path = %q, want the file that defines the Deployment", got.Path)
 	}
 	var hint v1alpha1.ResolutionAttempt
@@ -256,7 +265,7 @@ func TestWrongHintIsIgnoredAndTheLadderContinues(t *testing.T) {
 func TestFluxKustomizationPatchIsTheEditTarget(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"clusters/prod/shop/deployment.yaml": deployment("checkout", "shop", ""),
+		"clusters/prod/shop/deployment.yaml": deployment(targetName),
 		"clusters/prod/shop/replicas.yaml": `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -266,19 +275,19 @@ spec:
 `,
 	})
 	objects := &fakeObjects{kustomizations: map[string]*provenance.Kustomization{
-		"flux-system/shop": {
-			Namespace: "flux-system", Name: "shop",
-			RepositoryURL: repositoryURL, Branch: "main", Path: "clusters/prod/shop",
+		"flux-system/shop-flux": {
+			Namespace: "flux-system", Name: "shop-flux",
+			RepositoryURL: repositoryURL, Branch: defaultBranch, Path: "clusters/prod/shop",
 			Patches: []provenance.FluxPatch{{
 				Path: "replicas.yaml",
 				Target: &provenance.PatchTarget{
-					Group: "apps", Version: "v1", Kind: "Deployment", Name: "checkout",
+					Group: "apps", Version: "v1", Kind: "Deployment", Name: targetName,
 				},
 			}},
 		},
 	}}
 	object := withLabels(checkout(), map[string]string{
-		provenance.FluxKustomizationNameLabel:      "shop",
+		provenance.FluxKustomizationNameLabel:      "shop-flux",
 		provenance.FluxKustomizationNamespaceLabel: "flux-system",
 	})
 	got := resolve(t, resolver(t, repo, objects), object)
@@ -298,21 +307,22 @@ spec:
 func TestFluxHelmReleaseResolvesItsValuesFile(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"charts/checkout/Chart.yaml":         "apiVersion: v2\nname: checkout\nversion: 1.0.0\n",
-		"charts/checkout/values.yaml":        "replicas: 2\n",
-		"charts/checkout/values-prod.yaml":   "replicas: 3\n",
-		"charts/checkout/templates/dep.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ .Release.Name }}\n",
+		"charts/checkout/Chart.yaml":       "apiVersion: v2\nname: checkout\nversion: 1.0.0\n",
+		"charts/checkout/values.yaml":      "replicas: 2\n",
+		"charts/checkout/values-prod.yaml": "replicas: 3\n",
+		"charts/checkout/templates/dep.yaml": "apiVersion: apps/v1\nkind: Deployment\n" +
+			"metadata:\n  name: {{ .Release.Name }}\n",
 	})
 	objects := &fakeObjects{releases: map[string]*provenance.HelmRelease{
 		"shop/checkout": {
-			Namespace: "shop", Name: "checkout",
-			RepositoryURL: repositoryURL, Branch: "main", ChartPath: "charts/checkout",
+			Namespace: targetNS, Name: targetName,
+			RepositoryURL: repositoryURL, Branch: defaultBranch, ChartPath: "charts/checkout",
 			ValuesFiles: []provenance.ValuesSource{{Path: "values-prod.yaml"}},
 		},
 	}}
 	object := withLabels(checkout(), map[string]string{
-		provenance.FluxHelmReleaseNameLabel:      "checkout",
-		provenance.FluxHelmReleaseNamespaceLabel: "shop",
+		provenance.FluxHelmReleaseNameLabel:      targetName,
+		provenance.FluxHelmReleaseNamespaceLabel: targetNS,
 	})
 	got := resolve(t, resolver(t, repo, objects), object)
 	if got.Source != v1alpha1.ResolutionSourceFluxHelmRelease ||
@@ -328,27 +338,27 @@ func TestFluxHelmReleaseResolvesItsValuesFile(t *testing.T) {
 func TestHelmMetadataUsesTheConfiguredValuesFile(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"environments/prod/checkout-values.yaml": "replicas: 3\n",
+		prodValues: "replicas: 3\n",
 	})
 	resolver, err := provenance.New(provenance.Config{
 		Repository: repo,
 		Objects:    &fakeObjects{},
 		URL:        repositoryURL,
-		HelmValues: map[string]string{"checkout": "environments/prod/checkout-values.yaml"},
+		HelmValues: map[string]string{targetName: prodValues},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	object := withLabels(checkout(), map[string]string{
-		provenance.HelmReleaseNameLabel:      "checkout",
-		provenance.HelmReleaseNamespaceLabel: "shop",
+		provenance.HelmReleaseNameLabel:      targetName,
+		provenance.HelmReleaseNamespaceLabel: targetNS,
 	})
 	got := resolve(t, resolver, object)
 	if got.Source != v1alpha1.ResolutionSourceHelmMetadata ||
 		got.Confidence != v1alpha1.ConfidenceConfigured {
 		t.Fatalf("source = %s, confidence = %s, want HelmMetadata/configured", got.Source, got.Confidence)
 	}
-	if got.EditTarget != "environments/prod/checkout-values.yaml" ||
+	if got.EditTarget != prodValues ||
 		got.EditTargetKind != v1alpha1.EditTargetHelmValues {
 		t.Errorf("editTarget = %q (%s), want the configured values file", got.EditTarget, got.EditTargetKind)
 	}
@@ -357,15 +367,15 @@ func TestHelmMetadataUsesTheConfiguredValuesFile(t *testing.T) {
 func TestConfiguredMappingResolvesTheManifest(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"manifests/shop/checkout.yaml": deployment("checkout", "shop", ""),
+		manifestsCheckout: deployment(targetName),
 	})
 	resolver, err := provenance.New(provenance.Config{
 		Repository: repo,
 		Objects:    &fakeObjects{},
 		URL:        repositoryURL,
 		Mappings: []provenance.Mapping{{
-			Kind: v1alpha1.TargetKindDeployment, Namespace: "shop", Name: "checkout",
-			RepositoryURL: repositoryURL, Branch: "main", Path: "manifests/shop/checkout.yaml",
+			Kind: v1alpha1.TargetKindDeployment, Namespace: targetNS, Name: targetName,
+			RepositoryURL: repositoryURL, Branch: defaultBranch, Path: manifestsCheckout,
 		}},
 	})
 	if err != nil {
@@ -376,7 +386,7 @@ func TestConfiguredMappingResolvesTheManifest(t *testing.T) {
 		got.Confidence != v1alpha1.ConfidenceConfigured {
 		t.Fatalf("source = %s, confidence = %s, want ConfiguredMapping/configured", got.Source, got.Confidence)
 	}
-	if got.Path != "manifests/shop/checkout.yaml" || got.EditTarget != "manifests/shop/checkout.yaml" {
+	if got.Path != manifestsCheckout || got.EditTarget != manifestsCheckout {
 		t.Errorf("path/editTarget = %q/%q, want the mapped manifest", got.Path, got.EditTarget)
 	}
 }
@@ -385,9 +395,9 @@ func TestIdentitySearchStopsAtTheFileLimit(t *testing.T) {
 	t.Parallel()
 	files := map[string]string{}
 	for index := range 40 {
-		files[fmt.Sprintf("manifests/%02d.yaml", index)] = deployment(fmt.Sprintf("other-%d", index), "shop", "")
+		files[fmt.Sprintf("manifests/%02d.yaml", index)] = deployment(fmt.Sprintf("other-%d", index))
 	}
-	files["manifests/zz-last.yaml"] = deployment("checkout", "shop", "")
+	files["manifests/zz-last.yaml"] = deployment(targetName)
 	got := resolve(t, resolver(t, newRepo(files), &fakeObjects{}), checkout())
 	if got.Confidence != v1alpha1.ConfidenceNone {
 		t.Fatalf("confidence = %s, want none: the search must stop after %d files",
@@ -404,8 +414,8 @@ func TestIdentitySearchStopsAtTheFileLimit(t *testing.T) {
 func TestAmbiguousIdentitySearchReturnsCandidates(t *testing.T) {
 	t.Parallel()
 	repo := newRepo(map[string]string{
-		"manifests/a/checkout.yaml": deployment("checkout", "shop", ""),
-		"manifests/b/checkout.yaml": deployment("checkout", "shop", ""),
+		"manifests/a/checkout.yaml": deployment(targetName),
+		"manifests/b/checkout.yaml": deployment(targetName),
 	})
 	got := resolve(t, resolver(t, repo, &fakeObjects{}), checkout())
 	if !got.Ambiguous || len(got.Candidates) != 2 {
@@ -430,7 +440,7 @@ func TestSelfManagedNodeResolvesToNone(t *testing.T) {
 
 func TestWrongTrackingIDIsIgnored(t *testing.T) {
 	t.Parallel()
-	repo := newRepo(map[string]string{"apps/checkout/deployment.yaml": deployment("checkout", "shop", "")})
+	repo := newRepo(map[string]string{deploymentFile: deployment(targetName)})
 	object := withAnnotations(checkout(), map[string]string{
 		provenance.TrackingIDAnnotation: "checkout:apps/Deployment:shop/payments",
 	})

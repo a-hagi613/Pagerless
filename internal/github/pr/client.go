@@ -192,7 +192,7 @@ func (c *Client) commit(ctx context.Context, sha string) (commit, error) {
 // findPullRequest returns the most recent Pull Request for the branch, in any
 // state, or nil when there is none.
 func (c *Client) findPullRequest(ctx context.Context, branch string) (*pullRequest, error) {
-	query := url.Values{"head": {c.owner() + ":" + branch}, "state": {"all"}, "per_page": {"1"}}
+	query := url.Values{fieldHead: {c.owner() + ":" + branch}, fieldState: {"all"}, "per_page": {"1"}}
 	var found []pullRequest
 	if _, err := c.do(ctx, http.MethodGet,
 		"/repos/"+c.Repository+"/pulls?"+query.Encode(), nil, &found); err != nil {
@@ -217,11 +217,11 @@ func (c *Client) pullRequest(ctx context.Context, number int) (pullRequest, erro
 // openPullRequest opens a Pull Request from the branch into the base branch.
 func (c *Client) openPullRequest(ctx context.Context, branch string, approved Approved) (*pullRequest, error) {
 	request := map[string]any{
-		"title": approved.Title,
-		"head":  branch,
-		"base":  approved.BaseBranch,
-		"body":  approved.Body,
-		"draft": approved.Draft,
+		"title":   approved.Title,
+		fieldHead: branch,
+		"base":    approved.BaseBranch,
+		fieldBody: approved.Body,
+		"draft":   approved.Draft,
 	}
 	var opened pullRequest
 	status, err := c.do(ctx, http.MethodPost, "/repos/"+c.Repository+"/pulls", request, &opened)

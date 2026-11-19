@@ -25,7 +25,7 @@ type PullRequest struct {
 // FindPullRequest returns the most recent Pull Request whose head is the
 // branch, in any state, or nil when there is none.
 func (c *Client) FindPullRequest(ctx context.Context, branch string) (*PullRequest, error) {
-	query := url.Values{"head": {c.owner() + ":" + branch}, "state": {"all"}, "per_page": {"1"}}
+	query := url.Values{fieldHead: {c.owner() + ":" + branch}, fieldState: {"all"}, "per_page": {"1"}}
 	var found []PullRequest
 	if _, err := c.do(ctx, "GET", "/repos/"+c.Repository+"/pulls?"+query.Encode(), nil, &found); err != nil {
 		return nil, fmt.Errorf("look up the Pull Request for %s: %w", branch, err)
@@ -42,7 +42,7 @@ func (c *Client) FindPullRequest(ctx context.Context, branch string) (*PullReque
 func (c *Client) OpenPullRequest(
 	ctx context.Context, branch, base, title, body string,
 ) (*PullRequest, error) {
-	request := map[string]any{"title": title, "head": branch, "base": base, "body": body}
+	request := map[string]any{"title": title, fieldHead: branch, "base": base, fieldBody: body}
 	var opened PullRequest
 	status, err := c.do(ctx, "POST", "/repos/"+c.Repository+"/pulls", request, &opened)
 	switch {
