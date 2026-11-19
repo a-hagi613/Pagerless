@@ -938,7 +938,9 @@ spec:
                       must choose one and Validation must check the choice.
                     type: boolean
                   attempts:
-                    description: Attempts records what every rung did, in ladder order.
+                    description: |-
+                      Attempts records what every rung did, in ladder order. Nine rungs can run, and a
+                      final attempt records that none of them resolved the Target.
                     items:
                       description: |-
                         ResolutionAttempt records one rung's outcome, so that an operator can see why
@@ -973,7 +975,7 @@ spec:
                       - outcome
                       - source
                       type: object
-                    maxItems: 9
+                    maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
                   baseCommit:
