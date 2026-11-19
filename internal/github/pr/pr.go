@@ -1,6 +1,6 @@
 // Package pr is the isolated GitHub pull request writer. It is the only code
 // that reads the write-scoped GitHub token, and it is the only code that
-// changes a Target Repository (ADR-0041). Its entry point accepts a value that
+// changes a Target Repository (ADR-0043). Its entry point accepts a value that
 // the server has already validated: a Page identity, an approved Proposal hash,
 // a base commit, and whole-file contents. It never accepts model text.
 //

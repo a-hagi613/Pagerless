@@ -1,5 +1,5 @@
 // Package validation is the deterministic, read-only Proposal Validation
-// (ADR-0040). It runs cheap checks first and expensive ones last:
+// (ADR-0042). It runs cheap checks first and expensive ones last:
 //
 //  1. the file count, path, size, digest, and base-blob bounds;
 //  2. the path policy;

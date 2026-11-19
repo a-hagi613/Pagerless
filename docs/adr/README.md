@@ -15,10 +15,10 @@ replaced the rest.
 | [0005](0005-two-go-binaries.md) | Two Go binaries, pagerless-server and pagerless-executor — Superseded by [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md) |
 | [0006](0006-verification-is-decided-by-code.md) | Verification is decided by deterministic code |
 | [0007](0007-keycloak-scope.md) | Keycloak issues dashboard and agent tokens only — Superseded by [0032](0032-single-operator-local-authentication.md) |
-| [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it |
+| [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it (its auto-merge clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)) |
 | [0009](0009-eks-network-without-nat-or-load-balancers.md) | EKS without NAT gateways or load balancers |
 | [0010](0010-cost-model.md) | Near-zero operating cost; its Bedrock model choice is amended by [0023](0023-bedrock-uses-amazon-nova-2-lite.md) |
-| [0011](0011-approval-is-the-only-human-gate.md) | Approval is the only human gate |
+| [0011](0011-approval-is-the-only-human-gate.md) | Approval is the only human gate (its auto-merge clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)) |
 | [0012](0012-out-of-scope.md) | Explicitly out of scope |
 | [0013](0013-custom-dashboard-embedding-grafana.md) | Custom dashboard that embeds Grafana panels |
 | [0014](0014-executor-verifies-approval-independently.md) | The Executor verifies the Approval independently — Superseded by [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md) |
@@ -44,3 +44,7 @@ replaced the rest.
 | [0038](0038-one-watch-mode-or-an-explicit-namespace-allowlist.md) | One watch mode or an explicit namespace allowlist |
 | [0039](0039-one-tag-publishes-every-artifact.md) | One tag publishes every artifact, and the published copy is verified |
 | [0040](0040-read-only-connectors-and-alert-webhooks.md) | Connectors are read-only and alerts join by subject identity |
+| [0041](0041-provenance-is-a-recorded-ladder.md) | Provenance is a recorded ladder, and pull requests are never auto-merged |
+| [0042](0042-proposal-validation-is-read-only.md) | Proposal Validation is read-only and does not simulate admission |
+| [0043](0043-the-github-writer-is-isolated.md) | The GitHub writer is isolated in internal/github/pr |
+| [0044](0044-proposal-content-lives-outside-page-status.md) | Proposal content lives beside the Page history, not in Page status |

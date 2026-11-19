@@ -1,7 +1,7 @@
 // Package publish turns an approved fixed-Action Proposal into a pull request in
 // the target repository. It commits the reviewed patch to a branch and opens
 // the pull request; it never merges it, because merging is a human act
-// (ADR-0039). The v2 file-Proposal writer lives in internal/github/pr.
+// (ADR-0041). The v2 file-Proposal writer lives in internal/github/pr.
 package publish
 
 import (

@@ -1,7 +1,7 @@
 // Package github is the read-only GitHub client. It reads a Target Repository's
 // tree, files, and recent commits, and it holds no write capability: the only
 // code that writes to GitHub is internal/github/pr, which the read paths cannot
-// reach (ADR-0041).
+// reach (ADR-0043).
 package github
 
 import (
@@ -111,7 +111,7 @@ type File struct {
 }
 
 // Client reads one Target Repository. It holds no method that changes the
-// repository (ADR-0041).
+// repository (ADR-0043).
 type Client struct {
 	// APIURL is the base URL of the API. It defaults to DefaultGitHubAPI.
 	APIURL string

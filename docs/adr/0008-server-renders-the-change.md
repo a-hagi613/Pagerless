@@ -1,6 +1,6 @@
 # ADR-0008: pagerless-server renders the change; the Executor only applies it
 
-- **Status:** Accepted
+- **Status:** Accepted; its auto-merge delivery clause is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)
 - **Date:** 2026-11-16
 - **Amended by:** [ADR-0021](0021-rollback-may-revert-declared-dependency-paths.md)
 

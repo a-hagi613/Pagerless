@@ -1,5 +1,5 @@
 // Package provenance is the four-rung ladder that grounds a Page in the Target
-// Repository before the model speaks (ADR-0039). It resolves the repository,
+// Repository before the model speaks (ADR-0041). It resolves the repository,
 // branch, and base commit; the file that defines the failing object; the file
 // that a change should go to; and a Confidence that decides whether an
 // unattended draft may be opened.
