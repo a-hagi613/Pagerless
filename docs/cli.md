@@ -13,7 +13,7 @@ on standard error, and never falls back to the other mode:
 ```
 kubectl page new <kind>/<name>   open a Page for a Target
 kubectl page get <page>          show one Page (synonym: show)
-kubectl page list                list Pages, newest first
+kubectl page list [--phase <phase>]  list Pages, newest first
 kubectl page diff <page>         show the Proposal against its recorded base
 kubectl page approve <page>      approve the displayed Proposal hash
 kubectl page reject <page>       reject it (synonym: dismiss)
@@ -82,6 +82,12 @@ line: `page.pagerless.dev/<name> created`, or `… already active`.
 Lists Pages newest first with the resource's own printer columns: `NAME`,
 `TARGET`, `PHASE`, `TRIGGER`, `PR`, `AGE`. `-o json` and `-o yaml` print the
 transport's list object.
+
+`--phase` narrows the list to one phase, from the Page CRD's enum: `Pending`,
+`Investigating`, `Proposed`, `Approved`, `PullRequestOpen`, `Verifying`,
+`Recovered`, `NotRecovered`, `Diagnosed`, `Rejected`, `Expired`, `Invalid`,
+`Superseded`, `Failed`. The filter applies to every output format. An unknown
+value is a usage error (exit code `2`) that names the accepted phases.
 
 ## `kubectl page get`
 
