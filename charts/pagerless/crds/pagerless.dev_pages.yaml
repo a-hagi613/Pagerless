@@ -69,6 +69,17 @@ spec:
             description: PageSpec describes what to investigate. It is immutable after
               creation.
             properties:
+              excludedProposalHashes:
+                description: |-
+                  ExcludedProposalHashes are Proposal hashes that this Page must not propose
+                  again. A Recurrence excludes the Proposal hash of the Page that recorded
+                  NotRecovered, so that the same change cannot be proposed forever.
+                items:
+                  pattern: ^[0-9a-f]{64}$
+                  type: string
+                maxItems: 10
+                type: array
+                x-kubernetes-list-type: atomic
               fingerprint:
                 description: |-
                   Fingerprint is the stable failure identity. It deliberately excludes
@@ -350,12 +361,12 @@ spec:
                     source:
                       description: Source cites where the evidence came from, such
                         as a tool call and its query.
-                      maxLength: 500
+                      maxLength: 300
                       minLength: 1
                       type: string
                     summary:
                       description: Summary states what the evidence shows.
-                      maxLength: 1000
+                      maxLength: 500
                       minLength: 1
                       type: string
                   required:
@@ -488,6 +499,7 @@ spec:
                   action:
                     description: Action is the remediation.
                     enum:
+                    - FilePatch
                     - Scale
                     - PatchResources
                     - Rollback
@@ -514,14 +526,69 @@ spec:
                         format: int64
                         type: integer
                     type: object
+                  diagnosisOnlyReason:
+                    description: DiagnosisOnlyReason explains why no change is recommended.
+                    maxLength: 1000
+                    type: string
                   expiresAt:
                     description: ExpiresAt is when an unapproved Proposal expires.
                     format: date-time
                     type: string
+                  files:
+                    description: Files are the whole-file changes of a FilePatch Proposal.
+                    items:
+                      description: |-
+                        FileEdit is one whole-file change against the recorded base commit. The Page
+                        records the file's identity and the digest of its new content; the content
+                        itself is held by the server under that digest, so that Page status stays
+                        small and never carries repository bytes. The server derives the Diff from
+                        the content, so a model-supplied patch cannot be inconsistent with the base.
+                      properties:
+                        baseBlob:
+                          description: BaseBlob is the Git blob SHA of the file at
+                            the recorded base commit.
+                          pattern: ^[0-9a-f]{40,64}$
+                          type: string
+                        contentDigest:
+                          description: |-
+                            ContentDigest is the lowercase hexadecimal SHA-256 digest of the complete
+                            new content of the file.
+                          pattern: ^[0-9a-f]{64}$
+                          type: string
+                        path:
+                          description: Path is the Target Repository path, relative
+                            to the repository root.
+                          maxLength: 500
+                          minLength: 1
+                          type: string
+                        rationale:
+                          description: Rationale states why this file is the edit
+                            target for the Diagnosis.
+                          maxLength: 300
+                          minLength: 1
+                          type: string
+                      required:
+                      - baseBlob
+                      - contentDigest
+                      - path
+                      - rationale
+                      type: object
+                    maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
                   hash:
                     description: Hash binds an Approval to this exact Proposal. It
                       is a lowercase hexadecimal SHA-256 digest.
                     pattern: ^[0-9a-f]{64}$
+                    type: string
+                  kind:
+                    description: |-
+                      Kind is the form of the Proposal. It is FilePatch for the v2 agent, DiagnosisOnly when no change is
+                      recommended, and Action for a v1 fixed-Action Proposal.
+                    enum:
+                    - FilePatch
+                    - DiagnosisOnly
+                    - Action
                     type: string
                   parameters:
                     description: Parameters are the typed parameters of the Action.
@@ -599,6 +666,85 @@ spec:
                         maxLength: 500
                         type: string
                     type: object
+                  validation:
+                    description: Validation is the deterministic Validation report
+                      for this Proposal.
+                    properties:
+                      admission:
+                        description: Admission states the one line that the Page shows
+                          about admission, quota, and defaulting.
+                        maxLength: 120
+                        type: string
+                      degraded:
+                        description: |-
+                          Degraded reports that OpenAPI schema validation could not run, so the Proposal is approvable but not
+                          eligible for an unattended draft.
+                        type: boolean
+                      errors:
+                        description: Errors are the refusals.
+                        items:
+                          description: ProposalValidationError is one reason Validation
+                            refused a Proposal.
+                          properties:
+                            field:
+                              description: Field names the offending part of the Proposal.
+                              maxLength: 200
+                              type: string
+                            message:
+                              description: Message explains the refusal.
+                              maxLength: 300
+                              minLength: 1
+                              type: string
+                          required:
+                          - field
+                          - message
+                          type: object
+                        maxItems: 10
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      passed:
+                        description: Passed reports whether Validation accepted the
+                          Proposal.
+                        type: boolean
+                      warnings:
+                        description: Warnings are permitted changes that the Operator
+                          must review.
+                        items:
+                          description: ProposalWarning is a permitted change that
+                            is recorded on the Page and carried into the Pull Request
+                            body.
+                          properties:
+                            class:
+                              description: Class classifies the warning.
+                              enum:
+                              - Image
+                              - Replicas
+                              - ReplicasZero
+                              - NodePlacement
+                              - ResourceRemoval
+                              - Degraded
+                              type: string
+                            field:
+                              description: Field names the document field the warning
+                                is about.
+                              maxLength: 200
+                              type: string
+                            message:
+                              description: Message explains the warning.
+                              maxLength: 300
+                              minLength: 1
+                              type: string
+                          required:
+                          - class
+                          - field
+                          - message
+                          type: object
+                        maxItems: 10
+                        type: array
+                        x-kubernetes-list-type: atomic
+                    required:
+                    - passed
+                    type: object
                 required:
                 - action
                 - attempt
@@ -675,41 +821,157 @@ spec:
                     type: string
                 type: object
               repository:
-                description: Repository is the resolved Target Repository.
+                description: Repository is the resolved Target Repository, as the
+                  provenance ladder found it.
                 properties:
+                  ambiguous:
+                    description: |-
+                      Ambiguous reports that two or more candidates are rank-equal, so the model
+                      must choose one and Validation must check the choice.
+                    type: boolean
+                  attempts:
+                    description: Attempts records what every rung did, in ladder order.
+                    items:
+                      description: |-
+                        ResolutionAttempt records one rung's outcome, so that an operator can see why
+                        a weaker rung produced the answer.
+                      properties:
+                        outcome:
+                          description: Outcome is what the rung did.
+                          enum:
+                          - Resolved
+                          - Failed
+                          - Skipped
+                          type: string
+                        reason:
+                          description: Reason explains a failure or a skip in one
+                            sentence.
+                          maxLength: 200
+                          type: string
+                        source:
+                          description: Source is the rung.
+                          enum:
+                          - Hint
+                          - ArgoCDTrackingID
+                          - ArgoCDInstance
+                          - FluxKustomization
+                          - FluxHelmRelease
+                          - HelmMetadata
+                          - ConfiguredMapping
+                          - IdentitySearch
+                          - None
+                          type: string
+                      required:
+                      - outcome
+                      - source
+                      type: object
+                    maxItems: 9
+                    type: array
+                    x-kubernetes-list-type: atomic
                   baseCommit:
-                    description: BaseCommit is the commit a Proposal was rendered
-                      against.
+                    description: |-
+                      BaseCommit is the commit the Resolution was computed at and a Proposal is
+                      rendered against.
                     maxLength: 64
                     type: string
                   branch:
                     description: Branch is the resolved branch.
                     maxLength: 253
                     type: string
+                  candidates:
+                    description: Candidates are the rank-equal candidates of an ambiguous
+                      Resolution.
+                    items:
+                      description: |-
+                        ResolutionCandidate is one legitimate file pair for an ambiguous Resolution.
+                        The model chooses among candidates and Validation checks the choice.
+                      properties:
+                        editTarget:
+                          description: EditTarget is the file that a change should
+                            go to.
+                          maxLength: 500
+                          type: string
+                        editTargetKind:
+                          description: EditTargetKind is the kind of EditTarget.
+                          enum:
+                          - OverlayPatch
+                          - OverlayResource
+                          - FluxPatch
+                          - ArgoValues
+                          - BaseManifest
+                          - HelmValues
+                          type: string
+                        path:
+                          description: Path is the file that defines the failing object.
+                          maxLength: 500
+                          type: string
+                      required:
+                      - editTarget
+                      - editTargetKind
+                      - path
+                      type: object
+                    maxItems: 5
+                    type: array
+                    x-kubernetes-list-type: atomic
                   confidence:
-                    description: Confidence is exact for a provenance method and heuristic
-                      otherwise.
+                    description: Confidence is the strength of the Resolution.
                     enum:
-                    - Exact
-                    - Heuristic
+                    - exact
+                    - configured
+                    - identity
+                    - name-only
+                    - none
                     type: string
-                  method:
-                    description: Method names how the repository was found, such as
-                      TrackingID or NameMatch.
-                    maxLength: 64
+                  editTarget:
+                    description: EditTarget is the file that a change should go to,
+                      relative to the repository root.
+                    maxLength: 500
+                    type: string
+                  editTargetKind:
+                    description: EditTargetKind is the kind of EditTarget.
+                    enum:
+                    - OverlayPatch
+                    - OverlayResource
+                    - FluxPatch
+                    - ArgoValues
+                    - BaseManifest
+                    - HelmValues
                     type: string
                   path:
-                    description: Path is the Target's manifest path inside the repository.
+                    description: Path is the file that defines the Target, relative
+                      to the repository root.
                     maxLength: 500
+                    type: string
+                  reason:
+                    description: Reason explains a Resolution that found nothing,
+                      or an ambiguity, in one sentence.
+                    maxLength: 300
                     type: string
                   resolvedAt:
                     description: ResolvedAt is when resolution ran.
                     format: date-time
                     type: string
+                  source:
+                    description: Source is the rung that produced the Resolution.
+                    enum:
+                    - Hint
+                    - ArgoCDTrackingID
+                    - ArgoCDInstance
+                    - FluxKustomization
+                    - FluxHelmRelease
+                    - HelmMetadata
+                    - ConfiguredMapping
+                    - IdentitySearch
+                    - None
+                    type: string
                   url:
                     description: URL is the resolved repository URL.
                     maxLength: 500
+                    pattern: ^https://
                     type: string
+                required:
+                - confidence
+                - source
                 type: object
               severity:
                 description: Severity ranks how urgently the Page needs a human.
@@ -743,7 +1005,7 @@ spec:
                       type: string
                     summary:
                       description: Summary is a short description of the step.
-                      maxLength: 300
+                      maxLength: 200
                       type: string
                     time:
                       description: Time is when the server recorded the step.
@@ -751,7 +1013,7 @@ spec:
                       type: string
                     tool:
                       description: Tool names the tool for a ToolCall step.
-                      maxLength: 128
+                      maxLength: 64
                       type: string
                   required:
                   - kind
@@ -935,11 +1197,11 @@ spec:
                   properties:
                     message:
                       description: Message explains the result.
-                      maxLength: 500
+                      maxLength: 300
                       type: string
                     name:
                       description: Name identifies the check.
-                      maxLength: 128
+                      maxLength: 64
                       type: string
                     passed:
                       description: Passed reports whether the check passed.

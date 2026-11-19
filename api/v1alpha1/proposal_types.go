@@ -24,10 +24,12 @@ import (
 // Action is one kind of remediation that a Proposal can recommend. Every
 // remaining Action is delivered as a pull request: Pagerless never mutates the
 // cluster.
-// +kubebuilder:validation:Enum=Scale;PatchResources;Rollback;NoAction
+// +kubebuilder:validation:Enum=FilePatch;Scale;PatchResources;Rollback;NoAction
 type Action string
 
 const (
+	// ActionFilePatch changes whole files in the Target Repository through a pull request.
+	ActionFilePatch Action = "FilePatch"
 	// ActionScale changes the Target's replica count through a pull request.
 	ActionScale Action = "Scale"
 	// ActionPatchResources changes a container's requests and limits through a pull request.
@@ -42,7 +44,7 @@ const (
 // a pull request against the Target Repository. NoAction changes nothing.
 func (a Action) DeliveredByPullRequest() bool {
 	switch a {
-	case ActionScale, ActionPatchResources, ActionRollback:
+	case ActionFilePatch, ActionScale, ActionPatchResources, ActionRollback:
 		return true
 	default:
 		return false
@@ -143,11 +145,165 @@ type ProposalBase struct {
 	TargetGeneration int64 `json:"targetGeneration,omitempty"`
 }
 
+// ProposalKind is the form of a Proposal.
+// +kubebuilder:validation:Enum=FilePatch;DiagnosisOnly;Action
+type ProposalKind string
+
+const (
+	// ProposalKindFilePatch changes one to five whole files in the Target Repository.
+	ProposalKindFilePatch ProposalKind = "FilePatch"
+	// ProposalKindDiagnosisOnly recommends no change and ends the Page as Diagnosed.
+	ProposalKindDiagnosisOnly ProposalKind = "DiagnosisOnly"
+	// ProposalKindAction is the v1 fixed-Action form. It remains accepted while the report API still submits
+	// Actions; the v2 agent submits FilePatch.
+	ProposalKindAction ProposalKind = "Action"
+)
+
+// MaxProposalFiles is the largest number of files a Proposal may change.
+const MaxProposalFiles = 5
+
+// MaxFileContentBytes is the largest UpdatedContent a Proposal may carry for one file.
+const MaxFileContentBytes = 64 << 10
+
+// FileEdit is one whole-file change against the recorded base commit. The Page
+// records the file's identity and the digest of its new content; the content
+// itself is held by the server under that digest, so that Page status stays
+// small and never carries repository bytes. The server derives the Diff from
+// the content, so a model-supplied patch cannot be inconsistent with the base.
+type FileEdit struct {
+	// Path is the Target Repository path, relative to the repository root.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=500
+	Path string `json:"path"`
+
+	// BaseBlob is the Git blob SHA of the file at the recorded base commit.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{40,64}$`
+	BaseBlob string `json:"baseBlob"`
+
+	// ContentDigest is the lowercase hexadecimal SHA-256 digest of the complete
+	// new content of the file.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	ContentDigest string `json:"contentDigest"`
+
+	// Rationale states why this file is the edit target for the Diagnosis.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=300
+	Rationale string `json:"rationale"`
+}
+
+// ProposalWarningClass classifies a permitted change that the Operator must review.
+// +kubebuilder:validation:Enum=Image;Replicas;ReplicasZero;NodePlacement;ResourceRemoval;Degraded
+type ProposalWarningClass string
+
+const (
+	// WarningImage means a container image changed.
+	WarningImage ProposalWarningClass = "Image"
+	// WarningReplicas means the replica count changed.
+	WarningReplicas ProposalWarningClass = "Replicas"
+	// WarningReplicasZero means the replica count was set to zero.
+	WarningReplicasZero ProposalWarningClass = "ReplicasZero"
+	// WarningNodePlacement means node placement changed.
+	WarningNodePlacement ProposalWarningClass = "NodePlacement"
+	// WarningResourceRemoval means a resource request or limit was removed.
+	WarningResourceRemoval ProposalWarningClass = "ResourceRemoval"
+	// WarningDegraded means OpenAPI schema validation could not run.
+	WarningDegraded ProposalWarningClass = "Degraded"
+)
+
+// ProposalWarning is a permitted change that is recorded on the Page and carried into the Pull Request body.
+type ProposalWarning struct {
+	// Class classifies the warning.
+	// +required
+	Class ProposalWarningClass `json:"class"`
+
+	// Field names the document field the warning is about.
+	// +required
+	// +kubebuilder:validation:MaxLength=200
+	Field string `json:"field"`
+
+	// Message explains the warning.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=300
+	Message string `json:"message"`
+}
+
+// ProposalValidationError is one reason Validation refused a Proposal.
+type ProposalValidationError struct {
+	// Field names the offending part of the Proposal.
+	// +required
+	// +kubebuilder:validation:MaxLength=200
+	Field string `json:"field"`
+
+	// Message explains the refusal.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=300
+	Message string `json:"message"`
+}
+
+// ProposalValidation is the deterministic, read-only Validation report for a Proposal. Admission, quota, and
+// defaulting are never evaluated: the repository's own Checks are the validating authority.
+type ProposalValidation struct {
+	// Passed reports whether Validation accepted the Proposal.
+	// +required
+	Passed bool `json:"passed"`
+
+	// Degraded reports that OpenAPI schema validation could not run, so the Proposal is approvable but not
+	// eligible for an unattended draft.
+	// +optional
+	Degraded bool `json:"degraded,omitempty"`
+
+	// Errors are the refusals.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	Errors []ProposalValidationError `json:"errors,omitempty"`
+
+	// Warnings are permitted changes that the Operator must review.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	Warnings []ProposalWarning `json:"warnings,omitempty"`
+
+	// Admission states the one line that the Page shows about admission, quota, and defaulting.
+	// +optional
+	// +kubebuilder:validation:MaxLength=120
+	Admission string `json:"admission,omitempty"`
+}
+
+// AdmissionNotEvaluated is the one line that every Validation report carries about what it does not check.
+const AdmissionNotEvaluated = "admission: not evaluated — CI is authoritative"
+
 // Proposal is the single typed remediation recommended for a Page. It is the unit that is validated, hashed,
 // and approved.
 type Proposal struct {
 	// ProposedAction is the Action and its parameters, as supplied by the agent.
 	ProposedAction `json:",inline"`
+
+	// Kind is the form of the Proposal. It is FilePatch for the v2 agent, DiagnosisOnly when no change is
+	// recommended, and Action for a v1 fixed-Action Proposal.
+	// +optional
+	Kind ProposalKind `json:"kind,omitempty"`
+
+	// Files are the whole-file changes of a FilePatch Proposal.
+	// +optional
+	// +kubebuilder:validation:MaxItems=5
+	// +listType=atomic
+	Files []FileEdit `json:"files,omitempty"`
+
+	// DiagnosisOnlyReason explains why no change is recommended.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1000
+	DiagnosisOnlyReason string `json:"diagnosisOnlyReason,omitempty"`
+
+	// Validation is the deterministic Validation report for this Proposal.
+	// +optional
+	Validation *ProposalValidation `json:"validation,omitempty"`
 
 	// RenderedChange is the exact change that Validation rendered.
 	// +optional

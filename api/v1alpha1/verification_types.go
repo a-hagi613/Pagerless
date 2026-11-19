@@ -27,4 +27,13 @@ const (
 	// CheckAlertResolved passes when the triggering alert has resolved in Alertmanager. It is skipped for human
 	// Triggers.
 	CheckAlertResolved = "AlertResolved"
+	// CheckGitOpsObserved passes once the GitOps controller has observed the merge commit.
+	CheckGitOpsObserved = "GitOpsObserved"
+	// CheckReadyReplicas passes when the Target's ready replicas equal its desired replicas.
+	CheckReadyReplicas = "ReadyReplicas"
+	// CheckNoNewWarningEvents passes when no new BackOff or Failed Warning Event was recorded for the Target's
+	// pods since the merge.
+	CheckNoNewWarningEvents = "NoNewWarningEvents"
+	// CheckHealthyWindow passes when the Target stayed healthy for the whole post-merge observation window.
+	CheckHealthyWindow = "HealthyWindow"
 )
