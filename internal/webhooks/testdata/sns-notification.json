@@ -1,0 +1,12 @@
+{
+  "Type": "Notification",
+  "MessageId": "6c1f0f8b-7a4e-4c17-9c4a-1f0f0b8b7a4e",
+  "TopicArn": "arn:aws:sns:us-east-1:123456789012:pagerless-alarms",
+  "Subject": "ALARM: checkout is unavailable",
+  "Message": "{\"AlarmName\":\"checkout-unavailable\",\"AlarmDescription\":\"no healthy replicas\",\"AWSAccountId\":\"123456789012\",\"NewStateValue\":\"ALARM\",\"NewStateReason\":\"Threshold Crossed: 1 datapoint [0.0] was less than the threshold (1.0).\",\"StateChangeTime\":\"2026-11-16T12:02:00.000+0000\",\"Region\":\"US East (N. Virginia)\",\"AlarmArn\":\"arn:aws:cloudwatch:us-east-1:123456789012:alarm:checkout-unavailable\",\"OldStateValue\":\"OK\",\"Trigger\":{\"MetricName\":\"AvailableReplicas\",\"Namespace\":\"ContainerInsights\",\"Dimensions\":[{\"name\":\"Namespace\",\"value\":\"shop\"},{\"name\":\"Deployment\",\"value\":\"checkout\"},{\"name\":\"pagerless.dev/watch\",\"value\":\"true\"},{\"name\":\"severity\",\"value\":\"critical\"}]}}",
+  "Timestamp": "2026-11-16T12:02:01.000Z",
+  "SignatureVersion": "2",
+  "Signature": "unused",
+  "SigningCertURL": "https://sns.us-east-1.amazonaws.com/SimpleNotificationService-abc.pem",
+  "UnsubscribeURL": "https://sns.us-east-1.amazonaws.com/?Action=Unsubscribe"
+}

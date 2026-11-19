@@ -1,10 +1,13 @@
 {{- /*
 Two ConfigMaps, both non-secret. pagerless-config holds the small amount of
 server configuration that is worth naming separately from the Deployment's
-arguments, and pagerless-connectors persists the connector catalogue the
-operator seeds. Credentials never appear here; they live in the credentials
-Secret (ADR-0031).
+arguments, and pagerless-connectors holds the Connector catalogue the operator
+configures. Credentials never appear here; they live in the credentials Secret
+and are referenced by key (ADR-0040).
 */ -}}
+{{- if ne (dig "logs" "nativeKubernetes" "enabled" true .Values.connectors) true }}
+{{- fail "connectors.logs.nativeKubernetes.enabled must stay true: native Kubernetes logs are the only evidence source that needs no external service" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -25,4 +28,4 @@ metadata:
     {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
 data:
   connectors.yaml: |
-    {{- toYaml .Values.connectors.seed | nindent 4 }}
+    {{- toYaml .Values.connectors | nindent 4 }}

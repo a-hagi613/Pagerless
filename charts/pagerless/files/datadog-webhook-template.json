@@ -1,0 +1,13 @@
+{
+  "id": "$ID",
+  "alert_id": "$ALERT_ID",
+  "title": "$EVENT_TITLE",
+  "alert_type": "$ALERT_TYPE",
+  "alert_status": "$ALERT_STATUS",
+  "priority": "$PRIORITY",
+  "date": $DATE,
+  "hostname": "$HOSTNAME",
+  "tags": "$TAGS",
+  "body": "$EVENT_MSG",
+  "url": "$LINK"
+}

@@ -40,7 +40,7 @@ func TestPatchResourcesProposalCarriesTheRenderedPatchAndItsBase(t *testing.T) {
 	before := liveDeployment(t, env, checkout)
 
 	name, agent := startPage(t, env, checkout)
-	result, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "512Mi")))
+	result, err := agent.API.PostReport(t.Context(), patchReport(labelApp, nil, quantities("memory", "512Mi")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 			agent := env.StartAgent(t, created.Name)
 			container := tc.container
 			if container == "" {
-				container = "app"
+				container = labelApp
 			}
 
 			result, err := agent.API.PostReport(t.Context(), patchReport(container, tc.requests, tc.limits))
@@ -245,7 +245,7 @@ func TestEveryRefusedProposalIsRecordedOnThePage(t *testing.T) {
 	deploy(t, env, target{name: "recorded"})
 	name, agent := startPage(t, env, "recorded")
 
-	first, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "1Ti")))
+	first, err := agent.API.PostReport(t.Context(), patchReport(labelApp, nil, quantities("memory", "1Ti")))
 	if err != nil || first.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("first report: %+v, %v, want 422", first, err)
 	}
@@ -316,8 +316,8 @@ func TestSecondFailedProposalEndsThePageAsInvalid(t *testing.T) {
 	deploy(t, env, target{name: "revised"})
 	deploy(t, env, target{name: "hopeless"})
 	deploy(t, env, target{name: "malformed"})
-	tooBig := patchReport("app", nil, quantities("memory", "1Ti"))
-	fine := patchReport("app", nil, quantities("memory", "512Mi"))
+	tooBig := patchReport(labelApp, nil, quantities("memory", "1Ti"))
+	fine := patchReport(labelApp, nil, quantities("memory", "512Mi"))
 
 	t.Run("a revised proposal that passes is attempt 2", func(t *testing.T) {
 		t.Parallel()
@@ -390,7 +390,7 @@ func TestSecondFailedProposalEndsThePageAsInvalid(t *testing.T) {
 func proposedPage(t *testing.T, env *testenv.Env, targetName string) *v1alpha1.Page {
 	t.Helper()
 	name, agent := startPage(t, env, targetName)
-	result, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "512Mi")))
+	result, err := agent.API.PostReport(t.Context(), patchReport(labelApp, nil, quantities("memory", "512Mi")))
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v, want 200", result, err)
 	}

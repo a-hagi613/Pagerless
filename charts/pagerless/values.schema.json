@@ -13,40 +13,84 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "repository": { "type": "string" },
-            "tag": { "type": "string" },
-            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
         "agent": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "repository": { "type": "string" },
-            "tag": { "type": "string" },
-            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
-        "pullSecrets": { "type": "array", "items": { "type": "string" } }
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "create": { "type": "boolean" },
-        "name": { "type": "string" },
-        "annotations": { "additionalProperties": { "type": "string" } },
-        "automountServiceAccountToken": { "type": "boolean" }
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "automountServiceAccountToken": {
+          "type": "boolean"
+        }
       }
     },
     "rbac": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "create": { "type": "boolean" },
-        "watchAllNamespaces": { "type": "boolean" },
-        "watchNamespaces": { "type": "array", "items": { "type": "string" } }
+        "create": {
+          "type": "boolean"
+        },
+        "watchAllNamespaces": {
+          "type": "boolean"
+        },
+        "watchNamespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "approvers": {
@@ -59,10 +103,18 @@
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "apiGroup": { "type": "string" },
-              "kind": { "type": "string" },
-              "name": { "type": "string" },
-              "namespace": { "type": "string" }
+              "apiGroup": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "namespace": {
+                "type": "string"
+              }
             }
           }
         }
@@ -72,34 +124,66 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["token", "disabled"] },
+        "mode": {
+          "enum": [
+            "token",
+            "disabled"
+          ]
+        },
         "adminSecret": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "create": { "type": "boolean" },
-            "name": { "type": "string" },
-            "key": { "type": "string" },
-            "length": { "type": "integer", "minimum": 32 },
-            "keep": { "type": "boolean" }
+            "create": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "length": {
+              "type": "integer",
+              "minimum": 32
+            },
+            "keep": {
+              "type": "boolean"
+            }
           }
         },
         "session": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "secretName": { "type": "string" },
-            "key": { "type": "string" },
-            "ttl": { "type": "string" },
-            "secure": { "enum": ["", "true", "false"] }
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "ttl": {
+              "type": "string"
+            },
+            "secure": {
+              "enum": [
+                "",
+                "true",
+                "false"
+              ]
+            }
           }
         },
-        "bearerToken": { "type": "boolean" },
+        "bearerToken": {
+          "type": "boolean"
+        },
         "proxy": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "identityHeader": { "type": "string" }
+            "identityHeader": {
+              "type": "string"
+            }
           }
         }
       }
@@ -108,26 +192,1242 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "existingSecret": { "type": "string" },
-        "secretName": { "type": "string" },
-        "mountPath": { "type": "string" }
+        "existingSecret": {
+          "type": "string"
+        },
+        "secretName": {
+          "type": "string"
+        },
+        "mountPath": {
+          "type": "string"
+        }
       }
     },
     "connectors": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "seed": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-              "name": { "type": "string" },
-              "type": { "type": "string" },
-              "url": { "type": "string" }
+        "logs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nativeKubernetes": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "tailLines": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "limitBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "sinceSeconds": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPods": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxContainersPerPod": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "concurrency": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "loki": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "tenantID": {
+                  "type": "string"
+                },
+                "queryTemplate": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "grafana": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "datasourceUID": {
+                  "type": "string"
+                },
+                "queryTemplate": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "step": {
+                  "type": "string"
+                }
+              }
+            },
+            "cloudwatchLogs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "logGroupNameTemplate": {
+                  "type": "string"
+                },
+                "logStreamNamePrefix": {
+                  "type": "string"
+                },
+                "filterPattern": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "datadogLogs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "site": {
+                  "type": "string"
+                },
+                "queryTemplate": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "opensearch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "indexTemplate": {
+                  "type": "string"
+                },
+                "queryTemplate": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "mcp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                },
+                "argumentsTemplate": {
+                  "type": "string"
+                }
+              }
             }
           }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "prometheus": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "step": {
+                  "type": "string"
+                },
+                "maxSamples": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "queries": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "grafana": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string"
+                },
+                "datasourceUID": {
+                  "type": "string"
+                },
+                "queryTemplate": {
+                  "type": "string"
+                },
+                "limit": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "step": {
+                  "type": "string"
+                }
+              }
+            },
+            "cloudwatch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                },
+                "namespace": {
+                  "type": "string"
+                },
+                "queries": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "datadog": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "site": {
+                  "type": "string"
+                },
+                "queries": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "mcp": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                },
+                "argumentsTemplate": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "alertState": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "alertmanager": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "filterByNamespace": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "grafana": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "auth": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "secretName": {
+                      "type": "string"
+                    },
+                    "tokenKey": {
+                      "type": "string"
+                    },
+                    "usernameKey": {
+                      "type": "string"
+                    },
+                    "passwordKey": {
+                      "type": "string"
+                    },
+                    "apiKeyKey": {
+                      "type": "string"
+                    },
+                    "appKeyKey": {
+                      "type": "string"
+                    },
+                    "accessKeyIDKey": {
+                      "type": "string"
+                    },
+                    "secretAccessKeyKey": {
+                      "type": "string"
+                    },
+                    "mode": {
+                      "enum": [
+                        "",
+                        "irsa",
+                        "static"
+                      ]
+                    }
+                  }
+                },
+                "timeout": {
+                  "type": "string"
+                },
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "maxPages": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "requestsPerSecond": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "burst": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "failureThreshold": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cooldown": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "pattern": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "patterns": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "alerting": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "snsTopics": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "verifySNSSignature": {
+              "type": "boolean"
+            },
+            "maxAlerts": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "requestsPerSecond": {
+              "type": "number",
+              "minimum": 0
+            },
+            "burst": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "allowedHosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clusterName": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "string"
         }
       }
     },
@@ -135,43 +1435,85 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "size": { "type": "string" },
-        "storageClassName": { "type": "string" },
-        "accessModes": { "type": "array", "items": { "type": "string" } }
+        "size": {
+          "type": "string"
+        },
+        "storageClassName": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "service": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-        "reportPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "type": {
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "reportPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "dashboard": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "baseUrl": { "type": "string" }
+        "baseUrl": {
+          "type": "string"
+        }
       }
     },
     "ingress": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "host": { "type": "string" },
-        "annotations": { "additionalProperties": { "type": "string" } },
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "host": {
+          "type": "string"
+        },
+        "annotations": {
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "tls": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-              "secretName": { "type": "string" },
-              "hosts": { "type": "array", "items": { "type": "string" } }
+              "secretName": {
+                "type": "string"
+              },
+              "hosts": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
@@ -185,34 +1527,60 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string" },
-            "memory": { "type": "string" }
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
           }
         },
         "limits": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "cpu": { "type": "string" },
-            "memory": { "type": "string" }
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
           }
         }
       }
     },
-    "replicaCount": { "type": "integer", "minimum": 1, "maximum": 1 },
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
+    },
     "podSecurityContext": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "runAsNonRoot": { "type": "boolean" },
-        "runAsUser": { "type": "integer" },
-        "runAsGroup": { "type": "integer" },
-        "fsGroup": { "type": "integer" },
+        "runAsNonRoot": {
+          "type": "boolean"
+        },
+        "runAsUser": {
+          "type": "integer"
+        },
+        "runAsGroup": {
+          "type": "integer"
+        },
+        "fsGroup": {
+          "type": "integer"
+        },
         "seccompProfile": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "type": { "enum": ["RuntimeDefault", "Localhost", "Unconfined"] }
+            "type": {
+              "enum": [
+                "RuntimeDefault",
+                "Localhost",
+                "Unconfined"
+              ]
+            }
           }
         }
       }
@@ -221,36 +1589,83 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allowPrivilegeEscalation": { "type": "boolean" },
-        "readOnlyRootFilesystem": { "type": "boolean" },
+        "allowPrivilegeEscalation": {
+          "type": "boolean"
+        },
+        "readOnlyRootFilesystem": {
+          "type": "boolean"
+        },
         "capabilities": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "drop": { "type": "array", "items": { "type": "string" } }
+            "drop": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         }
       }
     },
-    "nodeSelector": { "additionalProperties": { "type": "string" } },
+    "nodeSelector": {
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "tolerations": {
       "type": "array",
       "items": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "key": { "type": "string" },
-          "operator": { "enum": ["Exists", "Equal"] },
-          "value": { "type": "string" },
-          "effect": { "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute", ""] },
-          "tolerationSeconds": { "type": "integer" }
+          "key": {
+            "type": "string"
+          },
+          "operator": {
+            "enum": [
+              "Exists",
+              "Equal"
+            ]
+          },
+          "value": {
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "NoSchedule",
+              "PreferNoSchedule",
+              "NoExecute",
+              ""
+            ]
+          },
+          "tolerationSeconds": {
+            "type": "integer"
+          }
         }
       }
     },
     "affinity": {},
-    "podAnnotations": { "additionalProperties": { "type": "string" } },
-    "podLabels": { "additionalProperties": { "type": "string" } },
-    "commonLabels": { "additionalProperties": { "type": "string" } },
-    "commonAnnotations": { "additionalProperties": { "type": "string" } }
+    "podAnnotations": {
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "podLabels": {
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "commonLabels": {
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "commonAnnotations": {
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
   }
 }

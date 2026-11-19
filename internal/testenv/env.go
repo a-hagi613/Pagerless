@@ -57,6 +57,8 @@ const (
 	AlertmanagerToken = "pagerless-alertmanager-test-token"
 	// ClusterID is the stable cluster identifier the watcher hashes into every Fingerprint.
 	ClusterID = "cluster-test"
+	// WebhookToken is the deterministic bearer token of the v2 alert webhook.
+	WebhookToken = "pagerless-webhook-test-token"
 
 	pollInterval = 50 * time.Millisecond
 	waitTimeout  = 30 * time.Second
@@ -319,6 +321,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		ArgoCDToken:              func() (string, error) { return env.ArgoCD.Token(), nil },
 		AlertmanagerURL:          env.Alertmanager.URL,
 		AlertmanagerToken:        o.alertToken,
+		AlertmanagerWebhookToken: func() (string, error) { return WebhookToken, nil },
 		VerificationPollInterval: o.verificationPoll,
 		RetentionPollInterval:    o.retentionPoll,
 		AlertNamespaces:          o.alertNamespaces,

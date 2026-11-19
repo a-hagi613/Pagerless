@@ -106,7 +106,7 @@ func TestPublicationIsIdempotentPerProposal(t *testing.T) {
 	if err := env.Client.Get(t.Context(), key, &page); err != nil {
 		t.Fatal(err)
 	}
-	page.Labels = map[string]string{"pagerless.dev/touched": "true"}
+	page.Labels = map[string]string{"pagerless.dev/touched": labelTrue}
 	if err := env.Client.Update(t.Context(), &page); err != nil {
 		t.Fatal(err)
 	}

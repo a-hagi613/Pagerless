@@ -1,0 +1,13 @@
+{
+  "id": "dd-alert-7781",
+  "alert_id": "7781",
+  "title": "checkout latency is above 2s",
+  "alert_type": "error",
+  "alert_status": "Alert",
+  "priority": "P1",
+  "date": 1763294400,
+  "hostname": "checkout-7d9c8f5b6d-2xk4p",
+  "tags": "kube_namespace:shop,kube_deployment:checkout,pagerless.dev/watch:true",
+  "body": "p95 latency is 2.4s",
+  "url": "https://app.datadoghq.com/event/event?id=7781"
+}

@@ -102,11 +102,59 @@ credentials:
 # --- Connectors -------------------------------------------------------------
 
 connectors:
-  # Seed connectors rendered into ConfigMap pagerless-connectors. Each entry is
-  # {name, type, url, options}; tokens are read from the credentials Secret
-  # under CONNECTOR_<UPPER_NAME>_TOKEN. The connector catalogue is owned by the
-  # connectors slice; this chart only persists what it is given.
-  seed: []
+  # Non-secret Connector configuration, rendered into ConfigMap
+  # pagerless-connectors. Credentials are references to the credentials
+  # Secret's keys, never values (ADR-0040).
+  logs:
+    # Native Kubernetes log collection is mandatory: it is the only evidence
+    # source that needs no external service, so enabled must stay true and the
+    # chart fails to render when it is disabled.
+    nativeKubernetes:
+      enabled: true
+      tailLines: 500
+      limitBytes: 262144
+      sinceSeconds: 3600
+      maxPods: 5
+      maxContainersPerPod: 4
+      concurrency: 8
+    # An empty body disables the optional Connectors. Each one takes only a
+    # URL, query template, bounds, and a reference to credentials by key.
+    loki:
+      enabled: false
+    grafana:
+      enabled: false
+    cloudwatchLogs:
+      enabled: false
+    datadogLogs:
+      enabled: false
+    opensearch:
+      enabled: false
+  metrics:
+    prometheus:
+      enabled: false
+    grafana:
+      enabled: false
+    cloudwatch:
+      enabled: false
+    datadog:
+      enabled: false
+  alertState:
+    alertmanager:
+      enabled: false
+    grafana:
+      enabled: false
+  subject:
+    rules: []
+  redaction:
+    patterns: []
+  alerting:
+    # SNS topic ARNs are the only topics the receiver accepts. An empty list
+    # refuses every SNS delivery.
+    snsTopics: []
+    verifySNSSignature: false
+    maxAlerts: 50
+    requestsPerSecond: 10
+    burst: 20
 
 # --- Storage and exposure ---------------------------------------------------
 

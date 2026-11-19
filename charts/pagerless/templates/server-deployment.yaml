@@ -72,6 +72,11 @@ spec:
             - --sandbox-url=
             - --argocd-url=
             - --alertmanager-url=
+            - --connectors-config=/etc/pagerless/connectors/connectors.yaml
+            - --webhook-alertmanager-token-file={{ .Values.credentials.mountPath }}/ALERTMANAGER_WEBHOOK_TOKEN
+            - --webhook-grafana-secret-file={{ .Values.credentials.mountPath }}/GRAFANA_WEBHOOK_SECRET
+            - --webhook-datadog-token-file={{ .Values.credentials.mountPath }}/DATADOG_WEBHOOK_TOKEN
+            - --webhook-generic-token-file={{ .Values.credentials.mountPath }}/GENERIC_WEBHOOK_TOKEN
             - --dashboard-bind-address=:{{ .Values.service.port }}
             - --dashboard-base-url={{ .Values.dashboard.baseUrl }}
             - --dashboard-cookie-secure={{ .Values.auth.session.secure }}
@@ -127,6 +132,9 @@ spec:
               mountPath: /var/run/pagerless/auth/session
               readOnly: true
             {{- end }}
+            - name: connectors
+              mountPath: /etc/pagerless/connectors
+              readOnly: true
             - name: data
               mountPath: /var/lib/pagerless
             - name: temporary
@@ -149,6 +157,9 @@ spec:
               - key: {{ .Values.auth.session.key }}
                 path: session-key
         {{- end }}
+        - name: connectors
+          configMap:
+            name: pagerless-connectors
         - name: data
           persistentVolumeClaim:
             claimName: pagerless-data

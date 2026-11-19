@@ -33,7 +33,7 @@ var alertTrigger = v1alpha1.Trigger{
 var humanTrigger = v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI}
 
 // podLabels are the labels that the Target's Deployment selects its pods by.
-func podLabels(name string) map[string]string { return map[string]string{"app": name} }
+func podLabels(name string) map[string]string { return map[string]string{labelApp: name} }
 
 // settle gives the server's reconcilers time to act, for a test that asserts that nothing changed.
 func settle() { time.Sleep(600 * time.Millisecond) }
@@ -57,7 +57,7 @@ func merged(t *testing.T, env *testenv.Env, trigger v1alpha1.Trigger) (*v1alpha1
 	candidate.Spec.Trigger = trigger
 	created := env.CreatePage(t, candidate)
 	agent := env.StartAgent(t, created.Name)
-	result, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "512Mi")))
+	result, err := agent.API.PostReport(t.Context(), patchReport(labelApp, nil, quantities("memory", "512Mi")))
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v, want 200", result, err)
 	}

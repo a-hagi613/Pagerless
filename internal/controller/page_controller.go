@@ -20,8 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/contextbundle"
 	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 )
@@ -44,6 +46,16 @@ type PageReconciler struct {
 	Clock clock.PassiveClock
 	// PollInterval is how often a Proposed Page is checked for staleness. It defaults to DefaultProposalPollInterval.
 	PollInterval time.Duration
+	// Evidence assembles the Page's Context Bundle before its agent Job starts.
+	// It is optional; when it is nil the Page starts with no stored bundle.
+	Evidence EvidenceCollector
+}
+
+// EvidenceCollector assembles and stores the Context Bundle of a Page. The
+// Context Bundle is gathered once, before the agent's first model call, and a
+// Connector failure degrades it rather than failing the Page.
+type EvidenceCollector interface {
+	Assemble(ctx context.Context, request contextbundle.Request) (*contextbundle.Bundle, error)
 }
 
 // SetupWithManager registers the reconciler for Pages and the Jobs it owns.
@@ -137,6 +149,22 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 			return nil
 		}
 	}
+	// The Context Bundle is gathered before the agent Job exists, so the agent
+	// starts from the same evidence the Page records. A failed assembly is a
+	// degraded bundle, never a failed Page: the Page proceeds on native logs
+	// alone and the operator sees the missing summary.
+	evidence := p.Status.Evidence
+	if r.Evidence != nil && evidence == nil {
+		bundle, err := r.Evidence.Assemble(ctx, contextbundle.Request{
+			Page: p.Name, PageUID: string(p.UID), Namespace: p.Namespace, Target: p.Spec.Target,
+			Pod: p.Spec.Trigger.Pod,
+		})
+		if err != nil {
+			logf.FromContext(ctx).Error(err, "assemble the Context Bundle", "page", p.Name)
+		} else {
+			evidence = bundle.Summary()
+		}
+	}
 	job := buildAgentJob(p, r.Job)
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own agent Job: %w", err)
@@ -162,6 +190,9 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 		latest.Status.Investigation = &v1alpha1.InvestigationStatus{
 			State: v1alpha1.InvestigationRunning,
 			Job:   job.Name,
+		}
+		if evidence != nil {
+			latest.Status.Evidence = evidence
 		}
 		return nil
 	})
