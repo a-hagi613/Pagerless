@@ -1,6 +1,6 @@
 # ADR-0011: Approval is the only human gate
 
-- **Status:** Accepted
+- **Status:** Accepted; its auto-merge mechanism is superseded by [0039](0039-provenance-is-a-recorded-ladder.md)
 - **Date:** 2026-11-16
 
 ## Context

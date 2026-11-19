@@ -13,11 +13,11 @@ import (
 // Limits that the server enforces on agent input, matching the Page CRD schema.
 const (
 	MaxDiagnosisLength   = 4000
-	MaxFindingSourceLen  = 500
-	MaxFindingSummaryLen = 1000
+	MaxFindingSourceLen  = 300
+	MaxFindingSummaryLen = 500
 	MaxNarrativeLength   = 4000
-	MaxStepSummaryLength = 300
-	MaxToolNameLength    = 128
+	MaxStepSummaryLength = 200
+	MaxToolNameLength    = 64
 	// MaxInputTokens bounds the input tokens one investigation may report.
 	MaxInputTokens int64 = 10_000_000
 	// MaxOutputTokens bounds the output tokens one investigation may report.
