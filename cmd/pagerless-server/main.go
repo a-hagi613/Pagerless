@@ -23,7 +23,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
-	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/github"
 	"github.com/a-hagi613/pagerless/internal/keycloak"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
@@ -40,8 +40,8 @@ func main() {
 	}
 }
 
-// defaultExecutorTokenFile is where the Deployment projects the token for the Executor.
-const defaultExecutorTokenFile = "/var/run/secrets/pagerless/executor/token"
+// defaultGitHubTokenFile is where the Deployment mounts the write-scoped GitHub token.
+const defaultGitHubTokenFile = "/var/run/secrets/pagerless/github/token"
 
 // defaultArgoCDTokenFile is where the Argo CD API token is mounted.
 const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
@@ -136,11 +136,12 @@ func run() error {
 			"minimum replica count in Scale")
 		scaleMax = flag.Int("scale-max-replicas", int(defaultScale.Max),
 			"maximum replica count in Scale")
-		executorURL = flag.String("executor-url", "",
-			"base URL of pagerless-executor (default: http://pagerless-executor.<namespace>.svc:8080)")
-		executorTokenFile = flag.String("executor-token-file", defaultExecutorTokenFile,
-			"file that holds the projected service account token, with audience "+executorapi.Audience+
-				", that authenticates the server to the Executor")
+		githubAPIURL = flag.String("github-api-url", github.DefaultGitHubAPI,
+			"base URL of the target repository's GitHub API")
+		githubRepository = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
+			"owner/name of the target repository; empty derives it from --sandbox-url")
+		githubTokenFile = flag.String("github-token-file", defaultGitHubTokenFile,
+			"file that holds the write-scoped token that publishes a Proposal")
 		argoCDURL = flag.String("argocd-url", "http://argocd-server.argocd.svc",
 			"base URL of the Argo CD API server, which Verification asks whether the merged change is synced")
 		argoCDTokenFile = flag.String("argocd-token-file", defaultArgoCDTokenFile,
@@ -248,9 +249,6 @@ func run() error {
 		return fmt.Errorf("provision webhook TLS: %w", err)
 	}
 
-	if *executorURL == "" {
-		*executorURL = fmt.Sprintf("http://pagerless-executor.%s.svc:8080", *namespace)
-	}
 	listener, err := net.Listen("tcp", *reportBind)
 	if err != nil {
 		return fmt.Errorf("listen for the report API: %w", err)
@@ -279,8 +277,9 @@ func run() error {
 		GrafanaMetricsDashboardUID: *grafanaMetricsDashboard,
 		GrafanaLogsDashboardUID:    *grafanaLogsDashboard,
 		HistoryPath:                *historyPath,
-		ExecutorURL:                *executorURL,
-		ExecutorToken:              tokenFromFile(*executorTokenFile),
+		GitHubAPIURL:               *githubAPIURL,
+		GitHubRepository:           *githubRepository,
+		GitHubToken:                tokenFromFile(*githubTokenFile),
 		ArgoCDURL:                  *argoCDURL,
 		ArgoCDToken:                tokenFromFile(*argoCDTokenFile),
 		ArgoCDApplication:          *argoCDApplication,

@@ -15,8 +15,8 @@ COPY agent/pyproject.toml agent/uv.lock ./
 RUN uv sync --locked --no-install-project
 COPY agent/src/ ./src/
 RUN uv sync --locked --no-dev
-COPY evals/replay/oom.json /app/recordings/oom.json
-COPY evals/replay/narrative.json /app/recordings/narrative.json
+COPY agent/tests/fixtures/oom.json /app/recordings/oom.json
+COPY agent/tests/fixtures/narrative.json /app/recordings/narrative.json
 
 ARG VERSION=local
 ARG VCS_REF=local

@@ -1,5 +1,5 @@
 {{- /*
-ConfigMaps read by pagerless-server, pagerless-executor, and the agent Job. The
+ConfigMaps read by pagerless-server and the agent Job. The
 values are the ones hack/install.sh and the local bootstrap also write, so both
 installation paths describe the same integrations.
 */ -}}
@@ -13,7 +13,6 @@ metadata:
 data:
   # Empty selects live-only RestartWorkload and NoAction remediation.
   url: {{ .Values.sandbox.url | quote }}
-  githubRepository: {{ .Values.sandbox.githubRepository | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

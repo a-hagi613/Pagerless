@@ -22,7 +22,7 @@ from pagerless_agent.settings import ConfigError, NarrativeSettings
 from tests.fakes import ScriptedProvider, Spy, StandInServer, respond
 
 # The recording that the agent image ships at /app/recordings/narrative.json.
-RECORDING = Path(__file__).resolve().parents[2] / "evals" / "replay" / "narrative.json"
+RECORDING = Path(__file__).resolve().parent / "fixtures" / "narrative.json"
 
 
 def narrative_env(tmp_path: Path, *, recording: Path = RECORDING) -> dict[str, str]:

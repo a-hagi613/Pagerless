@@ -14,8 +14,8 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/change"
 	"github.com/a-hagi613/pagerless/internal/proposal"
-	"github.com/a-hagi613/pagerless/internal/remediation"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 )
 
@@ -51,14 +51,14 @@ type Config struct {
 
 // Validator validates Scale Proposals and renders their patch.
 type Validator struct {
-	change *remediation.Validator
+	change *change.Validator
 	cfg    Config
 }
 
 // New returns a Validator.
 func New(cfg Config) *Validator {
 	return &Validator{
-		change: remediation.New(remediation.Config{
+		change: change.New(change.Config{
 			Reader:            cfg.Reader,
 			Sandbox:           cfg.Sandbox,
 			AllowedNamespaces: cfg.AllowedNamespaces,
@@ -98,7 +98,7 @@ type renderer struct {
 	writer   client.Writer
 }
 
-var _ remediation.Renderer = (*renderer)(nil)
+var _ change.Renderer = (*renderer)(nil)
 
 func (r *renderer) Action() v1alpha1.Action { return v1alpha1.ActionScale }
 
@@ -115,11 +115,11 @@ func (r *renderer) CheckParameters() []agentapi.ValidationError {
 	}}
 }
 
-func (r *renderer) Check(*remediation.LiveWorkload) []agentapi.ValidationError { return nil }
+func (r *renderer) Check(*change.LiveWorkload) []agentapi.ValidationError { return nil }
 
 func (r *renderer) Render(
 	_ context.Context, src []byte, workload v1alpha1.WorkloadReference,
-	_ *remediation.LiveWorkload, _ string,
+	_ *change.LiveWorkload, _ string,
 ) ([]byte, []agentapi.ValidationError, error) {
 	rendered, err := render(src, workload, r.replicas)
 	return rendered, nil, err
@@ -128,7 +128,7 @@ func (r *renderer) Render(
 // DryRun applies the replica count to the live Workload with a server-side dry
 // run, which runs the API server's own validation and admission.
 func (r *renderer) DryRun(
-	ctx context.Context, live *remediation.LiveWorkload,
+	ctx context.Context, live *change.LiveWorkload,
 ) ([]agentapi.ValidationError, error) {
 	live.SetReplicas(r.replicas)
 	// The dry run asks whether the scaled object is acceptable, not whether nothing changed since it was read;

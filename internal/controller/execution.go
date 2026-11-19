@@ -1,10 +1,9 @@
+// Package controller reconciles Triage, TriageApproval, Proposal, and Verification.
 package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -16,29 +15,24 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
-	"github.com/a-hagi613/pagerless/internal/executorapi"
+	"github.com/a-hagi613/pagerless/internal/publish"
 	"github.com/a-hagi613/pagerless/internal/triage"
 )
 
-// DefaultExecutionPollInterval is how often the Executor is asked whether an
-// open pull request has merged.
+// DefaultExecutionPollInterval is how often an open pull request is checked for a merge.
 const DefaultExecutionPollInterval = 10 * time.Second
 
-// maxConditionMessage bounds a refusal quoted in a condition.
+// maxConditionMessage bounds a failure message quoted in a condition.
 const maxConditionMessage = 500
 
-// Executor is how pagerless-server asks pagerless-executor to carry out a
-// Proposal (ADR-0014).
-type Executor interface {
-	// Execute executes the Triage's Proposal with the hash, or returns the
-	// pull request that an earlier call opened for it.
-	Execute(ctx context.Context, name, proposalHash string) (*executorapi.Response, error)
+// Publisher publishes an approved Proposal as a pull request and reports the pull request's state.
+type Publisher interface {
+	// Publish commits the Proposal to a branch, opens or finds its pull request, and reports the state.
+	Publish(ctx context.Context, tr *v1alpha1.Triage) (publish.Result, error)
 }
 
-// ExecutionReconciler hands an Approved Triage to the Executor, moves it to
-// Executing, and records the pull request and, once it merges, the merge
-// commit. It writes nothing but status (ADR-0001) and holds no credentials
-// beyond its own token: the Executor re-checks the Approval before it acts.
+// ExecutionReconciler publishes an Approved Proposal as a pull request, moves the Triage to Executing, and
+// records the pull request and, once it merges, the merge commit. It writes nothing but status (ADR-0001).
 //
 // Verification takes over once the merge commit is recorded.
 type ExecutionReconciler struct {
@@ -46,8 +40,8 @@ type ExecutionReconciler struct {
 	Client client.Client
 	// Status is the only writer of Triage status.
 	Status *triage.StatusStore
-	// Executor carries out the Proposals.
-	Executor Executor
+	// Publisher carries out the Proposals.
+	Publisher Publisher
 	// Clock timestamps the execution.
 	Clock clock.PassiveClock
 	// PollInterval is how often an open pull request is checked for a merge. It defaults to
@@ -82,14 +76,13 @@ func (r *ExecutionReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	proposal := tr.Status.Proposal
-	if !tr.DeletionTimestamp.IsZero() || proposal == nil ||
-		(!proposal.Action.DeliveredByPullRequest() && !proposal.Action.ExecutesLive()) {
+	if !tr.DeletionTimestamp.IsZero() || proposal == nil || !proposal.Action.DeliveredByPullRequest() {
 		return ctrl.Result{}, nil
 	}
 	switch tr.Status.Phase {
 	case v1alpha1.PhaseApproved:
-		// Executing first, so that a crash between here and the request leaves a Triage that is visibly mid-execution
-		// and is retried, and so that the request is idempotent.
+		// Executing first, so that a crash between here and the publication leaves a Triage that is visibly
+		// mid-execution and is retried, and so that the publication is idempotent.
 		if _, err := r.Status.Update(ctx, req.NamespacedName, func(latest *v1alpha1.Triage) error {
 			if latest.Status.Phase == v1alpha1.PhaseApproved {
 				latest.Status.Phase = v1alpha1.PhaseExecuting
@@ -106,8 +99,8 @@ func (r *ExecutionReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	}
 }
 
-// execute asks the Executor and records its answer. It reads the Triage
-// directly so that it acts on the phase it has just written.
+// execute publishes the Proposal and records the result. It reads the Triage directly so that it acts on the
+// phase it has just written.
 func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey) (ctrl.Result, error) {
 	var tr v1alpha1.Triage
 	if err := r.Status.Reader.Get(ctx, key, &tr); err != nil {
@@ -116,12 +109,7 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 	if tr.Status.Phase != v1alpha1.PhaseExecuting || tr.Status.Proposal == nil {
 		return ctrl.Result{}, nil
 	}
-	if tr.Status.Proposal.Action.DeliveredByPullRequest() {
-		if tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != "" {
-			return ctrl.Result{}, nil
-		}
-	} else if tr.Status.Execution != nil && tr.Status.Execution.ExecutedAt != nil {
-		// A live Action is complete as soon as its result is recorded; Verification takes over.
+	if tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != "" {
 		return ctrl.Result{}, nil
 	}
 	winner, _, err := triage.CanonicalActive(ctx, r.Status.Reader, tr.Namespace, tr.Spec.Workload)
@@ -133,29 +121,20 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 	}
 	log := logf.FromContext(ctx).WithValues("triage", key.Name)
 
-	response, err := r.Executor.Execute(ctx, key.Name, tr.Status.Proposal.Hash)
-	var refusal *executorapi.Error
-	if errors.As(err, &refusal) && refusal.Refused() {
-		log.Info("the Executor refused the Proposal", "reason", refusal.Reason, "message", refusal.Message)
-		return ctrl.Result{}, r.fail(ctx, key, v1alpha1.ReasonExecutionRefused, refusal.Error())
-	}
+	result, err := r.Publisher.Publish(ctx, &tr)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("ask the Executor to execute: %w", err)
+		return ctrl.Result{}, fmt.Errorf("publish the Proposal: %w", err)
 	}
-	if response.State == executorapi.PullRequestClosed {
-		log.Info("the pull request closed without merging", "pullRequest", response.PullRequestURL)
+	if result.Closed {
+		log.Info("the pull request closed without merging", "pullRequest", result.PullRequestURL)
 		return ctrl.Result{}, r.fail(ctx, key, v1alpha1.ReasonPullRequestClosed,
-			"the pull request "+response.PullRequestURL+" was closed without merging")
+			"the pull request "+result.PullRequestURL+" was closed without merging")
 	}
-	if err := r.record(ctx, key, response); err != nil {
+	if err := r.record(ctx, key, result); err != nil {
 		return ctrl.Result{}, err
 	}
-	if response.Live {
-		log.Info("executed the Proposal live", "restartedPods", response.RestartedPods)
-		return ctrl.Result{}, nil
-	}
-	if response.State == executorapi.PullRequestMerged {
-		log.Info("the pull request merged", "pullRequest", response.PullRequestURL, "mergeCommit", response.MergeCommit)
+	if result.Merged {
+		log.Info("the pull request merged", "pullRequest", result.PullRequestURL, "mergeCommit", result.MergeCommit)
 		return ctrl.Result{}, nil
 	}
 	interval := r.PollInterval
@@ -166,7 +145,7 @@ func (r *ExecutionReconciler) execute(ctx context.Context, key client.ObjectKey)
 }
 
 // record writes the pull request, and the merge commit once merged.
-func (r *ExecutionReconciler) record(ctx context.Context, key client.ObjectKey, response *executorapi.Response) error {
+func (r *ExecutionReconciler) record(ctx context.Context, key client.ObjectKey, result publish.Result) error {
 	_, err := r.Status.Update(ctx, key, func(latest *v1alpha1.Triage) error {
 		if latest.Status.Phase != v1alpha1.PhaseExecuting {
 			return nil
@@ -175,21 +154,16 @@ func (r *ExecutionReconciler) record(ctx context.Context, key client.ObjectKey, 
 			now := metav1.NewTime(r.Clock.Now())
 			latest.Status.Execution = &v1alpha1.Execution{ExecutedAt: &now}
 		}
-		if response.Live {
-			latest.Status.Execution.RestartedPods = slices.Clone(response.RestartedPods)
-			return nil
-		}
-		latest.Status.Execution.PullRequestURL = response.PullRequestURL
-		if response.State == executorapi.PullRequestMerged {
-			latest.Status.Execution.MergeCommit = response.MergeCommit
+		latest.Status.Execution.PullRequestURL = result.PullRequestURL
+		if result.Merged {
+			latest.Status.Execution.MergeCommit = result.MergeCommit
 		}
 		return nil
 	})
 	return err
 }
 
-// fail ends an Executing Triage as Failed, with the Proposal and the pull
-// request preserved.
+// fail ends an Executing Triage as Failed, with the Proposal and the pull request preserved.
 func (r *ExecutionReconciler) fail(ctx context.Context, key client.ObjectKey, reason, message string) error {
 	if len(message) > maxConditionMessage {
 		message = message[:maxConditionMessage] + "..."

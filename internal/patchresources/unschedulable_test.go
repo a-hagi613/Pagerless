@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/a-hagi613/pagerless/internal/remediation"
+	"github.com/a-hagi613/pagerless/internal/change"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 )
 
@@ -27,7 +27,7 @@ const (
 	unschedulableMemory       = "256Gi"
 )
 
-func unschedulableLiveWorkload(requests corev1.ResourceList) *remediation.LiveWorkload {
+func unschedulableLiveWorkload(requests corev1.ResourceList) *change.LiveWorkload {
 	deployment := &appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
 			Template: corev1.PodTemplateSpec{
@@ -42,7 +42,7 @@ func unschedulableLiveWorkload(requests corev1.ResourceList) *remediation.LiveWo
 			},
 		},
 	}
-	return &remediation.LiveWorkload{Object: deployment, PodSpec: &deployment.Spec.Template.Spec}
+	return &change.LiveWorkload{Object: deployment, PodSpec: &deployment.Spec.Template.Spec}
 }
 
 type localRepo struct {
@@ -118,7 +118,7 @@ func TestCheckUnschedulableTreatsKnownGoodTagAsOptional(t *testing.T) {
 		},
 	}
 	reader := fake.NewClientBuilder().WithObjects(node).Build()
-	liveUnschedulable := func() *remediation.LiveWorkload {
+	liveUnschedulable := func() *change.LiveWorkload {
 		return unschedulableLiveWorkload(list(cpuResource, defaultCPURequest, memoryResource, unschedulableMemory))
 	}
 
