@@ -65,8 +65,14 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      # GoReleaser writes each SBOM by running syft, whose name it resolves on
+      # PATH rather than taking a path. Publishing the directory the pinned tools
+      # were installed into puts both binaries on PATH for the steps that follow.
       - name: Install the pinned GoReleaser and Syft
-        run: bash scripts/release/tools.sh
+        run: |
+          set -euo pipefail
+          bash scripts/release/tools.sh
+          echo "$PWD/bin/release-tools" >>"$GITHUB_PATH"
       - name: Publish the archives, checksums, SBOMs, and Krew index Pull Request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
