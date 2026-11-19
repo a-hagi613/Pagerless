@@ -81,8 +81,16 @@ helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
 ```
 
 The chart and both images (`pagerless-server` and `pagerless-agent`) are
-published at that version. The release job publishes the plugin archives, the
-Krew index entry, and the Homebrew formula from the same tag:
+published at that version. The plugin is published by the same release; once the
+`v2.0.0` release is published, install its rendered `page.yaml` asset directly:
+
+```bash
+curl -fLO https://github.com/a-hagi613/pagerless/releases/download/v2.0.0/page.yaml
+kubectl krew install --manifest=page.yaml
+```
+
+The shorter commands below start working once the release's Krew index and
+Homebrew formula pull requests are merged upstream:
 
 ```bash
 kubectl krew install page
@@ -91,8 +99,8 @@ brew install a-hagi613/tap/kubectl-page
 
 `kubectl page version` prints the plugin, the chart version it expects, and the
 Go version. [`docs/install.md`](docs/install.md) covers the namespace allowlist,
-an externally managed credentials Secret, the rendered `page.yaml` manifest, and
-uninstall.
+an externally managed credentials Secret, rendering the checked-in manifest
+template, and uninstall.
 
 ## One capability, two surfaces
 
