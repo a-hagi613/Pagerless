@@ -51,6 +51,9 @@ const (
 type kubeTools struct {
 	reader  client.Reader
 	podLogs PodLogReader
+	// now reads the broker's clock, so a look-back window is anchored to the
+	// same instant as the rest of the call rather than to the wall clock.
+	now func() time.Time
 }
 
 // getArguments are the arguments of object_get and owner_chain.
@@ -362,7 +365,7 @@ func (k *kubeTools) events(ctx context.Context, page *v1alpha1.Page, scope Scope
 	if limit > maxEventLimit {
 		limit = maxEventLimit
 	}
-	cutoff := time.Now().Add(-time.Duration(since) * time.Second)
+	cutoff := k.now().Add(-time.Duration(since) * time.Second)
 	result := eventResult{}
 	var notes []string
 	core, note, err := k.coreEvents(ctx, page, cutoff)
