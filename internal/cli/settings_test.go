@@ -344,7 +344,8 @@ func TestConfigTestProbesTheSelectedTarget(t *testing.T) {
 		t.Errorf("output = %q, want the successful probe", out)
 	}
 
-	_, _, err = runCLI(t, "", "--config", configPath, "config", "test", "--target", "connector:prometheus", "--mode", "server")
+	_, _, err = runCLI(t, "", "--config", configPath,
+		"config", "test", "--target", "connector:prometheus", "--mode", "server")
 	if err == nil || !strings.Contains(err.Error(), "CONNECTOR_PROMETHEUS_TOKEN is not configured") {
 		t.Fatalf("error = %v, want the failed probe", err)
 	}

@@ -2,6 +2,7 @@ package dashboardapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,6 +27,9 @@ const (
 	testNamespace = "pagerless"
 	testSecret    = "pagerless-credentials"
 	testCSRF      = "csrf-token"
+	testSession   = "session"
+	testSigned    = "signed"
+	testAIBaseURL = "testAIBaseURL"
 )
 
 // fakeAuth signs in one user when the request carries its cookie.
@@ -109,7 +113,7 @@ func requestPath(t *testing.T, handler http.Handler, method, path, body string) 
 		reader = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, reader)
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	if method != http.MethodGet {
 		req.Header.Set("X-CSRF-Token", testCSRF)
 	}
@@ -122,7 +126,7 @@ func TestSettingsMasksEveryCredential(t *testing.T) {
 	t.Parallel()
 	handler, _ := newHandler(t, "")
 	rec, body := request(t, handler, http.MethodPatch,
-		`{"ai":{"apiKey":"sk-super-secret","baseUrl":"https://models.example/v1","model":"novalite"}}`)
+		fmt.Sprintf(`{"ai":{"apiKey":"sk-super-secret","baseUrl":%q,"model":"novalite"}}`, testAIBaseURL))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH /api/settings = %d: %s", rec.Code, body)
 	}
@@ -148,7 +152,7 @@ func TestSettingsMasksEveryCredential(t *testing.T) {
 	if !answer.Onboarding {
 		t.Error("onboarding is complete although no Target Repository is configured")
 	}
-	if answer.AI.BaseURL != "https://models.example/v1" {
+	if answer.AI.BaseURL != testAIBaseURL {
 		t.Errorf("ai.baseUrl = %q, want the non-secret value", answer.AI.BaseURL)
 	}
 	if !answer.Fields[credentials.KeyAIAPIKey].Configured {
@@ -199,9 +203,9 @@ func TestBothSurfacesWriteTheIdenticalKeySet(t *testing.T) {
 
 	// The Portal path: one grouped PATCH, exactly what the settings form posts.
 	rec, body := request(t, apiHandler, http.MethodPatch,
-		`{"ai":{"apiKey":"sk-1","baseUrl":"https://models.example/v1","model":"m"},
+		fmt.Sprintf(`{"ai":{"apiKey":"sk-1","baseUrl":%q,"model":"m"},
 		  "repository":{"owner":"acme","repo":"shop","token":"ghp_1"},
-		  "connectors":[{"name":"loki","token":"loki-token"}]}`)
+		  "connectors":[{"name":"loki","token":"loki-token"}]}`, testAIBaseURL))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("PATCH /api/settings = %d: %s", rec.Code, body)
 	}
@@ -225,7 +229,7 @@ func TestBothSurfacesWriteTheIdenticalKeySet(t *testing.T) {
 	}
 	if _, err := cliStore.Write(t.Context(), map[string]string{
 		credentials.KeyAIAPIKey:               "sk-1",
-		credentials.KeyAIBaseURL:              "https://models.example/v1",
+		credentials.KeyAIBaseURL:              "testAIBaseURL",
 		credentials.KeyAIModel:                "m",
 		credentials.KeyGitHubToken:            "ghp_1",
 		credentials.KeyGitHubRepo:             "acme/shop",
@@ -271,7 +275,7 @@ func TestSettingsWritesRequireASessionAndCSRF(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPatch, "/api/settings", strings.NewReader(`{"values":{"AI_API_KEY":"x"}}`))
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -299,7 +303,7 @@ func TestTheOnboardingWizardConvergesOnTheCLIKeySet(t *testing.T) {
 	apiHandler, apiClient := newHandler(t, "")
 
 	steps := []string{
-		`{"ai":{"baseUrl":"https://models.example/v1","model":"m","apiKey":"sk-1"}}`,
+		`{"ai":{"baseUrl":"testAIBaseURL","model":"m","apiKey":"sk-1"}}`,
 		`{"repository":{"owner":"acme","repo":"shop","token":"ghp_1"}}`,
 		`{"connectors":[{"name":"loki","token":"loki-token"}]}`,
 	}
@@ -314,8 +318,9 @@ func TestTheOnboardingWizardConvergesOnTheCLIKeySet(t *testing.T) {
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
+	secretMeta := metav1.ObjectMeta{Namespace: testNamespace, Name: testSecret}
 	cliSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: testSecret},
+		ObjectMeta: secretMeta,
 		Data:       map[string][]byte{},
 	}
 	for _, key := range credentials.Keys() {
@@ -329,7 +334,7 @@ func TestTheOnboardingWizardConvergesOnTheCLIKeySet(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := cliStore.Write(t.Context(), map[string]string{
-		credentials.KeyAIBaseURL:              "https://models.example/v1",
+		credentials.KeyAIBaseURL:              "testAIBaseURL",
 		credentials.KeyAIModel:                "m",
 		credentials.KeyAIAPIKey:               "sk-1",
 		credentials.KeyGitHubRepo:             "acme/shop",

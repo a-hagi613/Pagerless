@@ -48,8 +48,9 @@ func newListHandler(t *testing.T, page *v1alpha1.Page) *dashboardapi.Handler {
 // per row: the three fields the card renders come with the summary.
 func TestTheListCarriesTheSeverityTheProposalHashAndThePullRequest(t *testing.T) {
 	t.Parallel()
+	summaryMeta := metav1.ObjectMeta{Namespace: testNamespace, Name: "checkout-7d9f"}
 	page := &v1alpha1.Page{
-		ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace, Name: "checkout-7d9f"},
+		ObjectMeta: summaryMeta,
 		Spec: v1alpha1.PageSpec{
 			Target: v1alpha1.TargetReference{
 				Kind: v1alpha1.TargetKindDeployment, Namespace: "shop", Name: "checkout", UID: "uid-checkout",
@@ -74,7 +75,7 @@ func TestTheListCarriesTheSeverityTheProposalHashAndThePullRequest(t *testing.T)
 	handler := newListHandler(t, page)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/pages", nil)
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -99,7 +100,7 @@ func TestTheListCarriesTheSeverityTheProposalHashAndThePullRequest(t *testing.T)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/pages/checkout-7d9f", nil)
-	req.AddCookie(&http.Cookie{Name: "session", Value: "signed"})
+	req.AddCookie(&http.Cookie{Name: testSession, Value: testSigned})
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

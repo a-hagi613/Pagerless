@@ -186,7 +186,7 @@ from standard input, from a file, or from an env file.`,
 					return usagef("config set connector needs --name <name>")
 				}
 				wanted = []string{credentials.ConnectorTokenKey(connector)}
-			case "server":
+			case modeServer:
 				return runLogin(cmd, opts, source)
 			default:
 				return usagef("unknown section %q: use ai, github, connector, or server", args[0])
@@ -242,7 +242,7 @@ so it needs --server. "connector:<name>" checks the token the runtime will read;
 a Connector's endpoint is deployment configuration, not a credential.`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if opts.mode != "server" {
+			if opts.mode != modeServer {
 				return usagef(
 					"config test needs --server: the probe runs in the server's network with the stored credentials")
 			}

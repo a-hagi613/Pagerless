@@ -60,7 +60,7 @@ func loadConfig(override string) (configFile, error) {
 	config := configFile{}
 	for key, value := range fields {
 		switch key {
-		case "server":
+		case modeServer:
 			config.Server = value
 		case "sessionToken":
 			config.SessionToken = value

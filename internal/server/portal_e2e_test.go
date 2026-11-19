@@ -31,6 +31,10 @@ const (
 	portalE2EToken = "portal-e2e-bootstrap-token"
 	// shopNamespace is the second namespace whose Page makes the matrix show two tiles.
 	shopNamespace = "shop"
+	// credentialsSecret is the Secret the chart creates and the settings route reads and writes.
+	credentialsSecret = "pagerless-credentials"
+	// gatheredStepSummary is the Progress step the stream tests post and then look for.
+	gatheredStepSummary = "gathered the Target status"
 )
 
 // TestPortalBrowserFlows drives the built Portal against a real pagerless-server: envtest's API server,
@@ -65,7 +69,7 @@ func TestPortalBrowserFlows(t *testing.T) {
 }
 
 // startPortalServer runs the real server with the requested authentication mode and the Portal's seed data.
-func startPortalServer(t *testing.T, mode string) *testenv.Env {
+func startPortalServer(t *testing.T, mode string) {
 	t.Helper()
 	auth, err := dashboardauth.New(dashboardauth.Config{
 		Mode:       mode,
@@ -82,7 +86,6 @@ func startPortalServer(t *testing.T, mode string) *testenv.Env {
 	)
 	seedCredentials(t, env)
 	seedPortalPages(t, env)
-	return env
 }
 
 // TestPortalServesForInspection holds the same server open so a design detector can scan the live page.
@@ -123,7 +126,7 @@ func seedCredentials(t *testing.T, env *testenv.Env) {
 	data[credentials.KeyGitHubToken] = []byte("ghp-e2e")
 	var secret corev1.Secret
 	if err := env.Client.Get(t.Context(),
-		client.ObjectKey{Namespace: testenv.Namespace, Name: "pagerless-credentials"}, &secret); err != nil {
+		client.ObjectKey{Namespace: testenv.Namespace, Name: credentialsSecret}, &secret); err != nil {
 		t.Fatalf("read the credentials Secret the chart installed: %v", err)
 	}
 	secret.Data = data
@@ -153,7 +156,7 @@ func seedPortalPages(t *testing.T, env *testenv.Env) {
 	deployPortalTarget(t, env, testenv.SandboxNamespace, "payments")
 	name, agent := startPortalPage(t, env, testenv.SandboxNamespace, "payments")
 	for i, event := range []agentapi.StepEvent{
-		{Kind: v1alpha1.StepKindProgress, Summary: "gathered the Target status"},
+		{Kind: v1alpha1.StepKindProgress, Summary: gatheredStepSummary},
 		{Kind: v1alpha1.StepKindToolCall, Tool: "pods.logs", Summary: "read the previous container logs"},
 		{Kind: v1alpha1.StepKindFinding, Summary: "the container was OOMKilled", Finding: &logFinding},
 	} {
@@ -164,7 +167,7 @@ func seedPortalPages(t *testing.T, env *testenv.Env) {
 	// Keep the trace growing while the suite runs, so a browser proves the stream appends rather than
 	// rendering one snapshot. The goroutine stops when the test ends.
 	go func() {
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			select {
 			case <-t.Context().Done():
 				return
@@ -190,7 +193,8 @@ func seedPortalPages(t *testing.T, env *testenv.Env) {
 func deployPortalTarget(t *testing.T, env *testenv.Env, namespace, name string) {
 	t.Helper()
 	if namespace != testenv.SandboxNamespace {
-		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
+		namespaceMeta := metav1.ObjectMeta{Name: namespace}
+		ns := &corev1.Namespace{ObjectMeta: namespaceMeta}
 		if err := env.Client.Create(t.Context(), ns); err != nil {
 			t.Fatalf("create namespace %s: %v", namespace, err)
 		}
@@ -211,7 +215,8 @@ func deployPortalTarget(t *testing.T, env *testenv.Env, namespace, name string) 
 func proposed(t *testing.T, env *testenv.Env, namespace, name string, replicas int32) string {
 	t.Helper()
 	pageName, agent := startPortalPage(t, env, namespace, name)
-	if result, err := agent.API.PostReport(t.Context(), scaleReport(replicas)); err != nil || result.StatusCode != http.StatusOK {
+	result, err := agent.API.PostReport(t.Context(), scaleReport(replicas))
+	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report for %s: %+v, %v, want 200", name, result, err)
 	}
 	env.WaitForPhase(t, pageName, v1alpha1.PhaseProposed)
@@ -230,8 +235,9 @@ func startPortalPage(t *testing.T, env *testenv.Env, namespace, name string) (st
 // createPortalPage creates a Page whose Target is ref.
 func createPortalPage(t *testing.T, env *testenv.Env, ref v1alpha1.TargetReference) *v1alpha1.Page {
 	t.Helper()
+	pageMeta := metav1.ObjectMeta{GenerateName: "portal-", Namespace: testenv.Namespace}
 	page := &v1alpha1.Page{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: "portal-", Namespace: testenv.Namespace},
+		ObjectMeta: pageMeta,
 		Spec: v1alpha1.PageSpec{
 			Target:      ref,
 			Fingerprint: v1alpha1.Fingerprint(ref, "PortalE2E"),

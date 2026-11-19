@@ -395,7 +395,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	created := createInvestigating(t, env, checkout, v1alpha1.TriggerSourceCLI)
 	agent := env.StartAgent(t, created.Name)
 	if result, err := agent.API.PostEvent(t.Context(), agentapi.StepEvent{
-		Kind: v1alpha1.StepKindProgress, Summary: "gathered the Target status",
+		Kind: v1alpha1.StepKindProgress, Summary: gatheredStepSummary,
 	}); err != nil || result.StatusCode != http.StatusAccepted {
 		t.Fatalf("post the first step: %+v, %v, want 202", result, err)
 	}
@@ -433,7 +433,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	if err := json.Unmarshal(snapshot.data, &record); err != nil {
 		t.Fatalf("decode the snapshot: %v", err)
 	}
-	if len(record.Steps) != 1 || record.Steps[0].Summary != "gathered the Target status" {
+	if len(record.Steps) != 1 || record.Steps[0].Summary != gatheredStepSummary {
 		t.Errorf("snapshot steps = %+v, want the step recorded before the stream opened", record.Steps)
 	}
 

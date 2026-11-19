@@ -19,6 +19,11 @@ import (
 // repositorySubsystem is the readiness name of the Target Repository dependency.
 const repositorySubsystem = "repository"
 
+// credentialsSecret is the Secret the chart creates and the readiness probe
+// reads. This file is the internal test package, so the identically named
+// constant in the external test package is not visible here.
+const credentialsSecret = "pagerless-credentials"
+
 // credentialStore returns a store over a Secret that carries the given values.
 func credentialStore(t *testing.T, values map[string]string) *credentials.Store {
 	t.Helper()
@@ -30,10 +35,10 @@ func credentialStore(t *testing.T, values map[string]string) *credentials.Store 
 	for _, key := range credentials.Keys() {
 		data[key] = []byte(values[key])
 	}
-	meta := metav1.ObjectMeta{Namespace: "pagerless", Name: "pagerless-credentials"}
+	meta := metav1.ObjectMeta{Namespace: "pagerless", Name: credentialsSecret}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.Secret{ObjectMeta: meta, Data: data}).Build()
 	store, err := credentials.New(credentials.Config{
-		Client: cl, Namespace: "pagerless", SecretName: "pagerless-credentials",
+		Client: cl, Namespace: "pagerless", SecretName: credentialsSecret,
 	})
 	if err != nil {
 		t.Fatal(err)

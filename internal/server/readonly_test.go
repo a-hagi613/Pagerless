@@ -60,8 +60,8 @@ func TestTheServerIdentityIsStrictlyReadOnly(t *testing.T) {
 		{"read Pages", verbGet, testenv.Namespace, groupPagerless, "pages", "", true},
 		{"write Page status", verbUpdate, testenv.Namespace, groupPagerless, "pages/status", "", true},
 		{"create an agent Job", verbCreate, testenv.Namespace, groupBatch, "jobs", "", true},
-		{"read the credentials Secret", verbGet, testenv.Namespace, "", resourceSecrets, "pagerless-credentials", true},
-		{"update the credentials Secret", verbUpdate, testenv.Namespace, "", resourceSecrets, "pagerless-credentials", true},
+		{"read the credentials Secret", verbGet, testenv.Namespace, "", resourceSecrets, credentialsSecret, true},
+		{"update the credentials Secret", verbUpdate, testenv.Namespace, "", resourceSecrets, credentialsSecret, true},
 
 		{"update a Deployment", verbUpdate, testenv.SandboxNamespace, groupApps, resourceDeployments, "", false},
 		{"patch a StatefulSet", verbPatch, testenv.SandboxNamespace, groupApps, "statefulsets", "", false},
