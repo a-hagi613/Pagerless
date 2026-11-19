@@ -236,6 +236,78 @@ func TestListShowsEachPageInEveryFormat(t *testing.T) {
 	checkListed(t, fromYAML.Items, names)
 }
 
+func TestListFiltersByPhase(t *testing.T) {
+	env, kubeconfig := startCluster(t)
+	createDeployment(t, env, checkout)
+	createDeployment(t, env, cart)
+	pages := map[string]string{}
+	for _, target := range []string{checkout, cart} {
+		out, err := execute(t.Context(), kubeconfig, newCommand, "-n", sandbox, "deploy/"+target)
+		if err != nil {
+			t.Fatalf("start %s: %v", target, err)
+		}
+		name := createdName(t, out)
+		env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
+		pages[target] = name
+	}
+	writeServerStatus(t, env, pages[cart], func(page *v1alpha1.Page) {
+		page.Status.Phase = v1alpha1.PhaseRecovered
+	})
+
+	recovered, err := execute(t.Context(), kubeconfig, "list", "--phase", "Recovered")
+	if err != nil {
+		t.Fatalf("list --phase Recovered: %v", err)
+	}
+	if !strings.Contains(recovered, pages[cart]) {
+		t.Errorf("list --phase Recovered lacks the Recovered Page %s:\n%s", pages[cart], recovered)
+	}
+	if strings.Contains(recovered, pages[checkout]) {
+		t.Errorf("list --phase Recovered contains the Investigating Page %s:\n%s", pages[checkout], recovered)
+	}
+
+	investigating, err := execute(t.Context(), kubeconfig, "list", "--phase", "Investigating")
+	if err != nil {
+		t.Fatalf("list --phase Investigating: %v", err)
+	}
+	if !strings.Contains(investigating, pages[checkout]) {
+		t.Errorf("list --phase Investigating lacks %s:\n%s", pages[checkout], investigating)
+	}
+	if strings.Contains(investigating, pages[cart]) {
+		t.Errorf("list --phase Investigating contains the Recovered Page %s:\n%s", pages[cart], investigating)
+	}
+
+	empty, err := execute(t.Context(), kubeconfig, "list", "--phase", "Proposed")
+	if err != nil {
+		t.Fatalf("list --phase Proposed: %v", err)
+	}
+	if want := `No Pages found in namespace "pagerless" in phase Proposed.`; strings.TrimSpace(empty) != want {
+		t.Errorf("empty list = %q, want %q", strings.TrimSpace(empty), want)
+	}
+
+	asJSON, err := execute(t.Context(), kubeconfig, "list", "--phase", "Recovered", "-o", "json")
+	if err != nil {
+		t.Fatalf("list --phase Recovered -o json: %v", err)
+	}
+	var filtered v1alpha1.PageList
+	if err := json.Unmarshal([]byte(asJSON), &filtered); err != nil {
+		t.Fatalf("decode filtered list -o json: %v", err)
+	}
+	if len(filtered.Items) != 1 || filtered.Items[0].Name != pages[cart] {
+		t.Errorf("filtered list = %+v, want only %s", filtered.Items, pages[cart])
+	}
+
+	_, err = execute(t.Context(), kubeconfig, "list", "--phase", "Proposedd")
+	if err == nil || !strings.Contains(err.Error(), `unknown phase "Proposedd"`) {
+		t.Fatalf("list --phase Proposedd: error = %v, want an unknown-phase error", err)
+	}
+	if !strings.Contains(err.Error(), "Superseded") {
+		t.Errorf("error = %q, want it to name the accepted set", err)
+	}
+	if code := cli.ExitCode(err); code != cli.ExitUsage {
+		t.Errorf("exit code = %d, want %d", code, cli.ExitUsage)
+	}
+}
+
 func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)

@@ -258,12 +258,17 @@ func (s *session) page(ctx context.Context, name string) (*record, error) {
 	return recordFromPage(&page), nil
 }
 
-// pages returns every Page, most recent first, together with the transport's
-// own list object for --output json or yaml.
-func (s *session) pages(ctx context.Context) ([]*record, any, error) {
+// pages returns the Pages, most recent first, optionally narrowed to one
+// phase, together with the transport's own list object for --output json or
+// yaml.
+func (s *session) pages(ctx context.Context, phase v1alpha1.Phase) ([]*record, any, error) {
 	if s.api != nil {
+		path := "/api/pages"
+		if phase != "" {
+			path += "?phase=" + url.QueryEscape(string(phase))
+		}
 		var list serverPages
-		if err := s.api.do(ctx, http.MethodGet, "/api/pages", nil, &list); err != nil {
+		if err := s.api.do(ctx, http.MethodGet, path, nil, &list); err != nil {
 			return nil, nil, err
 		}
 		records := make([]*record, 0, len(list.Pages))
@@ -282,6 +287,15 @@ func (s *session) pages(ctx context.Context) ([]*record, any, error) {
 		return nil, nil, fmt.Errorf("list Pages: %w", err)
 	}
 	list.TypeMeta = metaFor("PageList")
+	if phase != "" {
+		kept := list.Items[:0]
+		for i := range list.Items {
+			if list.Items[i].Status.Phase == phase {
+				kept = append(kept, list.Items[i])
+			}
+		}
+		list.Items = kept
+	}
 	records := make([]*record, 0, len(list.Items))
 	for i := range list.Items {
 		records = append(records, recordFromPage(&list.Items[i]))
