@@ -1,8 +1,7 @@
-// Package publish turns an approved Proposal into a pull request in the target
-// repository. pagerless-server calls it in process: the change is committed to
-// a branch, the pull request is opened, and auto-merge is enabled so that the
-// target repository's own CI decides whether the change lands (ADR-0008,
-// ADR-0015).
+// Package publish turns an approved fixed-Action Proposal into a pull request in
+// the target repository. It commits the reviewed patch to a branch and opens
+// the pull request; it never merges it, because merging is a human act
+// (ADR-0041). The v2 file-Proposal writer lives in internal/github/pr.
 package publish
 
 import (
@@ -18,7 +17,7 @@ import (
 	"time"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
-	"github.com/a-hagi613/pagerless/internal/github"
+	"github.com/a-hagi613/pagerless/internal/github/pr"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 )
 
@@ -37,7 +36,7 @@ type Config struct {
 	// Sandbox is the target repository the change is committed to.
 	Sandbox sandbox.Repository
 	// GitHub is the API client for the target repository's host.
-	GitHub *github.GitHub
+	GitHub *pr.Client
 	// Token returns the write-scoped token that pushes the branch. It is read for each push, so that a rotated
 	// Secret takes effect.
 	Token func() (string, error)
@@ -87,41 +86,31 @@ func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Page) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	pr, err := p.cfg.GitHub.FindPullRequest(ctx, branch)
+	pullRequest, err := p.cfg.GitHub.FindPullRequest(ctx, branch)
 	if err != nil {
 		return Result{}, err
 	}
-	if pr == nil {
+	if pullRequest == nil {
 		if err := p.push(ctx, tr, branch); err != nil {
 			return Result{}, err
 		}
-		pr, err = p.cfg.GitHub.OpenPullRequest(ctx, branch, p.cfg.Sandbox.Branch, title(tr), body(tr))
-		if errors.Is(err, github.ErrPullRequestExists) {
+		pullRequest, err = p.cfg.GitHub.OpenPullRequest(ctx, branch, p.cfg.Sandbox.Branch, title(tr), body(tr))
+		if errors.Is(err, pr.ErrPullRequestExists) {
 			// A request that this one raced with, or an earlier attempt, opened it first.
-			pr, err = p.cfg.GitHub.FindPullRequest(ctx, branch)
-			if err == nil && pr == nil {
-				err = errors.New("GitHub reports a pull request for the branch but does not return it")
+			pullRequest, err = p.cfg.GitHub.FindPullRequest(ctx, branch)
+			if err == nil && pullRequest == nil {
+				err = errors.New("GitHub reports a Pull Request for the branch but does not return it")
 			}
 		}
 		if err != nil {
 			return Result{}, err
 		}
-		if err := p.cfg.GitHub.EnableAutoMerge(ctx, pr); err != nil {
-			return Result{}, err
-		}
 	}
-	if pr.State == "open" && pr.AutoMerge == nil && pr.MergedAt == nil {
-		// An earlier attempt opened the pull request but did not finish enabling
-		// auto-merge, so finish it now.
-		if err := p.cfg.GitHub.EnableAutoMerge(ctx, pr); err != nil {
-			return Result{}, err
-		}
-	}
-	result := Result{Branch: branch, PullRequestURL: pr.HTMLURL, PullRequestNumber: pr.Number}
+	result := Result{Branch: branch, PullRequestURL: pullRequest.HTMLURL, PullRequestNumber: pullRequest.Number}
 	switch {
-	case pr.MergedAt != nil || pr.MergeCommitSHA != "":
-		result.Merged, result.MergeCommit = true, pr.MergeCommitSHA
-	case pr.State == "closed":
+	case pullRequest.MergedAt != nil || pullRequest.MergeCommitSHA != "":
+		result.Merged, result.MergeCommit = true, pullRequest.MergeCommitSHA
+	case pullRequest.State == "closed":
 		result.Closed = true
 	}
 	return result, nil
@@ -191,8 +180,8 @@ func body(tr *v1alpha1.Page) string {
 	if tr.Status.Diagnosis != "" {
 		fmt.Fprintf(&b, "\nDiagnosis:\n\n```\n%s\n```\n", strings.ReplaceAll(tr.Status.Diagnosis, "```", "'''"))
 	}
-	b.WriteString("\nThe change is exactly the patch the approver reviewed. It merges when the target " +
-		"repository's check passes.\n")
+	b.WriteString("\nThe change is exactly the patch the approver reviewed. It merges only when the " +
+		"target repository's Checks pass and the Operator merges it.\n")
 	return b.String()
 }
 

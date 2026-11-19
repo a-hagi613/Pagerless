@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clocktesting "k8s.io/utils/clock/testing"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -537,5 +539,39 @@ func TestCloseClearedPagesNeverAbandonsADecision(t *testing.T) {
 	}
 	if after.Status.Phase != v1alpha1.PhaseApproved {
 		t.Fatalf("phase = %s, want the approved Page untouched", after.Status.Phase)
+	}
+}
+
+// TestARecurrenceCarriesTheFailedProposalsExclusion checks the link from
+// post-merge Verification to the next Page: a predecessor that ended
+// NotRecovered contributes its Proposal hash, so the change that did not work
+// cannot be proposed forever.
+func TestARecurrenceCarriesTheFailedProposalsExclusion(t *testing.T) {
+	t.Parallel()
+	pipeline := newTestPipeline(t, nil)
+	ctx := context.Background()
+	subjectKey := "subject-with-a-failed-proposal"
+	proposalHash := strings.Repeat("a", 64)
+	create := func(name string, sequence int64, phase v1alpha1.Phase, hash string) {
+		created := &v1alpha1.Page{
+			Status: v1alpha1.PageStatus{Phase: phase, Proposal: &v1alpha1.Proposal{Hash: hash}},
+		}
+		created.Name, created.Namespace = name, testReleaseNamespace
+		created.Labels = map[string]string{v1alpha1.LabelSubjectKey: subjectKey}
+		created.CreationTimestamp = metav1.NewTime(pipelineStart.Add(time.Duration(sequence) * time.Minute))
+		if err := pipeline.Client.Create(ctx, created); err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+	}
+	create("checkout-1", 1, v1alpha1.PhaseNotRecovered, proposalHash)
+	previous, excluded, err := pipeline.previousPage(ctx, subjectKey)
+	if err != nil {
+		t.Fatalf("previousPage: %v", err)
+	}
+	if previous != "checkout-1" {
+		t.Errorf("previousPage = %q, want checkout-1", previous)
+	}
+	if len(excluded) != 1 || excluded[0] != proposalHash {
+		t.Errorf("excluded = %v, want the failed Proposal hash", excluded)
 	}
 }
