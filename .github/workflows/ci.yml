@@ -170,3 +170,57 @@ jobs:
           test "$(find dist -maxdepth 1 -name '*.tar.gz.sbom.json' | wc -l)" = "4"
           test -f dist/checksums.txt
           test -f dist/plugins/page.yaml
+
+  links:
+    name: Markdown links
+    runs-on: ubuntu-24.04
+    # Shell, git, and coreutils only: the check never fetches an external URL,
+    # so it needs no network beyond the checkout.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make check-links
+
+  portal:
+    name: Portal browser suite
+    runs-on: ubuntu-24.04
+    # Builds the dashboard, downloads the pinned envtest assets, starts the real
+    # server, and runs the Playwright suite once per viewport. The browser
+    # download and the two server startups dominate the wall clock.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: dashboard/.nvmrc
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install pinned Helm
+        # The envtest harness renders charts/pagerless with `helm template`, so
+        # the same pinned Helm the Go job installs is required here. `make
+        # portal-e2e` sets KUBEBUILDER_ASSETS through `go tool setup-envtest`
+        # itself, the same mechanism `make test-go` uses.
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Install the dashboard dependencies and the Chromium browser
+        # The Playwright version is the one dashboard/package-lock.json pins, so
+        # the browser is installed after npm ci. `make portal-e2e` runs npm ci
+        # again through dashboard-build; this step only makes node_modules and
+        # the matching Chromium build present before the suite starts.
+        run: |
+          set -euo pipefail
+          cd dashboard
+          npm ci
+          npx playwright install --with-deps chromium
+      - run: make portal-e2e

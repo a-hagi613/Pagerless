@@ -3,6 +3,14 @@
 - **Status:** Accepted; its auto-merge mechanism is superseded by [0041](0041-provenance-is-a-recorded-ladder.md)
 - **Date:** 2026-11-16
 
+> Amended in v2.0: the gate still holds — an Approval is the only human gate
+> before a pull request — and only its delivery changed. The Executor is gone
+> ([ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md)), so the pull
+> request engine in `pagerless-server` opens the pull request, and nothing
+> auto-merges any more: the Operator merges it after the Target Repository's
+> Checks pass ([ADR-0041](0041-provenance-is-a-recorded-ladder.md)). A Rejection
+> is still terminal.
+
 ## Context
 
 Pull request Actions could require a second human review on GitHub after Approval in Pagerless. The approver has already reviewed the exact rendered patch (see ADR-0008), and the evaluation harness must run without manual merges.

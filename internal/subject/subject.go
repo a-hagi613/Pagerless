@@ -46,7 +46,11 @@ const AnnotationSubject = "pagerless.dev/subject"
 const (
 	// LabelWatch opts an external alert in to opening or joining a Page.
 	LabelWatch = "pagerless.dev/watch"
-	// LegacyLabelWatch is the v1 opt-in label, accepted for migration.
+	// LegacyLabelWatch is the v1 opt-in label value, which survives v2 migration
+	// by design: an installation that upgrades keeps its existing workload
+	// labels, and dropping the value would silently stop its alerts. It is a
+	// label value, not a retired resource name, and IsOptedIn accepts both
+	// spellings.
 	LegacyLabelWatch = "pagerless_triage"
 )
 

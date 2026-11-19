@@ -126,7 +126,7 @@ func TestVerificationStartsOnlyOnceTheMergeCommitIsSyncedAndHealthy(t *testing.T
 			before := len(env.ArgoCD.Requests())
 			eventually(t, "Argo CD is asked again", func() bool { return len(env.ArgoCD.Requests()) >= before+3 })
 			if got := env.Get(t, tr.Name); got.Status.Phase != v1alpha1.PhasePullRequestOpen {
-				t.Fatalf("Argo CD reports %+v, but the phase is %s, want Executing", status, got.Status.Phase)
+				t.Fatalf("Argo CD reports %+v, but the phase is %s, want PullRequestOpen", status, got.Status.Phase)
 			}
 		}
 	})
@@ -136,7 +136,7 @@ func TestVerificationStartsOnlyOnceTheMergeCommitIsSyncedAndHealthy(t *testing.T
 		before := len(env.ArgoCD.Requests())
 		eventually(t, "Argo CD is asked again", func() bool { return len(env.ArgoCD.Requests()) >= before+3 })
 		if got := env.Get(t, tr.Name); got.Status.Phase != v1alpha1.PhasePullRequestOpen {
-			t.Fatalf("phase = %s while Argo CD fails, want Executing", got.Status.Phase)
+			t.Fatalf("phase = %s while Argo CD fails, want PullRequestOpen", got.Status.Phase)
 		}
 		env.ArgoCD.FailNext(0)
 	})
@@ -166,7 +166,7 @@ func TestVerificationDoesNotStartBeforeThePullRequestMerges(t *testing.T) {
 	settle()
 	got := env.Get(t, proposed.Name)
 	if got.Status.Phase != v1alpha1.PhasePullRequestOpen || got.Status.VerificationStartedAt != nil {
-		t.Errorf("phase = %s, started = %v, want Executing and no window while the pull request is open",
+		t.Errorf("phase = %s, started = %v, want PullRequestOpen and no window while the pull request is open",
 			got.Status.Phase, got.Status.VerificationStartedAt)
 	}
 	if requests := env.ArgoCD.Requests(); len(requests) != 0 {

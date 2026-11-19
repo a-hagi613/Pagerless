@@ -2,6 +2,18 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
+- **Amended by:** [ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md), [ADR-0040](0040-read-only-connectors-and-alert-webhooks.md)
+
+> Amended in v2.0: the adapter still stands — it is test-only, uses no real
+> GitHub credentials, and exercises real Git behaviour rather than stubs — and
+> only the components and the merge path it describes changed. There is one
+> binary, whose pull request engine opens the pull request
+> ([ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md)); evidence comes
+> from read-only Connectors rather than bundled MCP servers
+> ([ADR-0040](0040-read-only-connectors-and-alert-webhooks.md)); and nothing
+> auto-merges, because the Operator merges after the Checks pass
+> ([ADR-0041](0041-provenance-is-a-recorded-ladder.md)). The Executor, the
+> GitHub MCP server, and the host-side Scenario client named below are gone.
 
 ## Context
 

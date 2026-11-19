@@ -96,7 +96,7 @@ func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *t
 		t.Errorf("Validation moved the Sandbox head from %s to %s", head, env.Sandbox.Head())
 	}
 
-	// The Executor delivers the change exactly as it delivers PatchResources.
+	// The pull request engine delivers the change exactly as it delivers PatchResources.
 	approve(t, env, proposed)
 	tr := withPullRequest(t, env, proposed.Name)
 	prs := env.GitHub.PullRequests()

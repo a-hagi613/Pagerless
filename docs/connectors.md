@@ -55,9 +55,12 @@ AWS console, then add its ARN to `connectors.alerting.snsTopics`.
 
 An alert must carry `pagerless.dev/watch: "true"` (or the v1 `pagerless_triage`
 label) and name its subject with a supported label, the
-`pagerless.dev/subject` annotation, or a configured extraction rule. An alert
-whose subject cannot be resolved is ignored with a reason and reported to the
-sender with a `202` response.
+`pagerless.dev/subject` annotation, or a configured extraction rule. The v1
+spelling is a label value, not a retired resource name: it survives migration by
+design, because dropping it would silently stop alerts for an existing
+installation, and `IsOptedIn` accepts both spellings. An alert whose subject
+cannot be resolved is ignored with a reason and reported to the sender with a
+`202` response.
 
 Datadog requires the payload template shipped at
 `charts/pagerless/files/datadog-webhook-template.json` (and kept in sync with

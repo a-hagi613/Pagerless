@@ -32,8 +32,8 @@ const (
 	// maxMessageLength bounds a message that is copied from another system into a Validation error.
 	maxMessageLength = 1000
 	// forbiddenRoot is the top-level Sandbox directory whose files GitHub runs as
-	// workflows with the repository's credentials. The Executor refuses a change
-	// there, so Validation refuses a revert of one.
+	// workflows with the repository's credentials. The pull request engine refuses
+	// a change there, so Validation refuses a revert of one.
 	forbiddenRoot = ".github"
 )
 
