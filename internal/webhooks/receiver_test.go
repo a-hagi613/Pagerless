@@ -544,3 +544,27 @@ func TestSubscriptionConfirmationIsReportedNotConfirmed(t *testing.T) {
 		t.Errorf("a subscription confirmation created %d Pages", len(items))
 	}
 }
+
+func TestThePerRequestAlertLimitIsReportedNotSilentlyDropped(t *testing.T) {
+	t.Parallel()
+	receiver, fakeClient, _ := testReceiver(t, func(r *Receiver) { r.MaxAlerts = 1 })
+	body := `{"alerts":[
+		{"status":"firing","name":"First","labels":{"namespace":"shop","deployment":"checkout","pagerless.dev/watch":"true"}},
+		{"status":"firing","name":"Second","labels":{"namespace":"shop","deployment":"checkout","pagerless.dev/watch":"true"}}
+	]}`
+	recorder := deliver(t, receiver, SourceGeneric, []byte(body),
+		map[string]string{testAuthorization: "Bearer " + testToken})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d (%s), want 202", recorder.Code, recorder.Body.String())
+	}
+	answer := decodeResponse(t, recorder)
+	if answer.Applied != 1 || len(answer.Ignored) != 1 {
+		t.Fatalf("answer = %+v, want one applied and one ignored alert", answer)
+	}
+	if answer.Ignored[0].Index != 1 || answer.Ignored[0].Reason != "per-request-alert-limit" {
+		t.Errorf("ignored = %+v, want the second alert reported", answer.Ignored)
+	}
+	if items := pages(t, fakeClient); len(items) != 1 {
+		t.Errorf("Pages = %d, want only the decoded alert", len(items))
+	}
+}

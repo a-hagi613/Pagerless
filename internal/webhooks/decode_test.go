@@ -50,9 +50,10 @@ func decodeFixture(
 	if headers == nil {
 		headers = map[string]string{}
 	}
-	return decode(decodeRequest{
+	alerts, _, err := decode(decodeRequest{
 		ctx: t.Context(), source: source, body: fixture(t, name), header: header(headers), auth: auth,
 	})
+	return alerts, err
 }
 
 func TestDecodeAlertmanager(t *testing.T) {
@@ -87,7 +88,7 @@ func TestDecodeGrafanaRequiresASignature(t *testing.T) {
 	mac := hmacSHA256([]byte("grafana-secret"), body)
 	auth := authenticator{grafanaSecret: token("grafana-secret")}
 
-	signed, err := decode(decodeRequest{
+	signed, _, err := decode(decodeRequest{
 		ctx: t.Context(), source: SourceGrafana, body: body,
 		header: header(map[string]string{testSignatureHeader: "sha256=" + hex.EncodeToString(mac)}),
 		auth:   auth,
@@ -99,12 +100,12 @@ func TestDecodeGrafanaRequiresASignature(t *testing.T) {
 		t.Fatalf("signed alerts = %+v, want the orders alert", signed)
 	}
 
-	if _, err := decode(decodeRequest{
+	if _, _, err := decode(decodeRequest{
 		ctx: t.Context(), source: SourceGrafana, body: body, header: http.Header{}, auth: auth,
 	}); ClientStatus(err) != http.StatusUnauthorized {
 		t.Errorf("unsigned delivery error = %v, want 401", err)
 	}
-	if _, err := decode(decodeRequest{
+	if _, _, err := decode(decodeRequest{
 		ctx: t.Context(), source: SourceGrafana, body: body,
 		header: header(map[string]string{testSignatureHeader: "sha256=" + hex.EncodeToString([]byte("wrong"))}),
 		auth:   auth,
@@ -218,7 +219,7 @@ func TestDecodeRejectsMalformedAndUnrepresentablePayloads(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := decode(decodeRequest{
+			_, _, err := decode(decodeRequest{
 				ctx: t.Context(), source: test.source, body: []byte(test.body),
 				header: header(map[string]string{testAuthorization: "Bearer secret"}), auth: auth,
 			})
@@ -288,7 +289,7 @@ func TestSNSSignatureVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 	auth := authenticator{snsTopics: []string{testTopicARN}, verifySNS: true}
-	alerts, err := decode(decodeRequest{ctx: t.Context(), source: SourceSNS, body: body, auth: auth})
+	alerts, _, err := decode(decodeRequest{ctx: t.Context(), source: SourceSNS, body: body, auth: auth})
 	if err != nil {
 		t.Fatalf("a verified delivery: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestSNSSignatureVerification(t *testing.T) {
 	}
 
 	tampered := bytes.Replace(body, []byte("checkout-unavailable"), []byte("checkout-degraded"), 1)
-	_, err = decode(decodeRequest{ctx: t.Context(), source: SourceSNS, body: tampered, auth: auth})
+	_, _, err = decode(decodeRequest{ctx: t.Context(), source: SourceSNS, body: tampered, auth: auth})
 	if ClientStatus(err) != http.StatusUnauthorized {
 		t.Errorf("tampered delivery error = %v, want 401", err)
 	}

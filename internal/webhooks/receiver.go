@@ -181,8 +181,9 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
-	alerts, err := decode(decodeRequest{
-		ctx: ctx, source: source, body: body, header: request.Header, auth: r.authenticator(), now: r.now(),
+	alerts, skipped, err := decode(decodeRequest{
+		ctx: ctx, source: source, body: body, header: request.Header, auth: r.authenticator(),
+		now: r.now(), max: r.MaxAlerts,
 	})
 	if err != nil {
 		if ignore, ok := errors.AsType[*Ignore](err); ok {
@@ -197,16 +198,8 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		http.Error(w, "the payload could not be decoded", http.StatusBadRequest)
 		return
 	}
-	limit := r.MaxAlerts
-	if limit <= 0 {
-		limit = DefaultMaxAlerts
-	}
 	answer := response{}
 	for index, alert := range alerts {
-		if index >= limit {
-			answer.Ignored = append(answer.Ignored, ignoredAlert{Index: index, Reason: "per-request-alert-limit"})
-			continue
-		}
 		name, applied, reason, err := r.apply(ctx, alert)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -224,6 +217,11 @@ func (r *Receiver) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		}
 		answer.Applied++
 		logf.FromContext(ctx).Info("accepted an inbound alert", "source", source, "alert", alert.Name, "page", name)
+	}
+	for index := range skipped {
+		answer.Ignored = append(answer.Ignored, ignoredAlert{
+			Index: len(alerts) + index, Reason: "per-request-alert-limit",
+		})
 	}
 	r.prune(ctx)
 	writeResponse(w, answer)

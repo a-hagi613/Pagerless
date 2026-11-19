@@ -112,37 +112,37 @@ func (c *snsCertificateCache) certificate(
 }
 
 // decodeSNS decodes an SNS or CloudWatch delivery.
-func decodeSNS(request decodeRequest) ([]Alert, error) {
+func decodeSNS(request decodeRequest) ([]Alert, int, error) {
 	var envelope snsEnvelope
 	if err := json.Unmarshal(request.body, &envelope); err != nil {
-		return nil, BadRequest("malformed SNS payload: %v", err)
+		return nil, 0, BadRequest("malformed SNS payload: %v", err)
 	}
 	if envelope.Type == "" {
-		return nil, BadRequest("the SNS payload has no Type")
+		return nil, 0, BadRequest("the SNS payload has no Type")
 	}
 	if len(request.auth.snsTopics) > 0 && !slices.Contains(request.auth.snsTopics, envelope.TopicARN) {
-		return nil, Forbidden("the SNS topic is not allowed")
+		return nil, 0, Forbidden("the SNS topic is not allowed")
 	}
 	switch envelope.Type {
 	case "SubscriptionConfirmation", "UnsubscribeConfirmation":
 		// The receiver never confirms a subscription. Confirmation is a human
 		// decision, so an unknown subscription cannot be attached by a sender.
-		return nil, &Ignore{Reason: "subscription-confirmation-not-accepted"}
+		return nil, 0, &Ignore{Reason: "subscription-confirmation-not-accepted"}
 	case snsNotificationType:
 	default:
-		return nil, BadRequest("unsupported SNS message type %q", envelope.Type)
+		return nil, 0, BadRequest("unsupported SNS message type %q", envelope.Type)
 	}
 	if request.auth.verifySNS {
 		if err := verifySNSSignature(request, envelope); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	var alarm cloudWatchAlarm
 	if err := json.Unmarshal([]byte(envelope.Message), &alarm); err != nil {
-		return nil, BadRequest("malformed CloudWatch alarm in the SNS message: %v", err)
+		return nil, 0, BadRequest("malformed CloudWatch alarm in the SNS message: %v", err)
 	}
 	if alarm.AlarmName == "" {
-		return nil, BadRequest("the CloudWatch alarm has no AlarmName")
+		return nil, 0, BadRequest("the CloudWatch alarm has no AlarmName")
 	}
 	labels := cloudWatchLabels(&alarm)
 	severity := severityOf(labels["severity"])
@@ -169,7 +169,8 @@ func decodeSNS(request decodeRequest) ([]Alert, error) {
 	if alert.Fingerprint == "" {
 		alert.Fingerprint = stableFingerprint(alert)
 	}
-	return []Alert{alert}, nil
+	capped, skipped := limitAlerts([]Alert{alert}, request.limit())
+	return capped, skipped, nil
 }
 
 // cloudWatchLabels maps the alarm's dimensions to labels the shared resolver

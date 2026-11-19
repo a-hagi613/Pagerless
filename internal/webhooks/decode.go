@@ -137,35 +137,52 @@ type decodeRequest struct {
 	header http.Header
 	auth   authenticator
 	now    time.Time
+	max    int
+}
+
+// limit returns the number of alerts one request may decode.
+func (request decodeRequest) limit() int {
+	if request.max > 0 {
+		return request.max
+	}
+	return DefaultMaxAlerts
+}
+
+// limitAlerts caps a decoded alert list and reports how many it skipped.
+func limitAlerts[T any](items []T, limit int) ([]T, int) {
+	if limit <= 0 || len(items) <= limit {
+		return items, 0
+	}
+	return items[:limit], len(items) - limit
 }
 
 // decode dispatches to one dialect decoder.
-func decode(request decodeRequest) ([]Alert, error) {
+func decode(request decodeRequest) ([]Alert, int, error) {
 	switch request.source {
 	case SourceAlertmanager:
 		if err := request.bearer(SourceAlertmanager); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		return decodeAlertmanager(request)
 	case SourceGrafana:
 		if err := request.verifyGrafana(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		return decodeGrafana(request)
 	case SourceDatadog:
 		if err := request.bearer(SourceDatadog); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		return decodeDatadog(request)
 	case SourceSNS:
 		return decodeSNS(request)
 	case SourceGeneric:
 		if err := request.bearer(SourceGeneric); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		return decodeGeneric(request)
 	default:
-		return nil, BadRequest("unknown alert source")
+		return nil, 0, BadRequest("unknown alert source")
 	}
 }
 
@@ -264,13 +281,13 @@ type alertmanagerPayload struct {
 }
 
 // decodeAlertmanager decodes an Alertmanager delivery.
-func decodeAlertmanager(request decodeRequest) ([]Alert, error) {
+func decodeAlertmanager(request decodeRequest) ([]Alert, int, error) {
 	var payload alertmanagerPayload
 	if err := json.Unmarshal(request.body, &payload); err != nil {
-		return nil, BadRequest("malformed Alertmanager payload: %v", err)
+		return nil, 0, BadRequest("malformed Alertmanager payload: %v", err)
 	}
 	if len(payload.Alerts) == 0 {
-		return nil, BadRequest("the Alertmanager payload carries no alerts")
+		return nil, 0, BadRequest("the Alertmanager payload carries no alerts")
 	}
 	alerts := make([]Alert, 0, len(payload.Alerts))
 	for _, entry := range payload.Alerts {
@@ -288,7 +305,13 @@ func decodeAlertmanager(request decodeRequest) ([]Alert, error) {
 		}
 		alerts = append(alerts, alert)
 	}
-	return alerts, nil
+	return limited(alerts, request.limit())
+}
+
+// limited caps a decoded list and reports the skipped remainder.
+func limited(alerts []Alert, limit int) ([]Alert, int, error) {
+	capped, skipped := limitAlerts(alerts, limit)
+	return capped, skipped, nil
 }
 
 // grafanaPayload is the Grafana unified-alerting webhook.
@@ -306,13 +329,13 @@ type grafanaPayload struct {
 }
 
 // decodeGrafana decodes a Grafana delivery.
-func decodeGrafana(request decodeRequest) ([]Alert, error) {
+func decodeGrafana(request decodeRequest) ([]Alert, int, error) {
 	var payload grafanaPayload
 	if err := json.Unmarshal(request.body, &payload); err != nil {
-		return nil, BadRequest("malformed Grafana payload: %v", err)
+		return nil, 0, BadRequest("malformed Grafana payload: %v", err)
 	}
 	if len(payload.Alerts) == 0 {
-		return nil, BadRequest("the Grafana payload carries no alerts")
+		return nil, 0, BadRequest("the Grafana payload carries no alerts")
 	}
 	alerts := make([]Alert, 0, len(payload.Alerts))
 	for _, entry := range payload.Alerts {
@@ -330,7 +353,8 @@ func decodeGrafana(request decodeRequest) ([]Alert, error) {
 		}
 		alerts = append(alerts, alert)
 	}
-	return alerts, nil
+	capped, skipped := limitAlerts(alerts, request.limit())
+	return capped, skipped, nil
 }
 
 // datadogPayload is the payload the shipped Datadog template posts.
@@ -366,13 +390,13 @@ const DatadogPayloadTemplate = `{
 }`
 
 // decodeDatadog decodes a Datadog delivery.
-func decodeDatadog(request decodeRequest) ([]Alert, error) {
+func decodeDatadog(request decodeRequest) ([]Alert, int, error) {
 	var payload datadogPayload
 	if err := json.Unmarshal(request.body, &payload); err != nil {
-		return nil, BadRequest("malformed Datadog payload: %v", err)
+		return nil, 0, BadRequest("malformed Datadog payload: %v", err)
 	}
 	if payload.Title == "" && payload.ID == "" {
-		return nil, BadRequest("the Datadog payload carries no alert")
+		return nil, 0, BadRequest("the Datadog payload carries no alert")
 	}
 	labels := parseDatadogTags(payload.Tags)
 	if payload.Hostname != "" {
@@ -393,7 +417,8 @@ func decodeDatadog(request decodeRequest) ([]Alert, error) {
 	if alert.Fingerprint == "" {
 		alert.Fingerprint = stableFingerprint(alert)
 	}
-	return []Alert{alert}, nil
+	capped, skipped := limitAlerts([]Alert{alert}, request.limit())
+	return capped, skipped, nil
 }
 
 // genericPayload is the generic webhook.
@@ -421,10 +446,10 @@ type genericPayload struct {
 }
 
 // decodeGeneric decodes a generic delivery: one alert, or an array of them.
-func decodeGeneric(request decodeRequest) ([]Alert, error) {
+func decodeGeneric(request decodeRequest) ([]Alert, int, error) {
 	var payload genericPayload
 	if err := json.Unmarshal(request.body, &payload); err != nil {
-		return nil, BadRequest("malformed generic payload: %v", err)
+		return nil, 0, BadRequest("malformed generic payload: %v", err)
 	}
 	type entry struct {
 		status, name, fingerprint, severity, startsAt, endsAt, message string
@@ -464,9 +489,10 @@ func decodeGeneric(request decodeRequest) ([]Alert, error) {
 		alerts = append(alerts, alert)
 	}
 	if len(alerts) == 0 {
-		return nil, BadRequest("the payload carries no alert")
+		return nil, 0, BadRequest("the payload carries no alert")
 	}
-	return alerts, nil
+	capped, skipped := limitAlerts(alerts, request.limit())
+	return capped, skipped, nil
 }
 
 // statusOf normalizes a status string, falling back to the envelope's status.
