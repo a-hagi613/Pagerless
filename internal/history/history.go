@@ -12,7 +12,20 @@
 // Trigger after retention has deleted the Page resource. A step stores the bounded step the server accepted,
 // with its Finding as JSON when the step carried one. History therefore cannot be rewritten by the application.
 //
-// Version 2 added the created_at and spec columns; a version 1 database is upgraded in place.
+// Schema version 3 adds the two mutable runtime tables that deduplication needs, because a Cooldown must
+// outlive the Page resource and the one-hour Event TTL:
+//
+//	failure_cooldowns(fingerprint, cluster_id, subject_key, …, next_backoff_level, cooldown_until, …)
+//	failure_observations(fingerprint, subject_key, state, severity, …, last_count, last_trigger_at, …)
+//
+// They are authoritative runtime state, not history: they are updated in place, they are written only by
+// pagerless-server, and internal/cooldown owns their meaning. They live in this file because the Cooldown, the
+// suppression counter, and the settle state must survive a restart, an expired Event, and a deleted Page, and
+// because one SQLite file with one write-ahead-log setting has one writer. The append-only invariant of the two
+// history tables is unchanged.
+//
+// Version 2 added the created_at and spec columns; a version 1 database is upgraded in place. Version 3 adds the
+// runtime tables; a version 2 database gains them on first start without rewriting a row.
 package history
 
 import (
@@ -32,7 +45,7 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const (
 	// snapshotsTable holds one row per Phase change.
@@ -79,6 +92,50 @@ var schema = []string{
 	`CREATE TRIGGER IF NOT EXISTS ` + stepsTable + `_no_delete
 		BEFORE DELETE ON ` + stepsTable + `
 		BEGIN SELECT RAISE(ABORT, '` + stepsTable + ` is append-only'); END`,
+	// Version 3. One row per failure Fingerprint; authoritative for the Cooldown and
+	// the suppression counter. Every statement is idempotent, so a sibling change
+	// that adds a table to the same file cannot collide with this one.
+	`CREATE TABLE IF NOT EXISTS failure_cooldowns (
+		fingerprint TEXT PRIMARY KEY,
+		cluster_id TEXT NOT NULL,
+		subject_key TEXT NOT NULL,
+		api_version TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		namespace TEXT NOT NULL,
+		name TEXT NOT NULL,
+		uid TEXT NOT NULL,
+		reason_class TEXT NOT NULL,
+		scope TEXT NOT NULL DEFAULT '',
+		next_backoff_level INTEGER NOT NULL DEFAULT 0,
+		last_paged_at TEXT NOT NULL,
+		cooldown_until TEXT NOT NULL,
+		suppressed_count INTEGER NOT NULL DEFAULT 0,
+		first_seen_at TEXT NOT NULL,
+		last_seen_at TEXT NOT NULL,
+		last_resolved_at TEXT,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS failure_cooldowns_by_subject
+		ON failure_cooldowns (cluster_id, subject_key, last_seen_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS failure_cooldowns_by_cooldown ON failure_cooldowns (cooldown_until)`,
+	`CREATE INDEX IF NOT EXISTS failure_cooldowns_by_paged_at ON failure_cooldowns (last_paged_at)`,
+	// Version 3. Settling state: a row exists while a signal is observed, paged, or clearing.
+	`CREATE TABLE IF NOT EXISTS failure_observations (
+		fingerprint TEXT PRIMARY KEY,
+		subject_key TEXT NOT NULL,
+		state TEXT NOT NULL,
+		severity TEXT NOT NULL,
+		first_seen_at TEXT NOT NULL,
+		last_seen_at TEXT NOT NULL,
+		consecutive INTEGER NOT NULL DEFAULT 0,
+		occurrences INTEGER NOT NULL DEFAULT 0,
+		last_count INTEGER NOT NULL DEFAULT 0,
+		last_note TEXT NOT NULL DEFAULT '',
+		last_trigger_at TEXT,
+		updated_at TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS failure_observations_by_subject
+		ON failure_observations (subject_key, last_seen_at DESC)`,
 }
 
 // Store is an append-only history database.
@@ -459,6 +516,15 @@ func (s *Store) Close() error {
 		return fmt.Errorf("close the history database: %w", err)
 	}
 	return nil
+}
+
+// DB returns the connection this Store writes through, so that runtime-state
+// packages (internal/cooldown) share the history file's write-ahead-log and
+// busy-timeout settings and its single writer rather than opening a second
+// connection with its own pragmas. The Store owns the handle: a caller must not
+// close it.
+func (s *Store) DB() *sql.DB {
+	return s.db
 }
 
 // formatTime writes a time as UTC with nanosecond precision.
