@@ -1,0 +1,327 @@
+name: Release
+
+# One tag publishes every artifact at one version: the kubectl-page archives,
+# checksums, and SBOMs from GoReleaser, the Krew index Pull Request, the two
+# multi-arch images, the chart as an OCI artifact, and the Homebrew formula. The
+# final jobs install those published artifacts - on kind and on macOS - so a
+# release is proven rather than assumed.
+#
+# Required secrets:
+#   KREW_INDEX_TOKEN    Write access to the a-hagi613/krew-index fork. Without
+#                       it the Krew publisher skips the index Pull Request and
+#                       the release still publishes the archives, the checksums,
+#                       and the rendered manifest.
+#   HOMEBREW_TAP_TOKEN  Write access to a-hagi613/homebrew-tap. Without it the
+#                       formula is still published as a release asset, and the
+#                       tap Pull Request is skipped.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate the tag against the tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - id: version
+        name: Strip the tag prefix
+        run: echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check that the tag, the chart, and the plugin manifest agree
+        run: |
+          set -euo pipefail
+          scripts/release/check-versions.sh --version "${{ steps.version.outputs.version }}"
+          bash scripts/release/tools.sh goreleaser
+          bin/release-tools/goreleaser check
+          bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
+
+  release:
+    name: GoReleaser archives, checksums, SBOMs, and Krew
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install the pinned GoReleaser and Syft
+        run: bash scripts/release/tools.sh
+      - name: Publish the archives, checksums, SBOMs, and Krew index Pull Request
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+        run: bin/release-tools/goreleaser release --clean
+      - name: Record whether the Krew index Pull Request was published
+        env:
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KREW_INDEX_TOKEN" ]; then
+            echo "The Krew index Pull Request was opened by the GoReleaser Krew publisher." >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "KREW_INDEX_TOKEN is not configured: the Krew index Pull Request was skipped. The archives, the checksums, and the rendered manifest were still published." >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Render and lint the repository plugin manifest from the release checksums
+        run: |
+          set -euo pipefail
+          scripts/release/render-krew-manifest.sh \
+            --checksums dist/checksums.txt --version "$VERSION" --output plugins/page.yaml
+          scripts/release/lint-krew-manifest.sh plugins/page.yaml dist/checksums.txt
+          scripts/release/check-versions.sh --version "$VERSION" \
+            --manifest plugins/page.yaml \
+            --plugin dist/kubectl-page_linux_amd64_v1/kubectl-page
+      - name: Publish the rendered plugin manifest and the Homebrew formula as release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "v${VERSION}" plugins/page.yaml --clobber
+          scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" \
+            --output dist/homebrew/Formula/kubectl-page.rb
+          gh release upload "v${VERSION}" dist/homebrew/Formula/kubectl-page.rb --clobber
+          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
+            scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" --pull-request
+          else
+            echo "HOMEBREW_TAP_TOKEN is not configured: the tap Pull Request was skipped. The formula was published as kubectl-page.rb." >>"$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Open a Pull Request when the committed plugin manifest is stale
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- plugins/page.yaml; then
+            echo "plugins/page.yaml already matches the v${VERSION} release checksums."
+            exit 0
+          fi
+          branch="release/v${VERSION}-plugin-manifest"
+          git config user.name "pagerless-release"
+          git config user.email "release@pagerless.dev"
+          git checkout -b "$branch"
+          git add plugins/page.yaml
+          git commit --message "Refresh plugins/page.yaml for v${VERSION}" \
+            --message "The release checksums are the authoritative ones, so the manifest a checkout installs is regenerated from them."
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "Refresh plugins/page.yaml for v${VERSION}" \
+            --body "Regenerated from the v${VERSION} release checksum file by the release workflow."
+
+  images:
+    name: Multi-arch images
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push pagerless-server
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.pagerless-server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            VCS_REF=${{ github.sha }}
+          tags: ghcr.io/a-hagi613/pagerless-server:${{ env.VERSION }}
+      - name: Build and push pagerless-agent
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile.pagerless-agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            VCS_REF=${{ github.sha }}
+          tags: ghcr.io/a-hagi613/pagerless-agent:${{ env.VERSION }}
+
+  chart:
+    name: OCI chart
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned Helm
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Package and push the chart
+        run: |
+          set -euo pipefail
+          helm lint charts/pagerless
+          mkdir -p dist/chart
+          helm package charts/pagerless --destination dist/chart
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm push "dist/chart/pagerless-${VERSION}.tgz" oci://ghcr.io/a-hagi613/charts
+
+  verify:
+    name: Install the published artifacts on kind
+    needs: [validate, release, images, chart]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      KIND_CLUSTER_NAME: pagerless-release-verify
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned Helm, kind, kubectl, and Krew
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+          curl --fail --silent --show-error --location \
+            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" --output kind
+          echo "${KIND_LINUX_AMD64_SHA256}  kind" | sha256sum --check --status
+          chmod +x kind
+          sudo install kind /usr/local/bin/kind
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
+          chmod +x kubectl
+          sudo install kubectl /usr/local/bin/kubectl
+          bash scripts/release/tools.sh krew
+          sudo install bin/release-tools/krew /usr/local/bin/kubectl-krew
+      - name: Log in to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" |
+            docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+      - name: Create a throwaway cluster
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          kind create cluster --name "$KIND_CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 180s
+      - name: Install the chart from GHCR
+        run: |
+          set -euo pipefail
+          kubectl create namespace pagerless
+          kubectl --namespace pagerless create secret generic pagerless-credentials \
+            --from-literal=AI_BASE_URL= --from-literal=AI_API_KEY= --from-literal=AI_MODEL= \
+            --from-literal=GITHUB_TOKEN= --from-literal=GITHUB_REPO= --from-literal=GITHUB_API_URL=
+          helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
+            --namespace pagerless --version "$VERSION" \
+            --set credentials.existingSecret=pagerless-credentials
+          kubectl --namespace pagerless rollout status deployment/pagerless-server --timeout=300s
+          deployments="$(kubectl --namespace pagerless get deployments --no-headers | wc -l)"
+          [ "$deployments" = "1" ] || { echo "expected one Deployment, found $deployments"; exit 1; }
+          names="$(kubectl --namespace pagerless get deployments --output name)"
+          [ "$names" = "deployment.apps/pagerless-server" ] ||
+            { echo "expected deployment.apps/pagerless-server, found $names"; exit 1; }
+          statefulsets="$(kubectl --namespace pagerless get statefulsets --no-headers 2>/dev/null | wc -l)"
+          [ "$statefulsets" = "0" ] || { echo "the chart rendered $statefulsets StatefulSets"; exit 1; }
+          listing="$(helm list --namespace pagerless --output json)"
+          grep --quiet --extended-regexp "\"version\": *\"${VERSION}\"" <<<"$listing" ||
+            { echo "the installed chart version is not ${VERSION}"; exit 1; }
+          grep --quiet --extended-regexp "\"app_version\": *\"${VERSION}\"" <<<"$listing" ||
+            { echo "the installed chart appVersion is not ${VERSION}"; exit 1; }
+      - name: Download the published plugin manifest and formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release
+          gh release download "v${VERSION}" --dir dist/release --pattern page.yaml --pattern kubectl-page.rb
+      - name: Verify the published archives, checksums, SBOMs, and Krew manifest
+        run: |
+          set -euo pipefail
+          scripts/release/verify-artifacts.sh --version "$VERSION" --manifest dist/release/page.yaml
+          scripts/release/check-versions.sh --version "$VERSION" --formula dist/release/kubectl-page.rb
+      - name: Check that both images publish both architectures
+        run: |
+          set -euo pipefail
+          for image in pagerless-server pagerless-agent; do
+            platforms="$(docker buildx imagetools inspect "ghcr.io/a-hagi613/${image}:${VERSION}")"
+            grep --quiet "linux/amd64" <<<"$platforms"
+            grep --quiet "linux/arm64" <<<"$platforms"
+          done
+      - name: Delete the throwaway cluster
+        if: always()
+        run: kind delete cluster --name "$KIND_CLUSTER_NAME"
+
+  formula:
+    name: Homebrew formula on macOS
+    needs: [validate, release]
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Generate, audit, and install the formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "v${VERSION}" --dir dist --pattern checksums.txt
+          scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" \
+            --output dist/kubectl-page.rb
+          brew tap a-hagi613/tap
+          tap_dir="$(brew --repository)/Library/Taps/a-hagi613/homebrew-tap"
+          cp dist/kubectl-page.rb "$tap_dir/Formula/kubectl-page.rb"
+          brew audit --strict a-hagi613/tap/kubectl-page
+          brew install --build-from-source a-hagi613/tap/kubectl-page
+          kubectl-page version | grep --quiet "^kubectl-page ${VERSION}$"

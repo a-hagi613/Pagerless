@@ -1,0 +1,52 @@
+# Rendered by scripts/release/render-krew-manifest.sh from a release's checksum
+# file. The committed copy cannot carry checksums before the first release
+# exists, so it is the template: the release job renders it from
+# dist/checksums.txt, publishes the rendered file as the page.yaml asset, and
+# refreshes this file. Install a rendered copy, never this template: the
+# release lint rejects the ${...} placeholders below.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: page
+spec:
+  version: v${VERSION}
+  homepage: https://github.com/a-hagi613/pagerless
+  shortDescription: Investigate a failing Kubernetes Target as a Page
+  description: |
+    kubectl page starts, lists, and shows Pagerless Pages. Pagerless watches a
+    cluster for failing Targets, diagnoses them with an AI agent, and proposes
+    every remediation as a pull request against the repository that owns the
+    Target. The cluster identity is strictly read-only.
+  caveats: |
+    Pagerless must already be installed in the cluster. Install the chart with
+    helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
+    --namespace pagerless --create-namespace, then run kubectl page --help.
+  platforms:
+    - bin: kubectl-page
+      uri: ${BASE_URL}/kubectl-page_${VERSION}_linux_amd64.tar.gz
+      sha256: ${SHA256_LINUX_AMD64}
+      selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+    - bin: kubectl-page
+      uri: ${BASE_URL}/kubectl-page_${VERSION}_linux_arm64.tar.gz
+      sha256: ${SHA256_LINUX_ARM64}
+      selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+    - bin: kubectl-page
+      uri: ${BASE_URL}/kubectl-page_${VERSION}_darwin_amd64.tar.gz
+      sha256: ${SHA256_DARWIN_AMD64}
+      selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+    - bin: kubectl-page
+      uri: ${BASE_URL}/kubectl-page_${VERSION}_darwin_arm64.tar.gz
+      sha256: ${SHA256_DARWIN_ARM64}
+      selector:
+        matchLabels:
+          os: darwin
+          arch: arm64

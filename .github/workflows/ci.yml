@@ -139,3 +139,28 @@ jobs:
           chmod +x kubectl
           sudo install kubectl /usr/local/bin/kubectl
       - run: make verify-chart
+
+  release:
+    name: Release configuration and snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Lint the release scripts
+        run: shellcheck -x scripts/release/*.sh
+      - name: Validate the GoReleaser configuration and the Krew manifest
+        run: make release-check
+      - name: Build the snapshot archives, checksums, SBOMs, and manifest
+        run: make release-snapshot
+      - name: Check the snapshot inventory
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -name 'kubectl-page_*.tar.gz' | wc -l)" = "4"
+          test "$(find dist -maxdepth 1 -name '*.tar.gz.sbom.json' | wc -l)" = "4"
+          test -f dist/checksums.txt
+          test -f dist/plugins/page.yaml

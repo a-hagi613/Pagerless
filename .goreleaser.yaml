@@ -1,0 +1,128 @@
+# GoReleaser configuration for the kubectl-page plugin.
+#
+# One tag publishes the four archives, the SHA-256 checksum file, one SBOM per
+# archive, and the Krew index Pull Request. The chart, the images, and the
+# Homebrew formula are published by .github/workflows/release.yml at the same
+# version. `make release-snapshot` runs this file with --snapshot, so the
+# configuration is exercised on every pull request without a tag, a registry
+# credential, or a GitHub token.
+version: 2
+
+project_name: pagerless
+
+builds:
+  - id: kubectl-page
+    main: ./cmd/kubectl-page
+    binary: kubectl-page
+    env:
+      - CGO_ENABLED=0
+    # -trimpath removes the checkout path and -buildvcs=false removes the VCS
+    # stamp, so the archive depends on the source and the toolchain rather than
+    # on where and how the tree was cloned.
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/a-hagi613/pagerless/internal/cli.Version={{ .Version }}
+      - -X github.com/a-hagi613/pagerless/internal/cli.Commit={{ .Commit }}
+      - -X github.com/a-hagi613/pagerless/internal/cli.BuildDate={{ .CommitDate }}
+      - -X github.com/a-hagi613/pagerless/internal/cli.ExpectedChartVersion={{ .Version }}
+
+archives:
+  - id: kubectl-page
+    ids:
+      - kubectl-page
+    formats:
+      - tar.gz
+    name_template: "kubectl-page_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+sboms:
+  - id: archives
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
+
+# The Krew index is published exactly once, here. The repository copy in
+# plugins/page.yaml is rendered from the checksum file by
+# scripts/release/render-krew-manifest.sh; this publisher owns the index and
+# nothing else does. Without KREW_INDEX_TOKEN it skips the upload and the
+# release still carries the archives, the checksums, and the rendered manifest.
+krews:
+  - name: page
+    ids:
+      - kubectl-page
+    homepage: https://github.com/a-hagi613/pagerless
+    short_description: Investigate a failing Kubernetes Target as a Page
+    description: |
+      kubectl page starts, lists, and shows Pagerless Pages. Pagerless watches a
+      cluster for failing Targets, diagnoses them with an AI agent, and proposes
+      every remediation as a pull request against the repository that owns the
+      Target. The cluster identity is strictly read-only.
+    caveats: |
+      Pagerless must already be installed in the cluster. Install the chart with
+      helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
+      --namespace pagerless --create-namespace, then run kubectl page --help.
+    skip_upload: '{{ if index .Env "KREW_INDEX_TOKEN" }}false{{ else }}true{{ end }}'
+    repository:
+      owner: a-hagi613
+      name: krew-index
+      branch: "page-{{ .Version }}"
+      token: '{{ index .Env "KREW_INDEX_TOKEN" }}'
+      pull_request:
+        enabled: true
+        base:
+          owner: kubernetes-sigs
+          name: krew-index
+          branch: master
+
+# The Homebrew formula is generated from the checksum file by
+# scripts/release/homebrew-formula.sh, which is its only writer, so GoReleaser
+# does not publish a formula.
+snapshot:
+  version_template: '{{ if .Env.SNAPSHOT_VERSION }}{{ .Env.SNAPSHOT_VERSION }}{{ else }}0.0.0-snapshot{{ end }}'
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Documentation
+      regexp: '^docs(\(.+\))?!?:'
+      order: 2
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - "^chore"
+      - "^ci"
+      - "^test"
+
+release:
+  github:
+    owner: a-hagi613
+    name: pagerless
+  draft: false
+  prerelease: auto
+  footer: |
+    The release also publishes the chart at
+    oci://ghcr.io/a-hagi613/charts/pagerless and the images at
+    ghcr.io/a-hagi613/pagerless-server and ghcr.io/a-hagi613/pagerless-agent.

@@ -1,6 +1,6 @@
 # ADR-0018: Deterministic decisions and canonical Active Pages
 
-- **Status:** Accepted; amended for Pages by [ADR-0028](0028-pages-replace-pages.md) and [ADR-0031](0031-approval-is-a-decision-on-the-page.md). The approval-name half of this record disappears with the approval resource.
+- **Status:** Accepted; amended for Pages by [ADR-0028](0028-pages-replace-triages.md) and [ADR-0031](0031-approval-is-a-decision-on-the-page.md). The approval-name half of this record disappears with the approval resource.
 - **Date:** 2026-11-16
 
 ## Context
