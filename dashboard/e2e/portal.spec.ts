@@ -69,6 +69,13 @@ test.describe("the Portal against the real server", () => {
     await expect(page.getByRole("button", { name: "Filter the inbox by node ip-10-0-1-17" })).toBeVisible();
     await expect(page.getByTestId("inbox-scope")).toContainText("whole cluster");
 
+    // The mark is drawn at 40 px inside the one link that names the product.
+    const brand = page.getByRole("link", { name: "Pagerless cluster pages — show the whole cluster" });
+    const mark = brand.locator("span").first();
+    const box = await mark.boundingBox();
+    expect(Math.round(box?.width ?? 0)).toBe(40);
+    expect(Math.round(box?.height ?? 0)).toBe(40);
+
     await expectNoHorizontalOverflow(page);
     await expectNoConsoleErrors(errors);
     await testInfo.attach("cluster", { body: await page.screenshot(), contentType: "image/png" });
@@ -84,7 +91,10 @@ test.describe("the Portal against the real server", () => {
     await expect(card(page, mine.approve)).toHaveCount(0);
     await expect(card(page, "audit")).toBeVisible();
 
-    await page.getByRole("link", { name: /Pagerless cluster pages/ }).click();
+    // Reached by keyboard, the same link clears the filter.
+    const brand = page.getByRole("link", { name: "Pagerless cluster pages — show the whole cluster" });
+    await brand.focus();
+    await page.keyboard.press("Enter");
     await expect(page.getByTestId("inbox-scope")).toContainText("whole cluster");
     await expect(card(page, mine.approve)).toBeVisible();
 

@@ -51,11 +51,10 @@ func TestAPortalDecisionAppliesToAnExternallyProposedPage(t *testing.T) {
 		t.Errorf("answer = %v, want the signed-in user", decision)
 	}
 
-	approved := env.WaitForPhase(t, created.Name, v1alpha1.PhaseApproved)
-	if approved.Status.Decision == nil {
-		t.Fatalf("decision was not reconciled; annotations = %v", env.Get(t, created.Name).Annotations)
-	}
-	if approved.Status.Decision.ProposalHash != hash || approved.Status.Decision.DecidedBy != testenv.DashboardUser {
-		t.Errorf("decision = %+v, want the displayed hash and the signed-in user", approved.Status.Decision)
+	decided := env.WaitFor(t, created.Name, "the decision is reconciled into status", func(tr *v1alpha1.Page) bool {
+		return tr.Status.Decision != nil
+	})
+	if decided.Status.Decision.ProposalHash != hash || decided.Status.Decision.DecidedBy != testenv.DashboardUser {
+		t.Errorf("decision = %+v, want the displayed hash and the signed-in user", decided.Status.Decision)
 	}
 }

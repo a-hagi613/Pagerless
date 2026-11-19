@@ -143,7 +143,8 @@ export function HealthMatrix({
             <Server className="size-3" aria-hidden="true" /> {health.namespaces.length} namespaces
           </span>
           <span className="inline-flex items-center gap-1">
-            <Cpu className="size-3" aria-hidden="true" /> {health.nodes.length} node Pages
+            <Cpu className="size-3" aria-hidden="true" /> {health.nodes.length}{" "}
+            {health.nodes.length === 1 ? "node Page" : "node Pages"}
           </span>
           <span className="inline-flex items-center gap-1 text-primary">
             <GitPullRequest className="size-3" aria-hidden="true" /> {health.merged} merged

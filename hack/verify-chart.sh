@@ -139,7 +139,6 @@ curl --fail --silent --show-error "http://127.0.0.1:${PORTAL_PORT}/api/version" 
 
 COOKIE_JAR="$(mktemp)"
 PORTAL_BODY="$(mktemp)"
-PORTAL_CODE="$(mktemp)"
 curl --fail --silent --show-error --cookie-jar "$COOKIE_JAR" \
 	--header "Content-Type: application/json" \
 	--data "{\"token\":\"${BOOTSTRAP_TOKEN}\"}" \
@@ -275,6 +274,6 @@ cli_shown_hash="$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
 [ "$(jq --raw-output '.proposalHash' <<<"$cli_record")" = "$cli_shown_hash" ] ||
 	die "the CLI decision is not bound to the displayed Proposal hash."
 
-rm -f "$COOKIE_JAR" "$PORTAL_BODY" "$PORTAL_CODE"
+rm -f "$COOKIE_JAR" "$PORTAL_BODY"
 
 echo "The read-only boundary holds, both decision surfaces record the same Page, and pagerless-server is Ready."
