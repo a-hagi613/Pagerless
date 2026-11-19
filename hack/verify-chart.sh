@@ -138,6 +138,8 @@ curl --fail --silent --show-error "http://127.0.0.1:${PORTAL_PORT}/api/version" 
 	die "the Portal did not answer on 127.0.0.1:${PORTAL_PORT}."
 
 COOKIE_JAR="$(mktemp)"
+PORTAL_BODY="$(mktemp)"
+PORTAL_CODE="$(mktemp)"
 curl --fail --silent --show-error --cookie-jar "$COOKIE_JAR" \
 	--header "Content-Type: application/json" \
 	--data "{\"token\":\"${BOOTSTRAP_TOKEN}\"}" \
@@ -146,7 +148,6 @@ CSRF="$(curl --fail --silent --show-error --cookie "$COOKIE_JAR" \
 	"http://127.0.0.1:${PORTAL_PORT}/api/session" | jq --raw-output .csrfToken)"
 [ -n "$CSRF" ] && [ "$CSRF" != "null" ] || die "the Portal session has no CSRF token."
 
-PAGE_HASH="$(printf 'portal-parity-page' | sha256sum | cut -d' ' -f1)"
 PROPOSAL_HASH="$(printf 'portal-parity-proposal' | sha256sum | cut -d' ' -f1)"
 EXPIRES_AT="$(date --utc --date='+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -154,6 +155,11 @@ EXPIRES_AT="$(date --utc --date='+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
 # is then patched to Proposed, which is the one state a decision accepts.
 create_page() {
 	local name="$1" target="$2"
+	# Each Page carries its own Fingerprint: two Pages that share one are
+	# duplicates of the same failure, and the controller correctly supersedes
+	# the second rather than letting both be decided.
+	local fingerprint
+	fingerprint="$(printf 'portal-parity-page-%s' "$name" | sha256sum | cut -d' ' -f1)"
 	cat <<PAGE | kubectl --context "kind-$CLUSTER" apply --filename - >/dev/null
 apiVersion: pagerless.dev/v1alpha1
 kind: Page
@@ -166,7 +172,7 @@ spec:
     kind: Deployment
     namespace: sandbox
     name: ${target}
-  fingerprint: ${PAGE_HASH}
+  fingerprint: ${fingerprint}
   trigger:
     source: CLI
 PAGE
@@ -183,18 +189,36 @@ STATUS
 	)" >/dev/null
 }
 
+# The parity Pages target a Deployment in the demo namespace the showcase uses,
+# so the namespace has to exist before the Target does.
+kubectl --context "kind-$CLUSTER" create namespace sandbox >/dev/null 2>&1 || true
 kubectl --context "kind-$CLUSTER" --namespace sandbox create deployment checkout \
 	--image=registry.invalid/checkout:1.0 >/dev/null
 create_page parity-cli checkout
 create_page parity-portal checkout
 
-# Decide the same Proposal through each surface. The status patch races the controller's own initial
-# transition, so both attempts are retried until each surface has recorded its decision.
+# Decide the same Proposal through each surface. The controller owns the status
+# subresource, so a decision is only durable once it has observed the Page as
+# Proposed: patch, wait for the controller to settle, then decide. Deciding while
+# the status write is still in flight lets that write clobber the decision.
+wait_proposed() {
+	local name="$1"
+	for _ in $(seq 1 30); do
+		if [ "$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
+			get page "$name" --output jsonpath='{.status.phase}')" = Proposed ]; then
+			return 0
+		fi
+		sleep 1
+	done
+	return 1
+}
+
 cli_decided=no
 portal_decided=no
-for _ in $(seq 1 30); do
+for _ in $(seq 1 10); do
 	if [ "$cli_decided" = no ]; then
 		propose_page parity-cli
+		wait_proposed parity-cli || true
 		if "$CLI" --context "kind-$CLUSTER" approve parity-cli --yes \
 			--reason "parity check" --by admin >/dev/null 2>&1; then
 			cli_decided=yes
@@ -202,11 +226,19 @@ for _ in $(seq 1 30); do
 	fi
 	if [ "$portal_decided" = no ]; then
 		propose_page parity-portal
-		if curl --fail --silent --show-error --cookie "$COOKIE_JAR" \
+		wait_proposed parity-portal || true
+		# The controller restates the Proposal hash as it reconciles, so the hash the
+		# approver is shown is the one on the Page now, not the one this script sent.
+		shown_hash="$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
+			get page parity-portal --output jsonpath='{.status.proposal.hash}')"
+		if curl --fail-with-body --silent --show-error --cookie "$COOKIE_JAR" \
 			--header "Content-Type: application/json" --header "X-CSRF-Token: ${CSRF}" \
-			--data "{\"decision\":\"approve\",\"proposalHash\":\"${PROPOSAL_HASH}\",\"reason\":\"parity check\"}" \
+			--data "{\"decision\":\"Approved\",\"proposalHash\":\"${shown_hash}\",\"reason\":\"parity check\"}" \
+			--output "${PORTAL_BODY}" \
 			"http://127.0.0.1:${PORTAL_PORT}/api/pages/parity-portal/decision" >/dev/null 2>&1; then
 			portal_decided=yes
+		else
+			echo "portal decision attempt: $(cat "${PORTAL_BODY}")" >&2
 		fi
 	fi
 	if [ "$cli_decided" = yes ] && [ "$portal_decided" = yes ]; then
@@ -238,9 +270,11 @@ for field in outcome proposalHash decidedBy reason; do
 	[ "$cli_value" = "$portal_value" ] ||
 		die "status.decision.${field} differs: CLI '${cli_value}', Portal '${portal_value}'."
 done
-[ "$(jq --raw-output '.proposalHash' <<<"$cli_record")" = "$PROPOSAL_HASH" ] ||
+cli_shown_hash="$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
+	get page parity-cli --output jsonpath='{.status.proposal.hash}')"
+[ "$(jq --raw-output '.proposalHash' <<<"$cli_record")" = "$cli_shown_hash" ] ||
 	die "the CLI decision is not bound to the displayed Proposal hash."
 
-rm -f "$COOKIE_JAR"
+rm -f "$COOKIE_JAR" "$PORTAL_BODY" "$PORTAL_CODE"
 
 echo "The read-only boundary holds, both decision surfaces record the same Page, and pagerless-server is Ready."
