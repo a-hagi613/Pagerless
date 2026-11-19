@@ -269,6 +269,15 @@ spec:
                 description: Cooldown records when the same Fingerprint may open a
                   new Page.
                 properties:
+                  backoffLevel:
+                    description: |-
+                      BackoffLevel is the Cooldown level this Page used: 0 for fifteen minutes
+                      through 5 for the eight-hour cap. It is the value SQLite reported when the
+                      Page opened.
+                    format: int32
+                    maximum: 5
+                    minimum: 0
+                    type: integer
                   lastPagedAt:
                     description: LastPagedAt is when this Page opened.
                     format: date-time
@@ -357,6 +366,77 @@ spec:
                 maxItems: 20
                 type: array
                 x-kubernetes-list-type: atomic
+              fingerprints:
+                description: |-
+                  Fingerprints are the distinct failure Fingerprints observed on the Subject,
+                  capped so a crash storm cannot grow the Page without bound.
+                items:
+                  description: FingerprintEntry mirrors one failure Fingerprint of
+                    a Page.
+                  properties:
+                    fingerprint:
+                      description: Fingerprint is the domain-separated SHA-256 of
+                        the failure, as lowercase hex.
+                      pattern: ^[0-9a-f]{64}$
+                      type: string
+                    occurrences:
+                      description: Occurrences counts the observations aggregated
+                        into this Fingerprint.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    reasonClass:
+                      description: ReasonClass is the catalog constant that classified
+                        the failure.
+                      maxLength: 64
+                      type: string
+                    scope:
+                      description: Scope is the container name or condition type,
+                        or empty.
+                      maxLength: 253
+                      type: string
+                    state:
+                      description: State is the Fingerprint's state.
+                      enum:
+                      - observing
+                      - paged
+                      - clearing
+                      - resolved
+                      type: string
+                  required:
+                  - fingerprint
+                  - reasonClass
+                  - state
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              investigation:
+                description: |-
+                  Investigation reports whether the investigation is running, queued, or
+                  suppressed by a guardrail. It is empty for a Page a human opened.
+                properties:
+                  job:
+                    description: Job is the agent Job's name once the investigation
+                      starts.
+                    maxLength: 253
+                    type: string
+                  reason:
+                    description: Reason says why a suppressed or queued investigation
+                      waits.
+                    maxLength: 32
+                    type: string
+                  state:
+                    description: State is the investigation's state.
+                    enum:
+                    - Queued
+                    - Running
+                    - Suppressed
+                    - Completed
+                    type: string
+                required:
+                - state
+                type: object
               lastTriggerAt:
                 description: LastTriggerAt is when the most recent Trigger joined
                   the Page.
@@ -395,6 +475,12 @@ spec:
                 - Invalid
                 - Superseded
                 - Failed
+                type: string
+              primaryFingerprint:
+                description: |-
+                  PrimaryFingerprint is the Fingerprint that opened the Page. Additional
+                  Fingerprints a second Trigger contributed are in Fingerprints.
+                pattern: ^[0-9a-f]{64}$
                 type: string
               proposal:
                 description: Proposal is the current Proposal.
@@ -675,6 +761,114 @@ spec:
                 maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
+              subject:
+                description: Subject mirrors the canonical Subject identity the watcher
+                  resolved.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the Subject's API version, such as
+                      apps/v1.
+                    maxLength: 253
+                    type: string
+                  kind:
+                    description: Kind is the Subject's kind.
+                    enum:
+                    - Deployment
+                    - StatefulSet
+                    - DaemonSet
+                    - Job
+                    - CronJob
+                    - Pod
+                    - PersistentVolumeClaim
+                    - Node
+                    type: string
+                  name:
+                    description: Name is the Subject's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace is the Subject's namespace. It is empty
+                      only for a Node.
+                    maxLength: 63
+                    type: string
+                  relatedWorkloads:
+                    description: |-
+                      RelatedWorkloads are the consumers resolved from a shared claim, or the
+                      Workloads a Node fault affects. They are evidence, never the Subject.
+                    items:
+                      description: |-
+                        TargetReference names the failing object. The UID makes a recreated object a
+                        new failure rather than a continuation of the old one.
+                      properties:
+                        apiVersion:
+                          description: APIVersion is the Target's API version, such
+                            as apps/v1.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the Target's kind.
+                          enum:
+                          - Deployment
+                          - StatefulSet
+                          - DaemonSet
+                          - Job
+                          - CronJob
+                          - Pod
+                          - PersistentVolumeClaim
+                          - Node
+                          type: string
+                        name:
+                          description: Name is the Target's name.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the Target's namespace. It is
+                            empty only for a Node.
+                          maxLength: 63
+                          type: string
+                        uid:
+                          description: |-
+                            UID is the Target's UID. It distinguishes a recreated object from the
+                            object it replaced.
+                          pattern: ^[0-9a-fA-F-]{36}$
+                          type: string
+                      required:
+                      - kind
+                      - name
+                      - namespace
+                      type: object
+                      x-kubernetes-validations:
+                      - message: namespace must be set for a namespaced kind and empty
+                          for Node
+                        rule: 'self.kind == ''Node'' ? (!has(self.namespace) || size(self.namespace)
+                          == 0) : (has(self.namespace) && size(self.namespace) > 0)'
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  resolution:
+                    description: Resolution says whether the whole owner chain resolved.
+                    enum:
+                    - Canonical
+                    - Partial
+                    type: string
+                  resolvedFrom:
+                    description: |-
+                      ResolvedFrom names the field the raw signal named, when it was not the
+                      Subject itself: "related" for an Event's related reference, "pvc" for a
+                      claim resolved to its single consumer.
+                    maxLength: 32
+                    type: string
+                  uid:
+                    description: UID is the Subject's UID. A recreated Subject is
+                      a different Subject.
+                    maxLength: 64
+                    type: string
+                required:
+                - kind
+                - name
+                type: object
               suppressedCount:
                 description: |-
                   SuppressedCount is the number of Triggers that did not open a Page because

@@ -172,6 +172,20 @@ const MaxValidationAttempts = 2
 // MaxReasonLength is the longest reason a human may give for a decision.
 const MaxReasonLength = 1000
 
+// LabelSubjectKey carries the canonical Subject Key on every Page the watcher
+// creates, so the Active Page for a Subject is found with one labelled list
+// instead of a cluster-wide scan. The value is base32, lowercase, and unpadded,
+// which is what makes it a valid label value.
+const LabelSubjectKey = "pagerless.dev/subject-key"
+
+// AnnotationIgnore marks a Target whose Triggers are never ingested.
+const AnnotationIgnore = "pagerless.dev/ignore"
+
+// LabelPartOf is the standard ownership label. A Target labelled
+// "app.kubernetes.io/part-of=pagerless" belongs to Pagerless itself and is
+// never watched, in any namespace.
+const LabelPartOf = "app.kubernetes.io/part-of"
+
 // AnnotationSourcePath is the annotation on a Target that names the Target
 // Repository file holding its manifest, relative to the repository root.
 const AnnotationSourcePath = "pagerless.dev/source-path"
@@ -680,6 +694,160 @@ type CooldownStatus struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	RecurrenceCount int32 `json:"recurrenceCount,omitempty"`
+
+	// BackoffLevel is the Cooldown level this Page used: 0 for fifteen minutes
+	// through 5 for the eight-hour cap. It is the value SQLite reported when the
+	// Page opened.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=5
+	BackoffLevel int32 `json:"backoffLevel,omitempty"`
+}
+
+// SubjectResolution says how completely the chain of controller owners resolved.
+// +kubebuilder:validation:Enum=Canonical;Partial
+type SubjectResolution string
+
+const (
+	// ResolutionCanonical means the whole chain resolved to a supported Subject.
+	ResolutionCanonical SubjectResolution = "Canonical"
+	// ResolutionPartial means an owner on the chain was deleted or rejected, so the
+	// Page investigates the highest supported object that did resolve.
+	ResolutionPartial SubjectResolution = "Partial"
+)
+
+// SubjectStatus mirrors the canonical Subject identity that SQLite uses for the
+// Page, so a human and the Portal can see what Target the Page is really about.
+// A Trigger on a Pod of a Deployment reports the Deployment here.
+type SubjectStatus struct {
+	// APIVersion is the Subject's API version, such as apps/v1.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	APIVersion string `json:"apiVersion,omitempty"`
+
+	// Kind is the Subject's kind.
+	// +required
+	Kind TargetKind `json:"kind"`
+
+	// Namespace is the Subject's namespace. It is empty only for a Node.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace,omitempty"`
+
+	// Name is the Subject's name.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// UID is the Subject's UID. A recreated Subject is a different Subject.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	UID string `json:"uid,omitempty"`
+
+	// Resolution says whether the whole owner chain resolved.
+	// +optional
+	Resolution SubjectResolution `json:"resolution,omitempty"`
+
+	// ResolvedFrom names the field the raw signal named, when it was not the
+	// Subject itself: "related" for an Event's related reference, "pvc" for a
+	// claim resolved to its single consumer.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	ResolvedFrom string `json:"resolvedFrom,omitempty"`
+
+	// RelatedWorkloads are the consumers resolved from a shared claim, or the
+	// Workloads a Node fault affects. They are evidence, never the Subject.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +listType=atomic
+	RelatedWorkloads []TargetReference `json:"relatedWorkloads,omitempty"`
+}
+
+// FingerprintState is the state of one failure Fingerprint on a Page.
+// +kubebuilder:validation:Enum=observing;paged;clearing;resolved
+type FingerprintState string
+
+const (
+	// FingerprintObserving means the Fingerprint is inside its settle window.
+	FingerprintObserving FingerprintState = "observing"
+	// FingerprintPaged means the Fingerprint opened or joined an Active Page.
+	FingerprintPaged FingerprintState = "paged"
+	// FingerprintClearing means the Fingerprint has not been re-derived from live status.
+	FingerprintClearing FingerprintState = "clearing"
+	// FingerprintResolved means the Fingerprint is clear.
+	FingerprintResolved FingerprintState = "resolved"
+)
+
+// FingerprintEntry mirrors one failure Fingerprint of a Page.
+type FingerprintEntry struct {
+	// Fingerprint is the domain-separated SHA-256 of the failure, as lowercase hex.
+	// +required
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	Fingerprint string `json:"fingerprint"`
+
+	// ReasonClass is the catalog constant that classified the failure.
+	// +required
+	// +kubebuilder:validation:MaxLength=64
+	ReasonClass string `json:"reasonClass"`
+
+	// Scope is the container name or condition type, or empty.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Scope string `json:"scope,omitempty"`
+
+	// State is the Fingerprint's state.
+	// +required
+	State FingerprintState `json:"state"`
+
+	// Occurrences counts the observations aggregated into this Fingerprint.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Occurrences int32 `json:"occurrences,omitempty"`
+}
+
+// InvestigationState is what the Page's investigation is doing, which is not
+// the same as the Phase: a Page is visible and Pending while its investigation
+// waits for a slot or is suppressed by a guardrail.
+// +kubebuilder:validation:Enum=Queued;Running;Suppressed;Completed
+type InvestigationState string
+
+const (
+	// InvestigationQueued means the Page waits for an investigation slot.
+	InvestigationQueued InvestigationState = "Queued"
+	// InvestigationRunning means an agent Job is investigating.
+	InvestigationRunning InvestigationState = "Running"
+	// InvestigationSuppressed means no investigation will start.
+	InvestigationSuppressed InvestigationState = "Suppressed"
+	// InvestigationCompleted means the investigation finished.
+	InvestigationCompleted InvestigationState = "Completed"
+)
+
+// Reasons recorded on an investigation that did not start.
+const (
+	// ReasonWarnOnly means the Subject's namespace is warn-only.
+	ReasonWarnOnly = "WarnOnly"
+	// ReasonConcurrencyLimit means the concurrent-investigation ceiling was reached.
+	ReasonConcurrencyLimit = "ConcurrencyLimit"
+	// ReasonHourlyLimit means the hourly Page ceiling was reached.
+	ReasonHourlyLimit = "HourlyLimit"
+)
+
+// InvestigationStatus says whether, and why, the investigation is running.
+type InvestigationStatus struct {
+	// State is the investigation's state.
+	// +required
+	State InvestigationState `json:"state"`
+
+	// Reason says why a suppressed or queued investigation waits.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	Reason string `json:"reason,omitempty"`
+
+	// Job is the agent Job's name once the investigation starts.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Job string `json:"job,omitempty"`
 }
 
 // PageStatus is the observed state of a Page. Only pagerless-server writes it (ADR-0001).
@@ -728,6 +896,28 @@ type PageStatus struct {
 	// Cooldown records when the same Fingerprint may open a new Page.
 	// +optional
 	Cooldown *CooldownStatus `json:"cooldown,omitempty"`
+
+	// Subject mirrors the canonical Subject identity the watcher resolved.
+	// +optional
+	Subject *SubjectStatus `json:"subject,omitempty"`
+
+	// PrimaryFingerprint is the Fingerprint that opened the Page. Additional
+	// Fingerprints a second Trigger contributed are in Fingerprints.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{64}$`
+	PrimaryFingerprint string `json:"primaryFingerprint,omitempty"`
+
+	// Fingerprints are the distinct failure Fingerprints observed on the Subject,
+	// capped so a crash storm cannot grow the Page without bound.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	Fingerprints []FingerprintEntry `json:"fingerprints,omitempty"`
+
+	// Investigation reports whether the investigation is running, queued, or
+	// suppressed by a guardrail. It is empty for a Page a human opened.
+	// +optional
+	Investigation *InvestigationStatus `json:"investigation,omitempty"`
 
 	// Repository is the resolved Target Repository.
 	// +optional
