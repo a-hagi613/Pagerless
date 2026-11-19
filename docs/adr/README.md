@@ -43,3 +43,4 @@ replaced the rest.
 | [0037](0037-read-only-cluster-identity.md) | The cluster identity is strictly read-only |
 | [0038](0038-one-watch-mode-or-an-explicit-namespace-allowlist.md) | One watch mode or an explicit namespace allowlist |
 | [0039](0039-one-tag-publishes-every-artifact.md) | One tag publishes every artifact, and the published copy is verified |
+| [0040](0040-read-only-connectors-and-alert-webhooks.md) | Connectors are read-only and alerts join by subject identity |
