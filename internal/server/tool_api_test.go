@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	appsv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -157,18 +156,11 @@ func TestTheToolAPIRefusesAWriteToolAndRecordsTheAttempt(t *testing.T) {
 	if refusal.Error.Code != tools.CodeUnknownTool {
 		t.Errorf("code = %q, want %q", refusal.Error.Code, tools.CodeUnknownTool)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		latest := env.Get(t, created.Name)
-		if len(latest.Status.SuspiciousOutputs) > 0 {
-			if !strings.Contains(latest.Status.SuspiciousOutputs[0], "k8s_delete_pod") {
-				t.Errorf("event = %q, want it to name the attempted tool", latest.Status.SuspiciousOutputs[0])
-			}
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	recorded := env.WaitFor(t, created.Name, "the Page records the refused write",
+		func(p *v1alpha1.Page) bool { return len(p.Status.SuspiciousOutputs) > 0 })
+	if event := recorded.Status.SuspiciousOutputs[0]; !strings.Contains(event, "k8s_delete_pod") {
+		t.Errorf("event = %q, want it to name the attempted tool", event)
 	}
-	t.Fatal("the Page records no SuspiciousOutput for the write attempt")
 }
 
 // TestTheToolAPIRefusesTheSixteenthCall covers the server-side call budget and
@@ -395,22 +387,14 @@ func TestABudgetExhaustedAgentEndsThePageAsFailedKeepingFindings(t *testing.T) {
 	}
 	env.EndJob(t, job, testenv.JobFailed)
 
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		latestPage := env.Get(t, created.Name)
-		if latestPage.Status.Phase == v1alpha1.PhaseFailed {
-			if len(latestPage.Status.Findings) != 1 {
-				t.Errorf("findings = %+v, want the Finding gathered before the budget ran out", latestPage.Status.Findings)
-			}
-			if condition := meta.FindStatusCondition(latestPage.Status.Conditions, v1alpha1.ConditionFailed); condition == nil ||
-				condition.Reason != v1alpha1.ReasonBudgetExhausted {
-				t.Errorf("Failed condition = %+v, want reason %s", condition, v1alpha1.ReasonBudgetExhausted)
-			}
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
+	failed := env.WaitForPhase(t, created.Name, v1alpha1.PhaseFailed)
+	if len(failed.Status.Findings) != 1 {
+		t.Errorf("findings = %+v, want the Finding gathered before the budget ran out", failed.Status.Findings)
 	}
-	t.Fatalf("phase = %s, want Failed for an exhausted budget", env.Get(t, created.Name).Status.Phase)
+	if condition := meta.FindStatusCondition(failed.Status.Conditions, v1alpha1.ConditionFailed); condition == nil ||
+		condition.Reason != v1alpha1.ReasonBudgetExhausted {
+		t.Errorf("Failed condition = %+v, want reason %s", condition, v1alpha1.ReasonBudgetExhausted)
+	}
 }
 
 // mustJob reads the Page's agent Job.

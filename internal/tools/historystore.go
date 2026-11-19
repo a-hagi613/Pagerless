@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/utils/clock"
+
 	"github.com/a-hagi613/pagerless/internal/history"
 )
 
@@ -14,11 +16,21 @@ import (
 type HistoryStore struct {
 	// Store is the history database the server already writes.
 	Store *history.Store
+	// Clock stamps a record that was stored without a time. It defaults to the real clock.
+	Clock clock.PassiveClock
 	// refusals counts refused names in process. It is deliberately not durable:
 	// it exists so one run's repeated attempts raise one SuspiciousOutput, and a
 	// restarted server simply starts the count again.
 	mu       sync.Mutex
 	refusals map[string]int
+}
+
+// now returns the store's clock reading.
+func (h *HistoryStore) now() time.Time {
+	if h.Clock == nil {
+		return time.Now()
+	}
+	return h.Clock.Now()
 }
 
 // Record stores one call.
@@ -42,7 +54,7 @@ func (h *HistoryStore) Get(ctx context.Context, pageUID, callID string) (Record,
 		At: stored.RecordedAt,
 	}
 	if record.At.IsZero() {
-		record.At = time.Now()
+		record.At = h.now()
 	}
 	return record, true, nil
 }

@@ -525,7 +525,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Namespace:      cfg.Namespace,
 		ServiceAccount: cfg.AgentServiceAccount,
 	}
-	evidence := &tools.HistoryStore{Store: historyStore}
+	evidence := &tools.HistoryStore{Store: historyStore, Clock: cfg.Clock}
 	githubRead := &tools.HTTPGitHub{APIURL: cfg.GitHubAPIURL, Token: cfg.GitHubReadToken}
 	handler := &reportapi.Handler{
 		Auth:      authenticator,
