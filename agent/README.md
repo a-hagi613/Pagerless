@@ -1,40 +1,154 @@
 # Investigation agent
 
-`python -m pagerless_agent` runs one investigation Job. The graph reads evidence through agentgateway, which fronts the four MCP services, then sends step events and its report to `pagerless-server`. The agent never writes Kubernetes resources or the Sandbox.
+`python -m pagerless_agent` runs one Page investigation as an ephemeral, zero-RBAC Job.
+The agent reads a Context Bundle and a scoped tool catalogue from `pagerless-server`,
+investigates with read-only tools, and submits one report: a cited Diagnosis and exactly
+one Proposal, either a `FilePatch` against the Target Repository or a `DiagnosisOnly`
+conclusion. It never writes to a cluster, a connector, or GitHub.
 
-The Job receives its Page, Target and projected report-token settings through the environment defined in `internal/agentapi/contract.go`. Its additional runtime settings are:
+The Job receives its Page, Target, and projected report-token settings through the
+environment defined in `internal/agentapi/contract.go`. The agent needs no Kubernetes
+client, no connector credential, and no GitHub token. Its only credentials are the
+Page-scoped projected service-account token and the model API key, and its only two
+network destinations are `PAGERLESS_SERVER_URL` and `PAGERLESS_MODEL_BASE_URL`.
 
-- `PAGERLESS_TASK`: `investigate` (the default) or `narrative`. The server sets it explicitly on both kinds of Job.
+## One client for every endpoint
 
-- `PAGERLESS_MODEL_PROVIDER`: `replay` (the default), `anthropic`, or `bedrock`.
-- `PAGERLESS_MCP_GATEWAY_URL`: the base URL of agentgateway. The four Streamable HTTP endpoints are fixed routes of that gateway (`/mcp/kubernetes`, `/mcp/grafana`, `/mcp/argocd`, `/mcp/github`); there is no setting for a direct MCP endpoint.
-- `PAGERLESS_KEYCLOAK_ISSUER`, `PAGERLESS_KEYCLOAK_TOKEN_URL`, and `PAGERLESS_KEYCLOAK_CLIENT_ID`: the realm issuer that agentgateway validates, its token endpoint, and the federated client the agent authenticates as.
-- `PAGERLESS_KEYCLOAK_TOKEN_FILE`: the projected service account token whose only audience is the realm issuer. It is exchanged for an access token on every request; the agent holds no MCP credential.
-- `PAGERLESS_SANDBOX_OWNER` and `PAGERLESS_SANDBOX_REPO`: the only GitHub repository the tools may read.
-- `PAGERLESS_ARGOCD_APPLICATION`: the Sandbox application name, default `sandbox`.
-- `PAGERLESS_ALLOWED_NAMESPACES`: a comma-separated allowlist. It defaults to the target Workload's namespace, which must appear in any explicit list. Tool calls remain restricted to that target namespace.
-- `PAGERLESS_REPLAY_FILE`: the recording to play, default `/app/recordings/oom.json`.
-- `PAGERLESS_NARRATIVE_REPLAY_FILE`: the Narrative recording to play, default `/app/recordings/narrative.json`.
-- `PAGERLESS_RECORDING_FILE`: an optional destination for a recording of a live investigation or Narrative. It is refused in Replay.
+The model client speaks only the OpenAI Chat Completions protocol, through the pinned
+`openai` SDK, configured with a base URL, an API key, a model name, and optional default
+headers. That reaches OpenAI, Azure, DeepSeek, OpenRouter, Gemini's compatibility
+endpoint, and a vLLM or Ollama instance on a laptop without a provider-specific code path.
+SDK retries are disabled (`max_retries=0`) so every model call is one the budget accounts
+for.
 
-The Anthropic provider reads `ANTHROPIC_API_KEY` and uses Claude Haiku 5.5. The Bedrock provider uses Amazon Nova 2 Lite through the Converse API and the `us.amazon.nova-2-lite-v1:0` inference profile, which requires a US region, with the AWS SDK credential chain and optional `AWS_REGION` and `AWS_PROFILE`. These credentials are never included in the model prompt or the Context Bundle.
+Requests are normalised for the whole ecosystem:
 
-Both live providers cache their static prefix. The Anthropic provider marks the system prompt and the last tool definition. Nova 2 Lite accepts cache checkpoints only in `system` and `messages`, so the Bedrock provider places one `cachePoint` after the system prompt, which caches the tool definitions with it. Nova 2 Lite does not support Bedrock structured outputs, so a Diagnosis or Proposal travels as one forced tool call on both providers. [ADR-0023](../docs/adr/0023-bedrock-uses-amazon-nova-2-lite.md) records the decision.
+- exactly one `system` message, first, and never `developer`;
+- provider-private reasoning fields are dropped rather than echoed back;
+- an empty tool result is sent as `{"ok": true, "data": null}`;
+- tool arguments are repaired (empty, double-encoded, fenced, trailing commas) before the
+  graph sees them, and an argument that cannot be repaired becomes a model-visible tool
+  error rather than a failed Job.
 
-## Evidence and tool policy
+## The structured-output ladder
 
-The deterministic Context Bundle reads the Workload's status and selector, its pods in creation order, associated events, bounded recent logs, Argo CD status, the active Chaos Mesh experiments that select its pods, and the newest Sandbox commits. The pinned Kubernetes MCP service supplies structured resource objects and event rows; the agent does not parse rendered tables or YAML.
+No provider is assumed to support strict schemas, JSON mode, or function calling. A stage
+that needs structured output negotiates four rungs, strongest first:
 
-Tools are named with service prefixes (`k8s__`, `grafana__`, `argocd__`, and `github__`). Only explicitly allowlisted read tools are advertised or callable. Kubernetes calls cannot select another namespace or cluster, execute commands, proxy, or port-forward. The client does not filter the resource kind: agentgateway's route policy is the argument-level boundary that denies a `resources_get` or `resources_list` call whose `kind` is `Secret`, so the denial is logged there, and the Kubernetes MCP server's own denied-resource configuration and read-only Role are the final boundaries. GitHub calls are restricted to the configured Sandbox and Argo CD calls to its application. agentgateway independently authenticates every call with a Keycloak token and allowlists the same tools. Scoped service credentials and read-only server modes remain further independent boundaries.
+| Rung | Request | Reached when |
+| --- | --- | --- |
+| `json_schema` | `response_format` with a strict schema projection | The endpoint accepts it |
+| `json_object` | `response_format: json_object` and the schema in the prompt | The endpoint rejects `json_schema` |
+| `tool` | one forced call to `submit_output` | The endpoint rejects `response_format` |
+| `text` | JSON extracted from the answer | The endpoint rejects a forced `tool_choice` or offers no function calling |
 
-## Replay capture
+A `400` that names the rejected parameter descends one rung within the same model-call
+slot. The rung is cached per `(base_url, model, stage)` and reported in the Page's
+`capabilities.structuredOutput`, so an operator can see an installation running degraded.
+Local Pydantic validation with `extra="forbid"` is authoritative at every rung, because
+the strict projection drops the path and pattern constraints the contract relies on. A
+validation failure earns exactly one repair turn, and a second failure fails the stage.
 
-A live provider can be wrapped with `RecordingProvider` by setting `PAGERLESS_RECORDING_FILE`. After the server accepts the report, the runtime validates the normalized recording and replaces the destination atomically. Failed investigations leave the previous artifact intact. Replay continues to execute real MCP tool calls.
+## The tool broker
 
-The deployed Replay artifact must be captured from a live investigation, as required by ADR-0010, ADR-0016 and ADR-0023. A capture for that artifact uses the Anthropic provider and Claude Haiku 5.5. The synthetic recordings in the test suite exercise the format and runtime; they are not live captures and must not be promoted as demonstration recordings.
+One call starts the investigation:
+
+```
+GET /v1/pages/{page}/investigation
+```
+
+It returns the Context Bundle, the tool catalogue, the enforced scope, and the limits.
+Tool calls then go to `POST /v1/pages/{page}/tools/{tool}` with a Page UID header and an
+`Idempotency-Key` of `<page-uid>/<call-id>`, and the final report to
+`POST /v1/pages/{page}/report`. There is no write tool in the catalogue; a model that asks
+for one receives a normal tool error.
+
+Every tool result reaches the model inside a `<tool_output nonce="…" source="…">`
+envelope whose nonce is 128 bits per run, with the payload JSON-encoded and Markdown
+structure markers escaped. A log line can therefore only ever be a string value. A result
+that echoes the run nonce, and a second call to a tool outside the catalogue, raise a
+`SuspiciousOutput` event on the Page; the run continues read-only.
+
+## Budgets
+
+| Budget | Default | Enforced with |
+| --- | --- | --- |
+| Tool calls | 15 | Counted before the broker request |
+| Model calls | 12 | Counted before every HTTP attempt, including retries |
+| Input tokens | 300 000 | A pessimistic pre-flight estimate, then the provider's usage |
+| Wall clock | 300 s | `asyncio.timeout` around every await |
+
+Context pressure sheds the oldest tool results first, then truncates the rest, and never
+drops the system prompt, the task message, or the last assistant turn. A provider that
+omits `usage` is estimated pessimistically and the report marks the figure `estimated`, so
+the Page never presents an estimate as fact. Any exhausted budget ends the Page as
+`BudgetExhausted` and keeps the Findings gathered so far.
+
+## Configuration
+
+The server owns the Job's environment. The agent never reads a ConfigMap or a Secret by
+name.
+
+| Variable | Required | Default | Meaning |
+| --- | --- | --- | --- |
+| `PAGERLESS_TASK` | no | `investigate` | `investigate` or `narrative` |
+| `PAGERLESS_SERVER_URL` | yes | — | Base URL of the investigation API |
+| `PAGERLESS_TOKEN_FILE` | yes | — | Projected token for `pagerless-server/page/<uid>` |
+| `PAGERLESS_PAGE` | yes | — | Page name |
+| `PAGERLESS_PAGE_UID` | yes | — | Page UID, echoed in every request |
+| `PAGERLESS_MODEL_BASE_URL` | yes | — | e.g. `https://api.deepseek.com/v1` |
+| `PAGERLESS_MODEL_NAME` | yes | — | The provider's model identifier |
+| `PAGERLESS_MODEL_API_KEY_FILE` | yes | — | File holding the key |
+| `PAGERLESS_MODEL_HEADERS` | no | `{}` | JSON object of extra request headers |
+| `PAGERLESS_MODEL_MAX_OUTPUT_TOKENS` | no | `4096` | Per-call output cap |
+| `PAGERLESS_MODEL_CONTEXT_TOKENS` | no | `32768` | Window used for context shedding |
+| `PAGERLESS_MODEL_STRUCTURED_OUTPUT` | no | `auto` | `auto`, `json_schema`, `json_object`, `tool`, `text` |
+| `PAGERLESS_MODEL_MAX_TOKENS_FIELD` | no | `auto` | `max_tokens`, `max_completion_tokens`, `auto` |
+| `PAGERLESS_MODEL_SUPPORTS_TEMPERATURE` | no | `auto` | `auto`, `true`, `false` |
+| `PAGERLESS_MODEL_CONNECT_TIMEOUT_S` | no | `10` | Connection timeout |
+| `PAGERLESS_MODEL_READ_TIMEOUT_S` | no | `90` | Read timeout |
+| `PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT` | no | unset | `1` permits an `http` model endpoint for in-cluster vLLM or Ollama |
+| `PAGERLESS_BUDGET_TOOL_CALLS` | no | `15` | Investigation budget |
+| `PAGERLESS_BUDGET_MODEL_CALLS` | no | `12` | Investigation budget |
+| `PAGERLESS_BUDGET_INPUT_TOKENS` | no | `300000` | Investigation budget |
+| `PAGERLESS_BUDGET_SECONDS` | no | `300` | Investigation budget |
+| `PAGERLESS_HINT` | no | — | Human hint, read as untrusted data |
+
+The investigation manifest carries the limits the server enforces, and those take
+precedence over the Job's declared values.
+
+## Outcomes
+
+| Outcome | Exit | Effect |
+| --- | --- | --- |
+| `reported` | 0 | The report was accepted; the Page moves to `Proposed` |
+| `failed` | 1 | The agent failed; the Findings already posted stay |
+| `budget_exhausted` | 2 | A budget ran out; the Findings stay |
+| `proposal_refused` | 3 | The Proposal was refused after one revision |
+| `rejected` | 4 | The server refused the Job |
+| `provider_auth_failed` | 5 | The model endpoint refused the credentials |
+| `provider_rejected` | 6 | The model endpoint rejected the request |
 
 ## Narrative
 
-`pagerless-server` starts a second, short-lived Job from the same image once a Page reaches a terminal Verification outcome. `PAGERLESS_TASK=narrative` selects it. The Job reads the Page's record from the server's agent API, makes exactly one model call capped at `NARRATIVE_MAX_OUTPUT_TOKENS` (2,000) output tokens, and posts the Narrative back. It has no tools, no Context Bundle, and no MCP endpoints, and it never writes a phase, a check, or a Finding.
+`PAGERLESS_TASK=narrative` runs the second, short-lived Job. It reads the Page record,
+makes exactly one model call capped at 2,000 output tokens, and posts the Narrative back.
+It has no tools and no Context Bundle, and it never writes a phase, a check, or a Finding.
 
-Because the call has no Context Bundle, Replay cannot resolve an identifier in the Narrative's recorded response. The recording therefore carries no placeholders: the prompt asks for prose without pod names, timestamps, commit identifiers, hashes, or alert fingerprints, and the recording format refuses a response that still names a volatile identifier. `PAGERLESS_NARRATIVE_REPLAY_FILE` selects the recording, default `/app/recordings/narrative.json`. A genuine capture uses `PAGERLESS_RECORDING_FILE` exactly as an investigation does.
+## Tests
+
+```sh
+uv sync --locked
+uv run --locked pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked mypy src tests
+```
+
+The suite is entirely offline. `tests/mock_openai.py` is a fixture-backed
+OpenAI-compatible server reached through `httpx2.MockTransport`: it serves the scripted
+investigation in `tests/fixtures/scripts/`, reproduces the four ladder profiles by
+rejecting the parameters each class of provider rejects, and injects the faults real
+endpoints produce (`400` on `response_format`, `400` on `tool_choice`, malformed
+arguments, truncation, `429`, and a response with no `usage`). No test needs a network, a
+model credential, or a GitHub credential.

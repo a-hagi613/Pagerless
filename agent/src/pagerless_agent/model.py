@@ -1,18 +1,20 @@
-"""The interface between the agent graph and a model provider.
+"""The interface between the agent graph and a model endpoint.
 
-A provider answers one `ModelRequest` with one `ModelResponse`. Live providers
-(Bedrock and the Anthropic API) and Replay implement the same `ModelProvider`
-protocol, so the graph cannot tell them apart.
+One provider speaks the OpenAI Chat Completions protocol. It answers a `ModelRequest`
+with a `ModelResponse`; the graph never sees an SDK object, a provider dialect, or a
+retry. `Rung` records which structured-output rung produced a stage's output, so that a
+degraded installation is visible on the Page.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pagerless_agent.bundle import ContextBundle
+from pagerless_agent.budget import Budget
+from pagerless_agent.structured import Rung
 
 
 class _Frozen(BaseModel):
@@ -20,7 +22,7 @@ class _Frozen(BaseModel):
 
 
 class Stage(StrEnum):
-    """The stage that makes a model call: one of the investigation's graph or the Narrative."""
+    """The stage that makes a model call: a graph stage, or the Narrative Job."""
 
     INVESTIGATE = "investigate"
     DIAGNOSE = "diagnose"
@@ -29,7 +31,7 @@ class Stage(StrEnum):
 
 
 class ToolSpec(_Frozen):
-    """A tool the model may call."""
+    """A tool the model may call, forwarded verbatim from the server's catalogue."""
 
     name: str
     description: str
@@ -37,65 +39,85 @@ class ToolSpec(_Frozen):
 
 
 class ToolCall(_Frozen):
-    """A request from the model to call one tool."""
+    """A request from the model to call one tool.
+
+    `argument_error` is set when the model's arguments could not be repaired. The graph
+    returns it to the model as a correctable tool error, so a weak model gets one chance
+    to call the tool again rather than failing the Job (§3.4.3).
+    """
 
     id: str
     name: str
-    arguments: dict[str, Any]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    argument_error: str | None = None
 
 
 class Message(_Frozen):
     """One message of the conversation.
 
-    A `tool` message carries the output of the call named by `tool_call_id`.
+    A `tool` message carries the output of the call named by `tool_call_id`. Provider-private
+    reasoning fields have no representation here: they are dropped when a response is
+    normalised and can therefore never be echoed back to a provider.
     """
 
-    role: Literal["user", "assistant", "tool"]
-    content: str
+    role: str
+    content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
 
 
 class Usage(_Frozen):
-    """The tokens one call used. `input_tokens` counts every input token, cached or not."""
+    """The tokens one model call used, and whether the provider reported them.
+
+    `estimated` is true when the provider omitted `usage` and the figure was computed
+    locally, which the report then states so the Page never presents an estimate as fact.
+    """
 
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
+    estimated: bool = False
 
 
 class ModelRequest(_Frozen):
     """One call to the model.
 
-    `output_schema` is set when the stage needs structured output, and the
-    response must then carry `structured`. `bundle` is the Context Bundle of the
-    investigation. Live providers ignore it, because the messages already
-    contain it. Replay resolves its recorded placeholders against it. The
-    Narrative has no Context Bundle, so its recorded text carries no
-    placeholders. `max_output_tokens` caps this call when the stage needs a
-    smaller limit than the provider's.
+    `output_schema` is set when the stage needs structured output; the response must then
+    carry `structured`. `max_output_tokens` caps this call when the stage needs a smaller
+    limit than the endpoint's.
     """
 
     stage: Stage
     system: str
     messages: tuple[Message, ...]
-    tools: tuple[ToolSpec, ...]
+    tools: tuple[ToolSpec, ...] = ()
     output_schema: dict[str, Any] | None = None
-    bundle: ContextBundle | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
 
 
 class ModelResponse(_Frozen):
-    """The model's answer to one request."""
+    """The model's answer to one request.
+
+    `rung` is the structured-output rung that produced `structured`, `None` for a stage
+    that asked for no schema. `model_calls` counts the HTTP requests behind this answer,
+    including transport retries, so the budget accounts for every one.
+    """
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     structured: dict[str, Any] | None = None
     usage: Usage
+    rung: Rung | None = None
+    finish_reason: str | None = None
+    model_calls: int = 1
 
 
 class ModelProvider(Protocol):
     """Anything that can answer a model request."""
 
-    async def complete(self, request: ModelRequest) -> ModelResponse:
-        """Answer the request."""
+    async def complete(self, request: ModelRequest, *, budget: Budget | None = None) -> ModelResponse:
+        """Answer the request, counting every call against `budget`."""
+        ...
+
+    def estimate_input_tokens(self, request: ModelRequest) -> int:
+        """Return a pessimistic estimate of the request's input tokens."""
         ...
