@@ -263,6 +263,23 @@ func TestCookieSignatureIsVerifiedBeforeParsingPayloadAndRotationInvalidatesSess
 		t.Fatalf("tampered MAC accepted as %+v, want nil", got)
 	}
 
+	// A non-canonical base64 MAC whose unused trailing bits are set decodes to
+	// the same 32 bytes under a permissive decoder. It must not be a second
+	// spelling of a valid signature.
+	canonicalMAC := strings.Split(cookie.Value, ".")[1]
+	alphabet := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	lastIndex := strings.IndexByte(alphabet, canonicalMAC[len(canonicalMAC)-1])
+	nonCanonical := &http.Cookie{
+		Name: DefaultCookieName,
+		Value: strings.Split(cookie.Value, ".")[0] + "." + canonicalMAC[:len(canonicalMAC)-1] +
+			string(alphabet[lastIndex+1]),
+	}
+	reqNonCanonical := httptest.NewRequest(http.MethodGet, "/api/pages", nil)
+	reqNonCanonical.AddCookie(nonCanonical)
+	if got := auth.User(reqNonCanonical); got != nil {
+		t.Fatalf("non-canonical MAC encoding accepted as %+v, want nil", got)
+	}
+
 	// A payload that is not even valid base64 or JSON with an invalid MAC is rejected cleanly by MAC check.
 	unparseable := &http.Cookie{
 		Name:  DefaultCookieName,
