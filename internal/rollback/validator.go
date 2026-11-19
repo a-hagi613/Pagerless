@@ -118,7 +118,7 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 
 	commit, err := history.Resolve(ctx, params.Commit)
 	if errors.Is(err, sandbox.ErrNoCommit) {
-		return refuse(fieldCommit, fmt.Sprintf("commit %s is not in the Sandbox", params.Commit)), nil
+		return refuse(fieldCommit, fmt.Sprintf("commit %s is not in the Target Repository", params.Commit)), nil
 	}
 	if err != nil {
 		return proposal.Outcome{}, err
@@ -137,13 +137,13 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 	switch {
 	case errors.Is(err, sandbox.ErrRevertConflict):
 		return refuse(fieldCommit, truncate(fmt.Sprintf(
-			"commit %s does not revert cleanly against the current Sandbox commit %s: %v",
+			"commit %s does not revert cleanly against the current Target Repository commit %s: %v",
 			commit, history.Commit, err), maxMessageLength)), nil
 	case errors.Is(err, sandbox.ErrRevertNotOneFile):
 		return refuse(fieldCommit, fmt.Sprintf(
 			"reverting commit %s would change more than one file, and an approved change may touch only one", commit)), nil
 	case errors.Is(err, sandbox.ErrAlreadyReverted):
-		return refuse(fieldCommit, fmt.Sprintf("commit %s is already reverted in the Sandbox", commit)), nil
+		return refuse(fieldCommit, fmt.Sprintf("commit %s is already reverted in the Target Repository", commit)), nil
 	case err != nil:
 		return proposal.Outcome{}, err
 	}

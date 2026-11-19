@@ -205,7 +205,7 @@ func (v *Validator) Validate(
 	switch {
 	case patch == "":
 		return refuse(r.ParametersField(),
-			fmt.Sprintf("the requested %s change is already what the Sandbox declares", r.Action())), nil
+			fmt.Sprintf("the requested %s change is already what the Target Repository declares", r.Action())), nil
 	case len(patch) > maxPatchBytes:
 		return refuse(r.ParametersField(), fmt.Sprintf("the rendered patch exceeds %d bytes", maxPatchBytes)), nil
 	}

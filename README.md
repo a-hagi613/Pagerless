@@ -53,9 +53,9 @@ reads, so the two surfaces cannot disagree about a diagnosis or a decision.
    bounds — and stores it with a hash.
 5. A human reviews the diff and approves that exact hash in the Portal or with
    `kubectl page approve`.
-6. The isolated writer opens one branch and one pull request. The repository's
-   CI and reviewers decide the merge; after it, deterministic checks record
-   whether the Target recovered.
+6. The isolated writer opens one branch and one pull request against the Target
+   Repository. The repository's CI and reviewers decide the merge; after it,
+   deterministic checks record whether the Target recovered.
 
 ```mermaid
 flowchart LR
@@ -102,6 +102,22 @@ Go version. [`docs/install.md`](docs/install.md) covers the namespace allowlist,
 an externally managed credentials Secret, rendering the checked-in manifest
 template, and uninstall.
 
+The chart installs one `pagerless-server` Deployment, one Service, one
+`pagerless-data` PersistentVolumeClaim, two ConfigMaps, two ServiceAccounts, a
+`pagerless-credentials` Secret whose fixed keys and webhook tokens are present
+and empty, the bootstrap-token and session-key Secrets, the read identity, and an
+agent egress NetworkPolicy. It installs no database, identity provider, message
+broker, gateway, or admission webhook. The release notes print the sign-in
+steps: port-forward the Portal, decode the bootstrap token, sign in at `/login`,
+and finish onboarding at `/settings`.
+
+The Target Repository is resolved from `GITHUB_REPO` in the credentials Secret,
+using `GITHUB_API_URL` for a GitHub Enterprise host and `https://github.com`
+otherwise. Completing the Secret after onboarding is enough: the server re-reads
+it when a Page starts and when an approved Proposal is published. An air-gapped
+installation that has no repository sets `targetRepository.enabled=false` and
+runs diagnose-only.
+
 ## One capability, two surfaces
 
 Every Portal action has one CLI verb and every verb has one Portal path; a test
@@ -121,7 +137,7 @@ each command, flag, exit code, and the two transports.
 
 ## The safety model
 
-Pagerless opens one pull request and never merges it.
+Pagerless's only change path is one pull request, which it never merges.
 
 - **A read-only cluster identity.** The server can `get`, `list`, and `watch`
   workloads, Events, logs, and the OpenAPI schema, and write only its own Pages,

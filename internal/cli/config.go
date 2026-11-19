@@ -269,7 +269,6 @@ a Connector's endpoint is deployment configuration, not a credential.`,
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "", `what to test: "ai", "github", or "connector:<name>"`)
-	_ = cmd.MarkFlagRequired("target")
 	return cmd
 }
 

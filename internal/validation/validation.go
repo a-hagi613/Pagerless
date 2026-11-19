@@ -370,7 +370,7 @@ func checkDiffs(ctx context.Context, req Request, result *Result) error {
 			result.refuse("files", "%s has no content to validate", file.Path)
 			continue
 		}
-		diff, err := unifiedDiff(file.Path, byPath[file.Path].Content, content)
+		diff, err := UnifiedDiff(file.Path, byPath[file.Path].Content, content)
 		if err != nil {
 			result.refuse("files", "the Diff for %s cannot be derived: %s", file.Path, err)
 			continue

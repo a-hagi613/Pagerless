@@ -28,10 +28,10 @@ const MaxPathLength = 500
 const commandTimeout = 60 * time.Second
 
 // ErrNotFound means that the path does not name a regular file at the commit.
-var ErrNotFound = errors.New("the path does not name a regular file in the Sandbox")
+var ErrNotFound = errors.New("the path does not name a regular file in the Target Repository")
 
 // ErrInvalidPath means that the path cannot name a manifest in the Sandbox.
-var ErrInvalidPath = errors.New("invalid Sandbox path")
+var ErrInvalidPath = errors.New("invalid Target Repository path")
 
 // safePath admits only the characters that git prints without quoting.
 var safePath = regexp.MustCompile(`^[A-Za-z0-9._/@+=,-]+$`)
@@ -62,7 +62,7 @@ func CheckPath(p string) error {
 	case path.IsAbs(p) || path.Clean(p) != p:
 		return fmt.Errorf("%w: the path must be relative and clean", ErrInvalidPath)
 	case p == ".." || strings.HasPrefix(p, "../"):
-		return fmt.Errorf("%w: the path must stay inside the Sandbox", ErrInvalidPath)
+		return fmt.Errorf("%w: the path must stay inside the Target Repository", ErrInvalidPath)
 	case !strings.HasSuffix(p, ".yaml") && !strings.HasSuffix(p, ".yml"):
 		return fmt.Errorf("%w: the path must name a .yaml or .yml file", ErrInvalidPath)
 	}
@@ -85,11 +85,11 @@ func (r Repository) Head(ctx context.Context) (string, error) {
 	}
 	out, err := run(ctx, "", env, nil, "ls-remote", "--exit-code", "--", r.URL, "refs/heads/"+r.Branch)
 	if err != nil {
-		return "", fmt.Errorf("read the Sandbox head: %w", err)
+		return "", fmt.Errorf("read the Target Repository head: %w", err)
 	}
 	commit, _, _ := strings.Cut(strings.TrimSpace(out), "\t")
 	if !isObjectID(commit) {
-		return "", fmt.Errorf("read the Sandbox head: unexpected answer %q", out)
+		return "", fmt.Errorf("read the Target Repository head: unexpected answer %q", out)
 	}
 	return commit, nil
 }
@@ -113,13 +113,13 @@ func (r Repository) Checkout(ctx context.Context) (*Checkout, error) {
 	}
 	dir, err := os.MkdirTemp("", "pagerless-sandbox-")
 	if err != nil {
-		return nil, fmt.Errorf("create a directory for the Sandbox: %w", err)
+		return nil, fmt.Errorf("create a directory for the Target Repository: %w", err)
 	}
 	c := &Checkout{dir: dir}
 	if _, err := run(ctx, "", env, nil, "clone", "--bare", "--depth", "1", "--single-branch",
 		"--branch", r.Branch, "--", r.URL, dir); err != nil {
 		_ = c.Close()
-		return nil, fmt.Errorf("clone the Sandbox: %w", err)
+		return nil, fmt.Errorf("clone the Target Repository: %w", err)
 	}
 	head, err := c.git(ctx, nil, nil, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -133,7 +133,7 @@ func (r Repository) Checkout(ctx context.Context) (*Checkout, error) {
 // Close removes the snapshot.
 func (c *Checkout) Close() error {
 	if err := os.RemoveAll(c.dir); err != nil {
-		return fmt.Errorf("remove the Sandbox snapshot: %w", err)
+		return fmt.Errorf("remove the Target Repository snapshot: %w", err)
 	}
 	return nil
 }
@@ -226,9 +226,9 @@ func (c *Checkout) git(ctx context.Context, env []string, stdin []byte, args ...
 func (r Repository) check() error {
 	switch {
 	case r.URL == "" || strings.HasPrefix(r.URL, "-"):
-		return errors.New("the Sandbox URL is not usable")
+		return errors.New("the Target Repository URL is not usable")
 	case r.Branch == "" || strings.HasPrefix(r.Branch, "-") || strings.ContainsAny(r.Branch, " \t\n:~^?*[\\"):
-		return errors.New("the Sandbox branch is not usable")
+		return errors.New("the Target Repository branch is not usable")
 	}
 	if r.ReadToken != nil {
 		_, err := readURL(r.URL)

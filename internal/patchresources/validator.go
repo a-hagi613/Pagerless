@@ -213,7 +213,8 @@ func checkMerged(r corev1.ResourceRequirements) []agentapi.ValidationError {
 
 // errNoKnownGood means that the Sandbox's known-good tag is absent or does not
 // declare the container's resources, so only node allocatable bounds apply.
-var errNoKnownGood = errors.New("the Unschedulable bound cannot be checked against the Sandbox's known-good state")
+var errNoKnownGood = errors.New(
+	"the Unschedulable bound cannot be checked against the Target Repository's known-good state")
 
 // checkUnschedulable enforces the bound that applies when the live Target's
 // requests cannot fit any node: the Proposal must set each such request within

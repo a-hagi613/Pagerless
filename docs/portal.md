@@ -5,9 +5,9 @@ dashboard listener. The Portal is a view over the same `Page` resources that
 `kubectl page` reads, with the same decision path, so the two surfaces cannot
 disagree about what a Page is or who decided it.
 
-The chart starts the Portal on the Service's port. It also creates the two
-authentication Secrets and mounts them, so no identity provider or database is
-required ([ADR-0032](adr/0032-single-operator-local-authentication.md)).
+The chart starts the Portal on the Service's port. In `token` mode, the default,
+it also creates the two authentication Secrets and mounts them, so no identity
+provider or database is required ([ADR-0032](adr/0032-single-operator-local-authentication.md)).
 
 ## Enabling it
 
@@ -73,8 +73,9 @@ the Proposal is `409` with the code `proposal_changed`.
 
 A settings write reads the credentials Secret, merges only the submitted keys,
 updates with the observed resource version, and retries once on a conflict. It
-never creates the Secret and never returns a stored credential. The response is
-masked, so a value cannot be recovered from the Portal.
+never creates the Secret and never returns a stored credential. Credential
+fields are masked; the endpoint URL, model name, repository name, and API URL are
+not secrets and are returned so the form can prefill.
 
 When `credentials.existingSecret` is set, every write is answered with `409`,
 the code `settings_externally_managed`, and the manager's name, and the Portal

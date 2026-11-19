@@ -13,13 +13,19 @@ do.
 | `AI_BASE_URL` | The OpenAI-compatible endpoint of the model provider. |
 | `AI_API_KEY` | The key for that endpoint. |
 | `AI_MODEL` | The model name the agent requests. |
-| `GITHUB_TOKEN` | The credential that opens the Pull Request for an approved Proposal. |
+| `GITHUB_TOKEN` | The credential the pull-request writer uses when a Target Repository is configured. |
 | `GITHUB_REPO` | The Target Repository, as `owner/name`. |
 | `GITHUB_API_URL` | The GitHub API base URL. Empty uses `https://api.github.com`. |
 
 Connector tokens are separate: a connector reads `CONNECTOR_<UPPER_NAME>_TOKEN`
 from the same Secret. None of the six keys above is required for the server to
 start.
+
+The server re-reads `AI_BASE_URL` and `AI_MODEL` from the Secret when it starts
+each agent Job, and resolves the Target Repository from `GITHUB_REPO`,
+`GITHUB_API_URL`, and `GITHUB_TOKEN` when a Page starts and when an approved
+Proposal is published. Completing the Secret therefore takes effect without a
+restart, including the Pull Request path.
 
 ## Path 1: the Portal
 
@@ -70,9 +76,12 @@ helm upgrade --install pagerless ./charts/pagerless -n pagerless \
   --set credentials.existingSecret=team-credentials
 ```
 
-The Secret must exist before the release is installed. A secret manager that
-owns the Secret keeps owning it across chart upgrades, because the chart renders
-no Secret when `credentials.existingSecret` is set.
+Add `ALERTMANAGER_WEBHOOK_TOKEN`, `GRAFANA_WEBHOOK_SECRET`,
+`DATADOG_WEBHOOK_TOKEN`, or `GENERIC_WEBHOOK_TOKEN` for each webhook dialect you
+enable, and `CONNECTOR_<NAME>_TOKEN` for each Connector. The Secret must exist
+before the release is installed. A secret manager that owns the Secret keeps
+owning it across chart upgrades, because the chart renders no Secret when
+`credentials.existingSecret` is set.
 
 ## Finishing an installation without credentials
 
@@ -94,9 +103,10 @@ kubectl -n pagerless get secret pagerless-credentials \
   -o jsonpath='{range $k, $v := .data}{$k}: {if $v}set{else}empty{end}{"\n"}{end}'
 ```
 
-An installation that holds AI credentials but no GitHub credentials can still
-diagnose a Page: it ends the Page as Diagnosed with no change recommended, because
-Pagerless only changes a cluster through a pull request.
+An installation without a Target Repository can still diagnose a Page: it ends
+the Page as Diagnosed with no change recommended, because Pagerless only changes
+a cluster through a pull request. Set `targetRepository.enabled=false` to make
+that diagnose-only shape explicit for an air-gapped cluster.
 
 ## Next
 

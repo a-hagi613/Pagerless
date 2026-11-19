@@ -86,6 +86,15 @@ auth:
     # attributes the action and never authorizes it.
     identityHeader: ""
 
+# --- Target Repository ------------------------------------------------------
+
+targetRepository:
+  # Resolve the Target Repository from GITHUB_REPO in the credentials Secret
+  # and open the pull request for an approved Proposal. Set false for an
+  # air-gapped installation with no repository: Pagerless then diagnoses Pages
+  # and records decisions without opening a pull request.
+  enabled: true
+
 # --- Credentials ------------------------------------------------------------
 
 credentials:
@@ -129,6 +138,8 @@ connectors:
       enabled: false
     opensearch:
       enabled: false
+    mcp:
+      enabled: false
   metrics:
     prometheus:
       enabled: false
@@ -137,6 +148,8 @@ connectors:
     cloudwatch:
       enabled: false
     datadog:
+      enabled: false
+    mcp:
       enabled: false
   alertState:
     alertmanager:
@@ -147,6 +160,11 @@ connectors:
     rules: []
   redaction:
     patterns: []
+  # When non-empty, the only hosts a Connector may reach.
+  allowedHosts: []
+  # Substituted for {{ .ClusterName }} and {{ .Environment }} in query templates.
+  clusterName: ""
+  environment: ""
   alerting:
     # SNS topic ARNs are the only topics the receiver accepts. An empty list
     # refuses every SNS delivery.

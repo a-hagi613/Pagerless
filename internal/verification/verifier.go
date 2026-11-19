@@ -42,8 +42,9 @@ func WindowFromEnvironment(getenv func(string) string) (time.Duration, error) {
 	return window, nil
 }
 
-// DefaultApplication is the Argo CD application that deploys the Target Repository.
-const DefaultApplication = "sandbox"
+// DefaultApplication is the Argo CD application that deploys the Target
+// Repository when the operator configures the GitOps check without naming one.
+const DefaultApplication = "pagerless"
 
 // maxMessage bounds the message of a check.
 const maxMessage = 500

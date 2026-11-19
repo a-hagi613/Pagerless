@@ -202,6 +202,15 @@
         }
       }
     },
+    "targetRepository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
     "credentials": {
       "type": "object",
       "additionalProperties": false,

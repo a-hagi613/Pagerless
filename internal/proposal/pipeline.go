@@ -23,6 +23,13 @@ type Request struct {
 	Page *v1alpha1.Page
 	// Action is the Action and parameters the agent proposed.
 	Action v1alpha1.ProposedAction
+	// Base is the repository state the Action is rendered against. A FilePatch
+	// sets it from the Target Repository's head so the writer can refuse a
+	// branch that moved; other Actions record their own base.
+	Base *v1alpha1.ProposalBase
+	// RenderedChange is the reviewable change for an Action whose validator
+	// does not render one, such as the whole-file FilePatch Action.
+	RenderedChange *v1alpha1.RenderedChange
 }
 
 // Outcome is what an ActionValidator decides about a Request.
@@ -114,7 +121,10 @@ func (p *Pipeline) Revalidate(
 	if current == nil {
 		return nil, nil, errors.New("the Page has no Proposal to re-validate")
 	}
-	rebuilt, errs, err := p.Build(ctx, Request{Page: t, Action: current.ProposedAction}, current.Attempt)
+	rebuilt, errs, err := p.Build(ctx, Request{
+		Page: t, Action: current.ProposedAction, Base: current.Base,
+		RenderedChange: current.RenderedChange,
+	}, current.Attempt)
 	if err != nil || len(errs) > 0 {
 		return nil, errs, err
 	}
@@ -142,16 +152,36 @@ func (p *Pipeline) Build(
 	if len(outcome.Errors) > 0 {
 		return nil, outcome.Errors, nil
 	}
-	hash, err := Hash(req.Page, req.Action, outcome.Change, outcome.Base)
+	base := outcome.Base
+	if base == nil {
+		base = req.Base
+	}
+	change := outcome.Change
+	if change == nil {
+		change = req.RenderedChange
+	}
+	hash, err := Hash(req.Page, req.Action, change, base)
 	if err != nil {
 		return nil, nil, err
 	}
-	return &v1alpha1.Proposal{
+	proposal := &v1alpha1.Proposal{
 		ProposedAction: *req.Action.DeepCopy(),
-		RenderedChange: outcome.Change,
-		Base:           outcome.Base,
+		RenderedChange: change,
+		Base:           base,
 		Hash:           hash,
 		Attempt:        attempt,
 		ExpiresAt:      metav1.NewTime(p.clock.Now().Add(ExpiryAfter)),
-	}, nil, nil
+	}
+	switch req.Action.Action {
+	case v1alpha1.ActionFilePatch:
+		proposal.Kind = v1alpha1.ProposalKindFilePatch
+		if req.Action.Parameters != nil && req.Action.Parameters.FilePatch != nil {
+			proposal.Files = req.Action.Parameters.FilePatch.Files
+		}
+	case v1alpha1.ActionNoAction:
+		proposal.Kind = v1alpha1.ProposalKindDiagnosisOnly
+	default:
+		proposal.Kind = v1alpha1.ProposalKindAction
+	}
+	return proposal, nil, nil
 }

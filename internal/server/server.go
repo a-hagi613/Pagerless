@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -39,13 +40,11 @@ import (
 	"github.com/a-hagi613/pagerless/internal/credentials"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
-	"github.com/a-hagi613/pagerless/internal/github/pr"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
 	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
-	"github.com/a-hagi613/pagerless/internal/publish"
 	"github.com/a-hagi613/pagerless/internal/reportapi"
 	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
@@ -226,6 +225,10 @@ type Config struct {
 	CredentialsMountPath string
 	// Version is the release version that the Portal reports. It defaults to "dev".
 	Version string
+	// DisableTargetRepository turns off repository resolution and the pull
+	// request path for an air-gapped installation with no Target Repository.
+	// The chart's targetRepository.enabled=false sets it.
+	DisableTargetRepository bool
 }
 
 // Scheme returns the scheme that pagerless-server uses.
@@ -270,9 +273,9 @@ func (c Config) validate() error {
 	if c.Sandbox.URL != "" {
 		switch {
 		case c.GitHubRepository == "":
-			return errors.New("a GitHub repository is required when a Sandbox is configured")
+			return errors.New("a GitHub repository is required when a Target Repository is configured")
 		case c.GitHubToken == nil:
-			return errors.New("a GitHub token source is required when a Sandbox is configured")
+			return errors.New("a GitHub token source is required when a Target Repository is configured")
 		}
 	}
 	return nil
@@ -370,6 +373,12 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("configure the credentials store: %w", err)
 	}
+	runtimeSource := newRuntimeSource(credentialsStore)
+	resolveRepository, err := configureTargetRepository(&cfg, credentialsStore)
+	if err != nil {
+		return nil, err
+	}
+	tokenSource := configureTokenSources(&cfg, credentialsStore)
 
 	historyStore, err := history.Open(cfg.HistoryPath)
 	if err != nil {
@@ -451,26 +460,25 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals:    proposals,
 		Clock:        cfg.Clock,
 		PollInterval: cfg.ProposalPollInterval,
+		Runtime:      runtimeSource,
+	}
+	if !cfg.DisableTargetRepository {
+		pages.Repository = repositoryResolution(resolveRepository)
 	}
 	pages.Evidence = setup.assembler
 	if err := pages.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the Page controller: %w", err)
 	}
 
-	if cfg.Sandbox.URL != "" {
+	if !cfg.DisableTargetRepository {
 		pullRequests := &controller.PullRequestReconciler{
 			Client: mgr.GetClient(),
 			Status: store,
 			Clock:  cfg.Clock,
-			Publisher: publish.New(publish.Config{
-				Sandbox: cfg.Sandbox,
-				GitHub: &pr.Client{
-					APIURL:     cfg.GitHubAPIURL,
-					Repository: cfg.GitHubRepository,
-					Token:      cfg.GitHubToken,
-				},
-				Token: cfg.GitHubToken,
-			}),
+			Publisher: &repositoryPublisher{
+				resolve: resolveRepository, token: tokenSource,
+				readToken: cfg.Sandbox.ReadToken, contents: historyStore,
+			},
 			PollInterval: cfg.PullRequestPollInterval,
 		}
 		if err := pullRequests.SetupWithManager(mgr); err != nil {
@@ -478,16 +486,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		}
 	}
 
-	verifier := &verification.Verifier{
-		Reader:      mgr.GetAPIReader(),
-		Application: cfg.ArgoCDApplication,
-	}
-	if cfg.ArgoCDURL != "" {
-		verifier.Applications = &verification.ArgoCD{BaseURL: cfg.ArgoCDURL, Token: cfg.ArgoCDToken}
-	}
-	if cfg.AlertmanagerURL != "" {
-		verifier.Alerts = &verification.Alertmanager{BaseURL: cfg.AlertmanagerURL, Clock: cfg.Clock}
-	}
+	verifier := newVerifier(cfg, mgr.GetAPIReader())
 	verifications := &controller.VerificationReconciler{
 		Client:       mgr.GetClient(),
 		Scheme:       scheme,
@@ -503,6 +502,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			Deadline:       int64(cfg.NarrativeDeadline.Seconds()),
 			Runtime:        cfg.AgentRuntime,
 		},
+		Runtime: runtimeSource,
 	}
 	if err := verifications.SetupWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("set up the verification controller: %w", err)
@@ -526,7 +526,9 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		ServiceAccount: cfg.AgentServiceAccount,
 	}
 	evidence := &tools.HistoryStore{Store: historyStore, Clock: cfg.Clock}
-	githubRead := &tools.HTTPGitHub{APIURL: cfg.GitHubAPIURL, Token: cfg.GitHubReadToken}
+	githubRead := repositoryGitHub{
+		resolve: resolveRepository, fallback: cfg.GitHubAPIURL, token: cfg.GitHubReadToken,
+	}
 	handler := &reportapi.Handler{
 		Auth:      authenticator,
 		Status:    store,
@@ -581,6 +583,29 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		}
 	}
 	return mgr, nil
+}
+
+// newRuntimeSource reads the model endpoint from the credentials Secret when a
+// Job is created, so a settings write through the Portal or the CLI reaches the
+// next Page without a Deployment restart. The chart's environment variables are
+// the fallback for a Secret that does not carry the keys.
+func newRuntimeSource(store *credentials.Store) controller.RuntimeSource {
+	return func(
+		ctx context.Context, fallback controller.AgentRuntimeConfig,
+	) controller.AgentRuntimeConfig {
+		values, err := store.Read(ctx)
+		if err != nil {
+			return fallback
+		}
+		resolved := fallback
+		if value := strings.TrimSpace(values[credentials.KeyAIBaseURL]); value != "" {
+			resolved.ModelBaseURL = value
+		}
+		if value := strings.TrimSpace(values[credentials.KeyAIModel]); value != "" {
+			resolved.ModelName = value
+		}
+		return resolved
+	}
 }
 
 // cacheOptions returns the manager's cache configuration. Pages and the objects
@@ -640,6 +665,8 @@ func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Pag
 	if before.Status.Phase == after.Status.Phase {
 		return
 	}
+	logf.FromContext(ctx).Info("Page phase changed",
+		"page", after.Name, "from", before.Status.Phase, "to", after.Status.Phase)
 	if err := r.history.AppendSnapshot(ctx, after, now); err != nil {
 		logf.FromContext(ctx).Error(err, "record the Page snapshot", "page", after.Name)
 	}

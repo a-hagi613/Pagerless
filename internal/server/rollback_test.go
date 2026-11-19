@@ -193,8 +193,8 @@ func TestRollbackRefusesACommitOutsideTheAllowedPaths(t *testing.T) {
 	cases := []refusal{
 		{name: "a commit that touches another Target", target: "other-path",
 			parts: []string{"last 20", "commits"}},
-		{name: "a commit that is not in the Sandbox", target: "absent-commit",
-			parts: []string{"commit", "not in the Sandbox"}},
+		{name: "a commit that is not in the Target Repository", target: "absent-commit",
+			parts: []string{"commit", "not in the Target Repository"}},
 		{name: "a commit that touches more than one file", target: twoFiles.name,
 			parts: []string{"more than one file"}},
 	}

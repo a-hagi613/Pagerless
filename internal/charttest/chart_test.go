@@ -29,6 +29,9 @@ const releaseNamespace = "pagerless"
 // credentialsSecretName is the Secret the chart pre-creates for credentials.
 const credentialsSecretName = "pagerless-credentials"
 
+// externalCredentialsSecret is the Secret an external manager owns in these tests.
+const externalCredentialsSecret = "team-credentials"
+
 // forbiddenNames lists the objects the standalone chart must never render.
 var forbiddenNames = []string{
 	"MutatingWebhookConfiguration",
@@ -424,14 +427,15 @@ func TestTheCredentialsSecretIsPrecreatedEmptyOrOmitted(t *testing.T) {
 
 	t.Run("an externally managed Secret is mounted and not rendered", func(t *testing.T) {
 		t.Parallel()
-		external := render(t, "credentials.existingSecret=team-credentials")
+		external := render(t, "credentials.existingSecret="+externalCredentialsSecret)
 		for _, doc := range external {
-			if doc.Kind == "Secret" && (doc.Metadata.Name == credentialsSecretName || doc.Metadata.Name == "team-credentials") {
+			if doc.Kind == "Secret" &&
+				(doc.Metadata.Name == credentialsSecretName || doc.Metadata.Name == externalCredentialsSecret) {
 				t.Fatalf("the chart renders credentials Secret %q, want none when existingSecret is set", doc.Metadata.Name)
 			}
 		}
 		deployment := find(t, external, "Deployment", "pagerless-server")
-		if !strings.Contains(renderedString(deployment.Raw), "team-credentials") {
+		if !strings.Contains(renderedString(deployment.Raw), externalCredentialsSecret) {
 			t.Error("the Deployment does not mount the externally managed Secret")
 		}
 		role := find(t, external, "Role", "pagerless-server")
@@ -441,6 +445,36 @@ func TestTheCredentialsSecretIsPrecreatedEmptyOrOmitted(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestTheConfigMapNamesTheCredentialsSecret keeps the CLI and the Deployment on
+// one Secret: `kubectl page config` reads these keys in kubeconfig mode.
+func TestTheConfigMapNamesTheCredentialsSecret(t *testing.T) {
+	t.Parallel()
+	config := func(documents []document) map[string]any {
+		configMap := find(t, documents, "ConfigMap", "pagerless-config")
+		data, ok := configMap.Raw["data"].(map[string]any)
+		if !ok {
+			t.Fatalf("pagerless-config has no data: %+v", configMap.Raw)
+		}
+		return data
+	}
+
+	owned := config(render(t))
+	if got := owned["PAGERLESS_CREDENTIALS_SECRET"]; got != credentialsSecretName {
+		t.Errorf("PAGERLESS_CREDENTIALS_SECRET = %v, want %q", got, credentialsSecretName)
+	}
+	if got := owned["PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER"]; got != "" {
+		t.Errorf("PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER = %v, want empty", got)
+	}
+
+	external := config(render(t, "credentials.existingSecret="+externalCredentialsSecret))
+	if got := external["PAGERLESS_CREDENTIALS_SECRET"]; got != externalCredentialsSecret {
+		t.Errorf("PAGERLESS_CREDENTIALS_SECRET = %v, want %s", got, externalCredentialsSecret)
+	}
+	if got := external["PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER"]; got != externalCredentialsSecret {
+		t.Errorf("PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER = %v, want %s", got, externalCredentialsSecret)
+	}
 }
 
 // renderedString serialises an object for a substring assertion.
@@ -825,9 +859,9 @@ func TestNotesTxtCoversTokenDisabledAndExistingSecretModes(t *testing.T) {
 
 	t.Run("existingSecret mode", func(t *testing.T) {
 		t.Parallel()
-		notes := renderNotes(t, "credentials.existingSecret=team-credentials")
+		notes := renderNotes(t, "credentials.existingSecret="+externalCredentialsSecret)
 		for _, want := range []string{
-			"team-credentials",
+			externalCredentialsSecret,
 			"read-only",
 			"AI_BASE_URL",
 			"AI_API_KEY",

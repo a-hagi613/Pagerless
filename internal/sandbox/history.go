@@ -16,11 +16,11 @@ import (
 const KnownGoodTag = "known-good"
 
 // ErrNoCommit means that the name does not identify a commit in the Sandbox.
-var ErrNoCommit = errors.New("the commit is not in the Sandbox")
+var ErrNoCommit = errors.New("the commit is not in the Target Repository")
 
 // ErrRevertConflict means that the commit does not revert cleanly against the
 // current tip of the Sandbox's branch.
-var ErrRevertConflict = errors.New("the commit does not revert cleanly against the current Sandbox commit")
+var ErrRevertConflict = errors.New("the commit does not revert cleanly against the current Target Repository commit")
 
 // ErrRevertNotOneFile means that reverting the commit would change something
 // other than exactly one existing regular file.
@@ -28,7 +28,7 @@ var ErrRevertNotOneFile = errors.New("reverting the commit would change more tha
 
 // ErrAlreadyReverted means that the commit's change is not present at the tip,
 // so reverting it would change nothing.
-var ErrAlreadyReverted = errors.New("the commit is already reverted in the Sandbox")
+var ErrAlreadyReverted = errors.New("the commit is already reverted in the Target Repository")
 
 // commitID matches a commit parameter: an abbreviated or full object
 // identifier. It keeps a parameter from reaching git as an option or a revision
@@ -60,13 +60,13 @@ func (r Repository) History(ctx context.Context) (*History, error) {
 	}
 	dir, err := os.MkdirTemp("", "pagerless-history-")
 	if err != nil {
-		return nil, fmt.Errorf("create a directory for the Sandbox history: %w", err)
+		return nil, fmt.Errorf("create a directory for the Target Repository history: %w", err)
 	}
 	h := &History{dir: dir}
 	if _, err := run(ctx, "", env, nil, "clone", "--quiet", "--single-branch", "--branch", r.Branch,
 		"--", r.URL, dir); err != nil {
 		_ = h.Close()
-		return nil, fmt.Errorf("clone the Sandbox history: %w", err)
+		return nil, fmt.Errorf("clone the Target Repository history: %w", err)
 	}
 	head, err := h.git(ctx, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
@@ -80,7 +80,7 @@ func (r Repository) History(ctx context.Context) (*History, error) {
 // Close removes the snapshot.
 func (h *History) Close() error {
 	if err := os.RemoveAll(h.dir); err != nil {
-		return fmt.Errorf("remove the Sandbox history snapshot: %w", err)
+		return fmt.Errorf("remove the Target Repository history snapshot: %w", err)
 	}
 	return nil
 }

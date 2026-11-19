@@ -29,7 +29,7 @@ CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 CLI_BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 build-cli: ## Build the kubectl-page plugin into bin/.
-	go build -trimpath -ldflags "-X github.com/a-hagi613/pagerless/internal/cli.Version=$(CLI_VERSION) -X github.com/a-hagi613/pagerless/internal/cli.Commit=$(CLI_COMMIT) -X github.com/a-hagi613/pagerless/internal/cli.BuildDate=$(CLI_BUILD_DATE)" -o bin/kubectl-page ./cmd/kubectl-page
+	go build -trimpath -ldflags "-X github.com/a-hagi613/pagerless/internal/cli.Version=$(CLI_VERSION) -X github.com/a-hagi613/pagerless/internal/cli.Commit=$(CLI_COMMIT) -X github.com/a-hagi613/pagerless/internal/cli.BuildDate=$(CLI_BUILD_DATE) -X github.com/a-hagi613/pagerless/internal/cli.ExpectedChartVersion=$(CLI_VERSION)" -o bin/kubectl-page ./cmd/kubectl-page
 
 brand-assets: ## Regenerate the brand assets from docs/assets/pagerless-mascot-source.png.
 	bash hack/brand-assets.sh

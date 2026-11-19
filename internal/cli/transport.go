@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
@@ -383,7 +384,7 @@ func (s *session) settings(ctx context.Context) (serverSettings, error) {
 		}
 		return view, nil
 	}
-	store, err := s.credentialStore()
+	store, err := s.credentialStore(ctx)
 	if err != nil {
 		return serverSettings{}, err
 	}
@@ -409,7 +410,7 @@ func (s *session) writeSettings(ctx context.Context, values map[string]string) (
 		}
 		return view, nil
 	}
-	store, err := s.credentialStore()
+	store, err := s.credentialStore(ctx)
 	if err != nil {
 		return serverSettings{}, err
 	}
@@ -456,7 +457,7 @@ func (s *session) clearSetting(ctx context.Context, key string) (serverSettings,
 		}
 		return view, nil
 	}
-	store, err := s.credentialStore()
+	store, err := s.credentialStore(ctx)
 	if err != nil {
 		return serverSettings{}, err
 	}
@@ -470,13 +471,29 @@ func (s *session) clearSetting(ctx context.Context, key string) (serverSettings,
 	}, nil
 }
 
-// credentialStore builds the shared credentials store for kubeconfig mode.
-func (s *session) credentialStore() (*credentials.Store, error) {
+// credentialStore builds the shared credentials store for kubeconfig mode. The
+// chart records the Secret name and an external manager in pagerless-config, so
+// the CLI writes the same Secret the Deployment mounts and refuses to write one
+// a secret manager owns. A cluster without that ConfigMap, or a caller without
+// permission to read it, keeps the flag values.
+func (s *session) credentialStore(ctx context.Context) (*credentials.Store, error) {
+	secretName := s.opts.credentialsSecret
+	externalManager := ""
+	var config corev1.ConfigMap
+	key := client.ObjectKey{Namespace: s.opts.pageNamespace, Name: "pagerless-config"}
+	if err := s.clus.client.Get(ctx, key, &config); err == nil && !s.opts.credentialsSecretSet {
+		if value := strings.TrimSpace(config.Data["PAGERLESS_CREDENTIALS_SECRET"]); value != "" {
+			secretName = value
+		}
+		externalManager = strings.TrimSpace(config.Data["PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER"])
+	}
 	return credentials.New(credentials.Config{
-		Client:     s.clus.client,
-		Namespace:  s.opts.pageNamespace,
-		SecretName: s.opts.credentialsSecret,
-		MountPath:  "/var/run/pagerless/credentials",
+		Client:          s.clus.client,
+		Namespace:       s.opts.pageNamespace,
+		SecretName:      secretName,
+		ExternalManager: externalManager,
+		ReadThroughAPI:  true,
+		MountPath:       "/var/run/pagerless/credentials",
 	})
 }
 

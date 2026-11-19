@@ -46,14 +46,16 @@ Nothing is carried across:
 - **The history database starts empty.** The v2 append-only history is written by
   `pagerless-server` on the new claim; the v1 database is not imported.
 - **The credentials move.** v1 spread its credentials over six Secrets that the
-  chart refused to create; v2 reads one `pagerless-credentials` Secret with six
-  documented keys. Re-enter the values; do not copy the old Secret names.
+  chart refused to create; v2 reads one `pagerless-credentials` Secret with the
+  documented keys, including the four webhook tokens. Re-enter the values; do not
+  copy the old Secret names.
 
 ## Removed values
 
-Every value below existed in the v1 chart and does not exist in v2. Helm rejects
-an unknown value only when a schema is shipped, so remove them from your values
-file before you install; passing them is silently ignored, which is worse.
+Every value below existed in the v1 chart and does not exist in v2. The chart
+ships `values.schema.json` with `additionalProperties: false` on every object, so
+Helm rejects one of these keys with a schema error instead of ignoring it:
+remove them from your values file before you install.
 
 ### Components that v2 does not install
 

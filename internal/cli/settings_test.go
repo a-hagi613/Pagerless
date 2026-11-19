@@ -13,11 +13,18 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/a-hagi613/pagerless/internal/cli"
+	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
 // testCSRF is the CSRF claim that the fake Portal expects on every write.
 const testCSRF = "csrf-1"
+
+// testExternalManager is the Secret an external manager owns in these tests.
+const testExternalManager = "team-credentials"
 
 // sessionCookie builds a signed-cookie-shaped value with a CSRF claim. The CLI
 // reads the claim; the server verifies the signature.
@@ -366,5 +373,54 @@ func TestConfigTestNeedsServerMode(t *testing.T) {
 	}
 	if code := cli.ExitCode(err); code != cli.ExitUsage {
 		t.Errorf("exit code = %d, want %d", code, cli.ExitUsage)
+	}
+}
+
+// TestConfigFollowsTheChartConfigMap proves that kubeconfig mode writes the
+// Secret the Deployment mounts and refuses a Secret a secret manager owns, as
+// the chart records both in pagerless-config.
+func TestConfigFollowsTheChartConfigMap(t *testing.T) {
+	env, kubeconfig := startCluster(t)
+	ctx := t.Context()
+	var configMap corev1.ConfigMap
+	configMapKey := client.ObjectKey{Namespace: testenv.Namespace, Name: "pagerless-config"}
+	if err := env.Client.Get(ctx, configMapKey, &configMap); err != nil {
+		t.Fatalf("read the chart's pagerless-config: %v", err)
+	}
+	if configMap.Data == nil {
+		configMap.Data = map[string]string{}
+	}
+	configMap.Data["PAGERLESS_CREDENTIALS_SECRET"] = testExternalManager
+	configMap.Data["PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER"] = testExternalManager
+	if err := env.Client.Update(ctx, &configMap); err != nil {
+		t.Fatalf("record the external manager in pagerless-config: %v", err)
+	}
+	secret := &corev1.Secret{}
+	secret.Name, secret.Namespace = testExternalManager, testenv.Namespace
+	secret.StringData = map[string]string{"AI_BASE_URL": "https://models.example.com/v1"}
+	if err := env.Client.Create(ctx, secret); err != nil {
+		t.Fatalf("create team-credentials: %v", err)
+	}
+
+	out, err := execute(ctx, kubeconfig, "config", "get")
+	if err != nil {
+		t.Fatalf("config get: %v", err)
+	}
+	for _, want := range []string{"Managed by", "external", "read-only", "AI_BASE_URL"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("config get output = %q, want it to mention %q", out, want)
+		}
+	}
+
+	_, err = execute(ctx, kubeconfig, "config", "set", "ai", "--ai-base-url", "https://other.example/v1")
+	if code := cli.ExitCode(err); code != cli.ExitExternal {
+		t.Fatalf("config set exit code = %d (%v), want %d", code, err, cli.ExitExternal)
+	}
+	var stored corev1.Secret
+	if err := env.Client.Get(ctx, client.ObjectKeyFromObject(secret), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(stored.Data["AI_BASE_URL"]); got != "https://models.example.com/v1" {
+		t.Errorf("AI_BASE_URL = %q, want the externally managed value unchanged", got)
 	}
 }

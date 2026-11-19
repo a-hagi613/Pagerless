@@ -72,7 +72,8 @@ A successful sign-in sets one cookie:
   (`jti`), the issue and expiry times, and a CSRF token. The server verifies the
   signature before it parses the payload.
 - Sessions are stateless across pod restarts because the signing key is a
-  Secret. There is no server-side session table.
+  Secret. There is no server-side session store; the only server-side table is
+  the revocation list below.
 - `POST /api/auth/logout` records the `jti` in the SQLite `revoked_sessions`
   table until the cookie expires, so a copied cookie stops working after
   sign-out.
