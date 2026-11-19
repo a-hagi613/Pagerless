@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,199 +11,192 @@ import (
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 )
 
-// NarrativeRecordingFileEnv configures the recording that a Narrative Job
-// captures. It is a server setting, not part of the agent Job contract: the Job
-// receives the file as PAGERLESS_RECORDING_FILE, like an investigation does.
-const NarrativeRecordingFileEnv = "PAGERLESS_NARRATIVE_RECORDING_FILE"
-
-// ValidateRecording refuses configurations whose output cannot be retrieved after a Job completes.
-// The claim must already exist in the Job's namespace; provisioning it is an operator action.
-func (c AgentRuntimeConfig) ValidateRecording() error {
-	// A claim with no recording file at all is an unfinished investigation capture. A claim that only the
-	// Narrative Job uses is valid, because its file is set separately.
-	if c.RecordingFile != "" || (c.RecordingPVC != "" && c.NarrativeRecordingFile == "") {
-		if err := validateRecording(c.RecordingFile, c.RecordingPVC, c.Provider, agentapi.EnvRecordingFile); err != nil {
-			return err
-		}
-	}
-	if c.NarrativeRecordingFile == "" {
-		return nil
-	}
-	return validateRecording(c.NarrativeRecordingFile, c.RecordingPVC, c.Provider, NarrativeRecordingFileEnv)
-}
-
-// validateRecording checks one server-managed recording configuration.
-func validateRecording(file, pvc, provider, fileVariable string) error {
-	if file == "" && pvc == "" {
-		return nil
-	}
-	if pvc == "" {
-		return errors.New("PAGERLESS_RECORDING_PVC is required for a server-managed recording")
-	}
-	if file == "" {
-		return fmt.Errorf("%s is required when PAGERLESS_RECORDING_PVC is set", fileVariable)
-	}
-	if provider != "anthropic" && provider != "bedrock" {
-		return errors.New("a server-managed recording requires a live model provider: anthropic or bedrock")
-	}
-	if pvc != "pagerless-replay-capture" {
-		return errors.New("PAGERLESS_RECORDING_PVC must name the dedicated " +
-			"pagerless-replay-capture claim permitted by agent Job admission")
-	}
-	if !path.IsAbs(file) || path.Clean(file) != file ||
-		!strings.HasPrefix(file, "/recordings/") || strings.ContainsRune(file, 0) {
-		return fmt.Errorf("%s must name an absolute file strictly inside /recordings without traversal", fileVariable)
-	}
-	return nil
-}
-
-// ValidateGateway refuses configurations that cannot authenticate the agent to
-// an identity provider or cannot address the gateway that fronts the MCP
-// servers. Both are optional: a deployment that configures neither gives the
-// agent Job no tool gateway and no identity-provider token, which is the
-// standalone default. When one is configured, every field it needs is required,
-// and the issuer and the token endpoint must describe the same realm, because
-// the issuer is also the audience of the projected service account token.
-func (c AgentRuntimeConfig) ValidateGateway() error {
-	if c.GatewayURL == "" && c.KeycloakIssuer == "" && c.KeycloakTokenURL == "" && c.KeycloakClientID == "" {
-		return nil
-	}
-	if c.GatewayURL == "" {
-		return errors.New("PAGERLESS_MCP_GATEWAY_URL is required when an MCP gateway is used")
-	}
-	gateway, err := url.Parse(c.GatewayURL)
-	if err != nil || gateway.Host == "" || (gateway.Scheme != "http" && gateway.Scheme != "https") ||
-		gateway.User != nil || gateway.RawQuery != "" || gateway.Fragment != "" ||
-		(gateway.Path != "" && gateway.Path != "/") {
-		return errors.New("PAGERLESS_MCP_GATEWAY_URL must be an HTTP(S) base URL without a path or credentials")
-	}
-	if c.KeycloakIssuer == "" {
-		return errors.New("PAGERLESS_KEYCLOAK_ISSUER is required")
-	}
-	issuer, err := url.Parse(c.KeycloakIssuer)
-	if err != nil || issuer.Host == "" || (issuer.Scheme != "http" && issuer.Scheme != "https") ||
-		issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" ||
-		!strings.Contains(issuer.Path, "/realms/") || strings.HasSuffix(issuer.Path, "/") {
-		return errors.New("PAGERLESS_KEYCLOAK_ISSUER must be an HTTP(S) realm URL without a trailing slash")
-	}
-	if c.KeycloakTokenURL == "" {
-		return errors.New("PAGERLESS_KEYCLOAK_TOKEN_URL is required")
-	}
-	if c.KeycloakTokenURL != c.KeycloakIssuer+"/protocol/openid-connect/token" {
-		return errors.New("PAGERLESS_KEYCLOAK_TOKEN_URL must be the issuer's token endpoint")
-	}
-	if c.KeycloakClientID == "" || strings.ContainsAny(c.KeycloakClientID, " \t\r\n/") {
-		return errors.New("PAGERLESS_KEYCLOAK_CLIENT_ID must be a single non-empty client identifier")
-	}
-	return nil
-}
+// modelAuto is the automatic setting shared by the model options.
+const modelAuto = "auto"
 
 const (
-	// AgentCredentialsSecret holds only the selected provider's inference credentials.
-	AgentCredentialsSecret = "pagerless-agent-credentials"
-	// DefaultKeycloakClientID is the confidential client that authenticates the agent
-	// with its projected service account token.
-	DefaultKeycloakClientID = "pagerless-agent"
+	// DefaultCredentialsSecret is the Secret the chart creates with every
+	// credential key present. The agent Job receives only its model key.
+	DefaultCredentialsSecret = "pagerless-credentials"
+	// ModelAPIKeyName is the credentials Secret key that holds the model API key.
+	ModelAPIKeyName = "AI_API_KEY"
+	// ModelBaseURLName is the credentials Secret key that holds the model endpoint.
+	ModelBaseURLName = "AI_BASE_URL"
+	// ModelNameName is the credentials Secret key that holds the model identifier.
+	ModelNameName = "AI_MODEL"
 )
 
-// AgentRuntimeConfig configures the model provider, the MCP gateway, and the
-// Keycloak client that authenticates every tool call. The Narrative Job needs
-// none of the gateway settings and receives none of them.
-// Credentials are referenced by Secret key, never copied into the Job specification.
+// AgentRuntimeConfig configures the model endpoint and the budgets of an
+// investigation. The Narrative Job uses the same endpoint. Credentials are
+// referenced by Secret key, never copied into the Job specification.
 type AgentRuntimeConfig struct {
-	Provider string
-	// GatewayURL is the base URL of agentgateway. The agent derives one route per MCP server.
-	GatewayURL string
-	// KeycloakIssuer is the realm issuer that agentgateway validates and the audience of the
-	// projected service account token.
-	KeycloakIssuer string
-	// KeycloakTokenURL is the realm's token endpoint.
-	KeycloakTokenURL string
-	// KeycloakClientID is the federated client the agent authenticates as.
-	KeycloakClientID  string
-	ReplayFile        string
-	RecordingFile     string
-	SandboxOwner      string
-	SandboxRepo       string
-	ArgoCDApplication string
-	AllowedNamespaces string
-	AWSRegion         string
-	// RecordingPVC names the dedicated existing pagerless-replay-capture claim, mounted at /recordings.
-	RecordingPVC string
-	// NarrativeReplayFile names the Narrative Job's Replay recording.
-	NarrativeReplayFile string
-	// NarrativeRecordingFile is the destination of an explicitly requested live Narrative recording.
-	NarrativeRecordingFile string
+	// ModelBaseURL is the OpenAI-compatible endpoint, such as https://api.openai.com/v1.
+	ModelBaseURL string
+	// ModelName is the model identifier the endpoint expects.
+	ModelName string
+	// ModelKeySecret is the Secret that holds the model API key.
+	ModelKeySecret string
+	// ModelKeyKey is the key inside that Secret.
+	ModelKeyKey string
+	// ModelHeaders are optional request headers as a JSON object.
+	ModelHeaders string
+	// ModelMaxOutputTokens caps one model call's output, when it is not zero.
+	ModelMaxOutputTokens int
+	// ModelContextTokens is the model's context window, when it is not zero.
+	ModelContextTokens int
+	// ModelStructuredOutput selects the first structured-output rung, or auto.
+	ModelStructuredOutput string
+	// ModelMaxTokensField selects max_tokens or max_completion_tokens, or auto.
+	ModelMaxTokensField string
+	// ModelSupportsTemperature states whether the endpoint accepts a temperature: auto, true, or false.
+	ModelSupportsTemperature string
+	// ModelConnectTimeout and ModelReadTimeout are whole seconds, when they are not zero.
+	ModelConnectTimeout int
+	ModelReadTimeout    int
+	// AllowInsecureModelEndpoint permits a plain-HTTP endpoint for an in-cluster model.
+	AllowInsecureModelEndpoint bool
+	// ToolCallBudget, ModelCallBudget, InputTokenBudget, and WallClockSeconds are
+	// the four budgets of one investigation. Zero selects the documented default.
+	ToolCallBudget   int
+	ModelCallBudget  int
+	InputTokenBudget int64
+	WallClockSeconds int
 }
 
-// environment is the investigation Job's environment: the MCP gateway, the
-// Keycloak client, the Sandbox scope, the selected provider, and its credentials.
+// ValidateModel refuses a model configuration that names only part of an
+// endpoint or an endpoint the Job cannot reach safely. An installation with no
+// model configured starts, so that onboarding can set it later; the first Page
+// then fails with the reason the endpoint is missing.
+func (c AgentRuntimeConfig) ValidateModel() error {
+	// The credentials Secret is named even on an installation whose endpoint is
+	// not configured yet, so only the endpoint and model decide whether a model
+	// is configured at all.
+	if c.ModelBaseURL == "" && c.ModelName == "" {
+		return nil
+	}
+	if c.ModelBaseURL == "" {
+		return errors.New("the model base URL is required when a model is configured")
+	}
+	parsed, err := url.Parse(c.ModelBaseURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return errors.New("the model base URL must be an HTTP(S) URL without credentials or a query")
+	}
+	if parsed.Scheme == "http" && !c.AllowInsecureModelEndpoint {
+		return errors.New("the model base URL must be https unless an insecure in-cluster endpoint is allowed")
+	}
+	if c.ModelName == "" {
+		return errors.New("the model name is required when a model is configured")
+	}
+	if strings.ContainsAny(c.ModelName, "\r\n") || len(c.ModelName) > 255 {
+		return errors.New("the model name must be a single identifier of at most 255 characters")
+	}
+	if c.ModelKeySecret == "" || c.ModelKeyKey == "" {
+		return errors.New("the model API key must name a Secret and key")
+	}
+	switch c.ModelStructuredOutput {
+	case "", modelAuto, "json_schema", "json_object", "tool", "text":
+	default:
+		return errors.New("the structured-output mode must be auto, json_schema, json_object, tool, or text")
+	}
+	switch c.ModelMaxTokensField {
+	case "", modelAuto, "max_tokens", "max_completion_tokens":
+	default:
+		return errors.New("the max-tokens field must be auto, max_tokens, or max_completion_tokens")
+	}
+	switch c.ModelSupportsTemperature {
+	case "", modelAuto, "true", "false":
+	default:
+		return errors.New("the temperature setting must be auto, true, or false")
+	}
+	return nil
+}
+
+// budget returns the four budgets, with the documented defaults filled in.
+func (c AgentRuntimeConfig) budget() (toolCalls, modelCalls int, inputTokens int64, seconds int) {
+	toolCalls = c.ToolCallBudget
+	if toolCalls == 0 {
+		toolCalls = agentapi.DefaultToolCallBudget
+	}
+	modelCalls = c.ModelCallBudget
+	if modelCalls == 0 {
+		modelCalls = agentapi.DefaultModelCallBudget
+	}
+	inputTokens = c.InputTokenBudget
+	if inputTokens == 0 {
+		inputTokens = agentapi.DefaultInputTokenBudget
+	}
+	seconds = c.WallClockSeconds
+	if seconds == 0 {
+		seconds = agentapi.DefaultWallClockBudget
+	}
+	return toolCalls, modelCalls, inputTokens, seconds
+}
+
+// environment is the investigation Job's environment: the two base URLs, the
+// Page, the model settings, and the four budgets. It carries no credential
+// value: the model key and the report token are mounted as files.
 func (c AgentRuntimeConfig) environment() []corev1.EnvVar {
-	clientID := c.KeycloakClientID
-	if clientID == "" {
-		clientID = DefaultKeycloakClientID
+	env := c.modelEnvironment()
+	toolCalls, modelCalls, inputTokens, seconds := c.budget()
+	env = append(env,
+		corev1.EnvVar{Name: agentapi.EnvBudgetToolCalls, Value: fmt.Sprint(toolCalls)},
+		corev1.EnvVar{Name: agentapi.EnvBudgetModelCalls, Value: fmt.Sprint(modelCalls)},
+		corev1.EnvVar{Name: agentapi.EnvBudgetInputTokens, Value: fmt.Sprint(inputTokens)},
+		corev1.EnvVar{Name: agentapi.EnvBudgetSeconds, Value: fmt.Sprint(seconds)},
+	)
+	return env
+}
+
+// modelEnvironment is the model endpoint's configuration, shared by the
+// investigation and Narrative Jobs.
+func (c AgentRuntimeConfig) modelEnvironment() []corev1.EnvVar {
+	env := []corev1.EnvVar{
+		{Name: agentapi.EnvModelBaseURL, Value: c.ModelBaseURL},
+		{Name: agentapi.EnvModelName, Value: c.ModelName},
+		{Name: agentapi.EnvModelAPIKeyFile, Value: modelKeyMountPath + "/" + modelKeyFileName},
 	}
-	env := c.providerEnvironment()
 	for _, setting := range []struct{ name, value string }{
-		{agentapi.EnvMCPGatewayURL, c.GatewayURL},
-		{agentapi.EnvKeycloakIssuer, c.KeycloakIssuer},
-		{agentapi.EnvKeycloakTokenURL, c.KeycloakTokenURL},
-		{agentapi.EnvKeycloakClientID, clientID},
-		{agentapi.EnvReplayFile, c.ReplayFile},
-		{agentapi.EnvRecordingFile, c.RecordingFile},
-		{agentapi.EnvSandboxOwner, c.SandboxOwner},
-		{agentapi.EnvSandboxRepo, c.SandboxRepo},
-		{agentapi.EnvArgoCDApplication, c.ArgoCDApplication},
-		{agentapi.EnvAllowedNamespaces, c.AllowedNamespaces},
+		{agentapi.EnvModelHeaders, c.ModelHeaders},
+		{agentapi.EnvModelStructuredOutput, c.ModelStructuredOutput},
+		{agentapi.EnvModelMaxTokensField, c.ModelMaxTokensField},
+		{agentapi.EnvModelSupportsTemperature, c.ModelSupportsTemperature},
 	} {
 		if setting.value != "" {
 			env = append(env, corev1.EnvVar{Name: setting.name, Value: setting.value})
 		}
 	}
-	return env
-}
-
-// narrativeEnvironment is the Narrative Job's environment: the selected provider,
-// its credentials, and the Narrative's Replay and recording files.
-func (c AgentRuntimeConfig) narrativeEnvironment() []corev1.EnvVar {
-	env := c.providerEnvironment()
-	for _, setting := range []struct{ name, value string }{
-		{agentapi.EnvNarrativeReplayFile, c.NarrativeReplayFile},
-		{agentapi.EnvRecordingFile, c.NarrativeRecordingFile},
+	for _, setting := range []struct {
+		name  string
+		value int
+	}{
+		{agentapi.EnvModelMaxOutputTokens, c.ModelMaxOutputTokens},
+		{agentapi.EnvModelContextTokens, c.ModelContextTokens},
+		{agentapi.EnvModelConnectTimeout, c.ModelConnectTimeout},
+		{agentapi.EnvModelReadTimeout, c.ModelReadTimeout},
 	} {
-		if setting.value != "" {
-			env = append(env, corev1.EnvVar{Name: setting.name, Value: setting.value})
+		if setting.value > 0 {
+			env = append(env, corev1.EnvVar{Name: setting.name, Value: fmt.Sprint(setting.value)})
 		}
+	}
+	if c.AllowInsecureModelEndpoint {
+		env = append(env, corev1.EnvVar{Name: agentapi.EnvAllowInsecureModelEndpoint, Value: "1"})
 	}
 	return env
 }
 
-// providerEnvironment selects the provider and references only its credentials.
-func (c AgentRuntimeConfig) providerEnvironment() []corev1.EnvVar {
-	provider := c.Provider
-	if provider == "" {
-		provider = "replay"
+// secretName returns the credentials Secret that holds the model key.
+func (c AgentRuntimeConfig) secretName() string {
+	if c.ModelKeySecret == "" {
+		return DefaultCredentialsSecret
 	}
-	env := []corev1.EnvVar{{Name: agentapi.EnvModelProvider, Value: provider}}
-	switch provider {
-	case "anthropic":
-		env = append(env, secretEnvironment("ANTHROPIC_API_KEY", AgentCredentialsSecret, "ANTHROPIC_API_KEY", false))
-	case "bedrock":
-		if c.AWSRegion != "" {
-			env = append(env, corev1.EnvVar{Name: "AWS_REGION", Value: c.AWSRegion})
-		}
-		// These are optional so an EKS Pod Identity can supply the SDK's credentials instead.
-		for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"} {
-			env = append(env, secretEnvironment(name, AgentCredentialsSecret, name, true))
-		}
-	}
-	return env
+	return c.ModelKeySecret
 }
 
-func secretEnvironment(name, secret, key string, optional bool) corev1.EnvVar {
-	return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{
-		SecretKeyRef: &corev1.SecretKeySelector{
-			Name: secret, Key: key, Optional: new(optional),
-		},
-	}}
+// secretKey returns the key inside the credentials Secret.
+func (c AgentRuntimeConfig) secretKey() string {
+	if c.ModelKeyKey == "" {
+		return ModelAPIKeyName
+	}
+	return c.ModelKeyKey
 }

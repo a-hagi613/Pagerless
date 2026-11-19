@@ -49,10 +49,10 @@ func TestAgentAPIRejectsCallersThatAreNotThePagesJob(t *testing.T) {
 		{"no token", "", http.StatusUnauthorized},
 		{"malformed token", "not-a-token", http.StatusUnauthorized},
 		{"token with another audience", env.TokenFor(t, targetAgent.Pod, server.DefaultAgentServiceAccount, "https://kubernetes.default.svc"), http.StatusUnauthorized},
-		{"token of another service account", env.TokenFor(t, intruderPod, "intruder", agentapi.Audience), http.StatusForbidden},
-		{"agent token not bound to a pod", env.UnboundTokenFor(t, testenv.Namespace, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
-		{"agent token bound to a pod no Job controls", env.TokenFor(t, orphanPod, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
-		{"token of another Page's Job", otherAgent.Token, http.StatusForbidden},
+		{"token of another service account", env.TokenFor(t, intruderPod, "intruder", agentapi.AudienceForPage(string(target.UID))), http.StatusForbidden},
+		{"agent token not bound to a pod", env.UnboundTokenFor(t, testenv.Namespace, server.DefaultAgentServiceAccount, agentapi.AudienceForPage(string(target.UID))), http.StatusForbidden},
+		{"agent token bound to a pod no Job controls", env.TokenFor(t, orphanPod, server.DefaultAgentServiceAccount, agentapi.AudienceForPage(string(target.UID))), http.StatusForbidden},
+		{"token of another Page's Job", otherAgent.Token, http.StatusUnauthorized},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -151,7 +151,7 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 		{"finding of unknown kind", with(func(r *agentapi.Report) { r.Findings[0].Kind = "Rumour" }), "findings[0].kind"},
 		{"unknown action", with(func(r *agentapi.Report) { r.Proposal.Action = "DeleteNamespace" }), "proposal.action"},
 		{"an action with no validator", with(func(r *agentapi.Report) {
-			r.Proposal = v1alpha1.ProposedAction{
+			r.Proposal = agentapi.ReportProposal{
 				Action:     v1alpha1.ActionScale,
 				Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 3}},
 			}

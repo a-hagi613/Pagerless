@@ -11,6 +11,7 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -165,7 +166,7 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 			evidence = bundle.Summary()
 		}
 	}
-	job := buildAgentJob(p, r.Job)
+	job := AgentJob(p, r.Job)
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own agent Job: %w", err)
 	}
@@ -289,12 +290,34 @@ func (r *PageReconciler) watchAgentJob(ctx context.Context, p *v1alpha1.Page) er
 	case err != nil:
 		return fmt.Errorf("get agent Job: %w", err)
 	default:
-		outcome = outcomeOf(&job)
+		pods, err := r.agentPods(ctx, &job)
+		if err != nil {
+			return err
+		}
+		outcome = outcomeOf(&job, pods)
 	}
 	if !outcome.finished {
 		return nil
 	}
 	return fail(ctx, r.Status, client.ObjectKeyFromObject(p), outcome.reason, outcome.message)
+}
+
+// agentPods returns the pods the agent Job started. The Job controller sets the
+// Job's completion condition only after its pod has terminated, so the exit code
+// that explains a budget exhaustion is available here.
+func (r *PageReconciler) agentPods(ctx context.Context, job *batchv1.Job) ([]corev1.Pod, error) {
+	var pods corev1.PodList
+	if err := r.Status.Reader.List(ctx, &pods, client.InNamespace(job.Namespace),
+		client.MatchingLabels{PageLabel: job.Labels[PageLabel]}); err != nil {
+		return nil, fmt.Errorf("list the pods of agent Job %s: %w", job.Name, err)
+	}
+	owned := make([]corev1.Pod, 0, len(pods.Items))
+	for i := range pods.Items {
+		if metav1.IsControlledBy(&pods.Items[i], job) {
+			owned = append(owned, pods.Items[i])
+		}
+	}
+	return owned, nil
 }
 
 // fail moves an Investigating Page to Failed with a Failed condition,

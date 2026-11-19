@@ -663,6 +663,6 @@ func noActionReport() agentapi.Report {
 	return agentapi.Report{
 		Diagnosis: "The checkout container exceeds its memory limit and is OOMKilled.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal:  v1alpha1.ProposedAction{Action: v1alpha1.ActionNoAction},
+		Proposal:  agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{Action: v1alpha1.ActionNoAction}},
 	}
 }

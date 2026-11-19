@@ -66,7 +66,7 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 const (
 	// snapshotsTable holds one row per Phase change.
@@ -209,6 +209,23 @@ var schema = []string{
 	`CREATE TRIGGER IF NOT EXISTS ` + contentsTable + `_no_delete
 		BEFORE DELETE ON ` + contentsTable + `
 		BEGIN SELECT RAISE(ABORT, '` + contentsTable + ` is append-only'); END`,
+	// Version 7. One row per tool call the broker served, so a Finding's
+	// citation survives a server restart. It is runtime state, not history: an
+	// idempotent retry replaces its row rather than appending a second one.
+	`CREATE TABLE IF NOT EXISTS page_evidence (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		page_uid TEXT NOT NULL,
+		call_id TEXT NOT NULL,
+		tool TEXT NOT NULL,
+		arguments TEXT NOT NULL,
+		data BLOB NOT NULL,
+		outcome TEXT NOT NULL,
+		bytes INTEGER NOT NULL,
+		redactions INTEGER NOT NULL,
+		recorded_at TEXT NOT NULL,
+		UNIQUE (page_uid, call_id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS page_evidence_by_page ON page_evidence (page_uid)`,
 }
 
 // Store is an append-only history database.

@@ -106,7 +106,7 @@ func (c *decisionCluster) propose(t *testing.T, action v1alpha1.ProposedAction) 
 			Kind: v1alpha1.FindingKindLog, Source: "loki: {app=\"" + target + "\"}",
 			Summary: "the container was killed with exit code 137",
 		}},
-		Proposal: action,
+		Proposal: agentapi.ReportProposal{ProposedAction: action},
 	})
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v", result, err)

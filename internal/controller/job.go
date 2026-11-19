@@ -19,14 +19,19 @@ const (
 	PageLabel = "pagerless.dev/page"
 	// agentContainerName is the name of the Job's only container.
 	agentContainerName = "agent"
-	// tokenVolumeName and tokenMountPath locate the projected service account token.
-	tokenVolumeName = "pagerless-token"
-	tokenMountPath  = "/var/run/pagerless"
-	tokenFileName   = "token"
-	// keycloakTokenVolumeName and keycloakTokenMountPath locate the projected
-	// token whose audience is the Keycloak realm issuer.
-	keycloakTokenVolumeName = "pagerless-keycloak-token"
-	keycloakTokenMountPath  = "/var/run/keycloak"
+	// reportTokenVolumeName locates the projected service account token whose
+	// audience is bound to this Page and no other.
+	reportTokenVolumeName = "report-token"
+	// reportTokenMountPath is where the projected token appears in the agent.
+	reportTokenMountPath = "/var/run/pagerless/report-token"
+	// tokenFileName is the file inside the projected volume.
+	tokenFileName = "token"
+	// modelKeyVolumeName locates the one Secret key that holds the model API key.
+	modelKeyVolumeName = "model-key"
+	// modelKeyMountPath is where the model key appears in the agent.
+	modelKeyMountPath = "/var/run/pagerless/model-key"
+	// modelKeyFileName is the file inside the model-key volume.
+	modelKeyFileName = "api-key"
 	// tokenExpirationSeconds is the lifetime of the projected token, which the kubelet refreshes.
 	tokenExpirationSeconds = 600
 	// agentUID is the non-root user and group the agent runs as.
@@ -59,13 +64,14 @@ func jobName(pageName, suffix string) string {
 type AgentJobConfig struct {
 	// Image is the agent container image.
 	Image string
-	// ServiceAccount is the read-only service account the agent runs as.
+	// ServiceAccount is the zero-RBAC service account the agent runs as.
 	ServiceAccount string
-	// ServerURL is the base URL that the agent posts step events, its report, and the Narrative to.
+	// ServerURL is the base URL that the agent posts step events, tool calls, its
+	// report, and the Narrative to.
 	ServerURL string
 	// Deadline is the Job's active deadline.
 	Deadline int64
-	// Runtime selects the provider and read-only MCP endpoints.
+	// Runtime configures the model endpoint and the budgets.
 	Runtime AgentRuntimeConfig
 }
 
@@ -77,71 +83,49 @@ type jobSpec struct {
 	deadline int64
 	// env is the container environment.
 	env []corev1.EnvVar
-	// recordingPVC is the existing claim to mount at /recordings, when this Job writes a recording.
-	recordingPVC string
-	// keycloakToken mounts the projected token whose audience is the realm issuer. Only the
-	// investigation Job calls the MCP gateway; the Narrative Job makes one model call.
-	keycloakToken bool
 }
 
-// buildAgentJob returns the Job that runs the investigation for a Page. The
-// agent holds no Kubernetes RBAC, so the Job mounts no automatic service account
-// token and projects one token whose audience is the server's. A deployment
-// that still configures an identity provider for its tool gateway also projects
-// the realm-audience token; the standalone chart configures neither.
-func buildAgentJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
-	spec := page.Spec
+// AgentJob returns the Job that runs the investigation for a Page. The
+// agent holds no Kubernetes RBAC, so the Job mounts no automatic service
+// account token and projects one token whose audience names this Page alone. It
+// mounts exactly two credentials: that report token and the model API key.
+func AgentJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
 	env := []corev1.EnvVar{
 		{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
-		{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
+		{Name: agentapi.EnvTokenFile, Value: reportTokenMountPath + "/" + tokenFileName},
 		{Name: agentapi.EnvPage, Value: page.Name},
+		{Name: agentapi.EnvPageUID, Value: string(page.UID)},
 		{Name: agentapi.EnvTask, Value: agentapi.TaskInvestigate},
-		{Name: agentapi.EnvTargetKind, Value: string(spec.Target.Kind)},
-		{Name: agentapi.EnvTargetNamespace, Value: spec.Target.Namespace},
-		{Name: agentapi.EnvTargetName, Value: spec.Target.Name},
 	}
-	if cfg.Runtime.KeycloakIssuer != "" {
-		env = append(env, corev1.EnvVar{Name: agentapi.EnvKeycloakTokenFile,
-			Value: keycloakTokenMountPath + "/" + tokenFileName})
-	}
-	if spec.Trigger.Pod != "" {
-		env = append(env, corev1.EnvVar{Name: agentapi.EnvTriggeringPod, Value: spec.Trigger.Pod})
-	}
-	if spec.Hint != "" {
-		env = append(env, corev1.EnvVar{Name: agentapi.EnvHint, Value: spec.Hint})
+	if page.Spec.Hint != "" {
+		env = append(env, corev1.EnvVar{Name: agentapi.EnvHint, Value: page.Spec.Hint})
 	}
 	env = append(env, cfg.Runtime.environment()...)
 	return buildJob(page, cfg, jobSpec{
-		name:          AgentJobName(page.Name),
-		deadline:      cfg.Deadline,
-		env:           env,
-		recordingPVC:  cfg.Runtime.RecordingPVC,
-		keycloakToken: cfg.Runtime.KeycloakIssuer != "",
+		name:     AgentJobName(page.Name),
+		deadline: cfg.Deadline,
+		env:      env,
 	})
 }
 
-// buildNarrativeJob returns the Job that writes the Narrative of a Page whose
-// Verification has ended. It makes one model call and needs no Target access,
-// so it receives neither the Target's identity nor any MCP endpoint.
-func buildNarrativeJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
-	runtimeEnv := cfg.Runtime.narrativeEnvironment()
-	env := make([]corev1.EnvVar, 0, 4+len(runtimeEnv))
+// NarrativeJob returns the Job that writes the Narrative of a Page whose
+// Verification has ended. It makes one model call and needs no tool access, but
+// it authenticates to the server with the same per-Page audience.
+func NarrativeJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
+	env := make([]corev1.EnvVar, 0, 5+len(cfg.Runtime.modelEnvironment()))
 	env = append(env,
 		corev1.EnvVar{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
-		corev1.EnvVar{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
+		corev1.EnvVar{Name: agentapi.EnvTokenFile, Value: reportTokenMountPath + "/" + tokenFileName},
 		corev1.EnvVar{Name: agentapi.EnvPage, Value: page.Name},
+		corev1.EnvVar{Name: agentapi.EnvPageUID, Value: string(page.UID)},
 		corev1.EnvVar{Name: agentapi.EnvTask, Value: agentapi.TaskNarrative},
 	)
-	env = append(env, runtimeEnv...)
-	spec := jobSpec{
+	env = append(env, cfg.Runtime.modelEnvironment()...)
+	return buildJob(page, cfg, jobSpec{
 		name:     narrativeJobName(page.Name),
 		deadline: cfg.Deadline,
 		env:      env,
-	}
-	if cfg.Runtime.NarrativeRecordingFile != "" {
-		spec.recordingPVC = cfg.Runtime.RecordingPVC
-	}
-	return buildJob(page, cfg, spec)
+	})
 }
 
 // buildJob returns a Job that runs one short-lived agent process under the
@@ -189,59 +173,40 @@ func buildJob(page *v1alpha1.Page, cfg AgentJobConfig, spec jobSpec) *batchv1.Jo
 								corev1.ResourceMemory: resource.MustParse("512Mi"),
 							},
 						},
-						VolumeMounts: []corev1.VolumeMount{{Name: "temporary", MountPath: "/tmp"}, {
-							Name:      tokenVolumeName,
-							MountPath: tokenMountPath,
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{Name: "temporary",
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					}, {
-						Name: tokenVolumeName,
-						Projected: &corev1.ProjectedVolumeSource{
-							Sources: []corev1.VolumeProjection{{
-								ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-									Audience:          agentapi.Audience,
-									ExpirationSeconds: new(int64(tokenExpirationSeconds)),
-									Path:              tokenFileName,
-								},
-							}},
+						VolumeMounts: []corev1.VolumeMount{
+							{Name: "temporary", MountPath: "/tmp"},
+							{Name: reportTokenVolumeName, MountPath: reportTokenMountPath, ReadOnly: true},
+							{Name: modelKeyVolumeName, MountPath: modelKeyMountPath, ReadOnly: true},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{Name: "temporary", EmptyDir: &corev1.EmptyDirVolumeSource{}},
+						{
+							Name: reportTokenVolumeName,
+							Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience:          agentapi.AudienceForPage(string(page.UID)),
+										ExpirationSeconds: new(int64(tokenExpirationSeconds)),
+										Path:              tokenFileName,
+									},
+								}},
+							},
+						},
+						{
+							Name: modelKeyVolumeName,
+							Secret: &corev1.SecretVolumeSource{
+								SecretName: cfg.Runtime.secretName(),
+								Items: []corev1.KeyToPath{{
+									Key:  cfg.Runtime.secretKey(),
+									Path: modelKeyFileName,
+								}},
+							},
+						},
+					},
 				},
 			},
 		},
-	}
-	if spec.keycloakToken {
-		pod := &job.Spec.Template.Spec
-		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts, corev1.VolumeMount{
-			Name:      keycloakTokenVolumeName,
-			MountPath: keycloakTokenMountPath,
-			ReadOnly:  true,
-		})
-		pod.Volumes = append(pod.Volumes, corev1.Volume{
-			Name: keycloakTokenVolumeName,
-			Projected: &corev1.ProjectedVolumeSource{
-				Sources: []corev1.VolumeProjection{{
-					ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-						Audience:          cfg.Runtime.KeycloakIssuer,
-						ExpirationSeconds: new(int64(tokenExpirationSeconds)),
-						Path:              tokenFileName,
-					},
-				}},
-			},
-		})
-	}
-	if spec.recordingPVC != "" {
-		pod := &job.Spec.Template.Spec
-		pod.SecurityContext.FSGroup = new(int64(agentUID))
-		pod.Volumes = append(pod.Volumes, corev1.Volume{
-			Name:                  "recordings",
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: spec.recordingPVC},
-		})
-		pod.Containers[0].VolumeMounts = append(pod.Containers[0].VolumeMounts,
-			corev1.VolumeMount{Name: "recordings", MountPath: "/recordings"})
 	}
 	return job
 }
@@ -253,8 +218,21 @@ type jobOutcome struct {
 	message  string
 }
 
-// outcomeOf reports whether the Job has ended and, if so, why.
-func outcomeOf(job *batchv1.Job) jobOutcome {
+// The agent's exit codes, which tell the server why a Job produced no report
+// (spec §3.6.5). A budget that ran out is not an agent failure that needs a
+// retry: it is a Page that ended with the Findings it had gathered.
+const (
+	exitCodeFailed             = 1
+	exitCodeBudgetExhausted    = 2
+	exitCodeProposalRefused    = 3
+	exitCodeRejected           = 4
+	exitCodeProviderAuthFailed = 5
+	exitCodeProviderRejected   = 6
+)
+
+// outcomeOf reports whether the Job has ended and, if so, why. The pods carry
+// the agent's exit code, which distinguishes an exhausted budget from a crash.
+func outcomeOf(job *batchv1.Job, pods []corev1.Pod) jobOutcome {
 	for _, c := range job.Status.Conditions {
 		if c.Status != corev1.ConditionTrue {
 			continue
@@ -269,11 +247,7 @@ func outcomeOf(job *batchv1.Job) jobOutcome {
 						ptr.Deref(job.Spec.ActiveDeadlineSeconds, 0)),
 				}
 			}
-			return jobOutcome{
-				finished: true,
-				reason:   v1alpha1.ReasonAgentEndedWithoutReport,
-				message:  fmt.Sprintf("the agent Job failed without a report: %s", c.Message),
-			}
+			return outcomeForExitCode(agentExitCode(pods), c.Message)
 		case batchv1.JobComplete:
 			return jobOutcome{
 				finished: true,
@@ -283,4 +257,67 @@ func outcomeOf(job *batchv1.Job) jobOutcome {
 		}
 	}
 	return jobOutcome{}
+}
+
+// outcomeForExitCode names the reason the agent's documented exit codes stand for.
+func outcomeForExitCode(code *int32, detail string) jobOutcome {
+	if code == nil {
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonAgentEndedWithoutReport,
+			message:  fmt.Sprintf("the agent Job failed without a report: %s", detail),
+		}
+	}
+	switch *code {
+	case exitCodeBudgetExhausted:
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonBudgetExhausted,
+			message:  "an investigation budget was exhausted; the Findings gathered so far are kept",
+		}
+	case exitCodeProposalRefused:
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonValidationFailedTwice,
+			message:  "the agent ended because the server refused its Proposal twice",
+		}
+	case exitCodeRejected:
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonAgentEndedWithoutReport,
+			message:  "the server refused the agent, so the investigation stopped",
+		}
+	case exitCodeProviderAuthFailed, exitCodeProviderRejected, exitCodeFailed:
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonAgentEndedWithoutReport,
+			message:  fmt.Sprintf("the agent Job failed with exit code %d without a report", *code),
+		}
+	default:
+		return jobOutcome{
+			finished: true,
+			reason:   v1alpha1.ReasonAgentEndedWithoutReport,
+			message:  fmt.Sprintf("the agent Job failed with exit code %d without a report", *code),
+		}
+	}
+}
+
+// agentExitCode returns the exit code of the agent container in the first pod
+// that reported one.
+func agentExitCode(pods []corev1.Pod) *int32 {
+	for i := range pods {
+		for _, status := range pods[i].Status.ContainerStatuses {
+			if status.Name != agentContainerName {
+				continue
+			}
+			terminated := status.State.Terminated
+			if terminated == nil {
+				terminated = status.LastTerminationState.Terminated
+			}
+			if terminated != nil {
+				return &terminated.ExitCode
+			}
+		}
+	}
+	return nil
 }

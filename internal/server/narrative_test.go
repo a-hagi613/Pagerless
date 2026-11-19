@@ -7,7 +7,6 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -75,14 +74,12 @@ func TestNarrativeJobDescribesTheVerifiedPage(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, variables[name], want)
 		}
 	}
-	if variables[agentapi.EnvModelProvider] != replayProvider {
-		t.Errorf("the Narrative Job runs provider %q, want the default %q",
-			variables[agentapi.EnvModelProvider], replayProvider)
+	if variables[agentapi.EnvPageUID] != string(tr.UID) {
+		t.Errorf("the Narrative Job runs for Page UID %q, want %q", variables[agentapi.EnvPageUID], tr.UID)
 	}
 	for _, name := range []string{
-		agentapi.EnvMCPGatewayURL, agentapi.EnvKeycloakIssuer, agentapi.EnvKeycloakTokenURL,
-		agentapi.EnvKeycloakClientID, agentapi.EnvKeycloakTokenFile,
-		agentapi.EnvTargetName, agentapi.EnvTargetNamespace, agentapi.EnvSandboxOwner, agentapi.EnvReplayFile,
+		"PAGERLESS_MCP_GATEWAY_URL", "PAGERLESS_TARGET_NAME",
+		"PAGERLESS_TARGET_NAMESPACE", "PAGERLESS_SANDBOX_OWNER", "PAGERLESS_REPLAY_FILE",
 	} {
 		if _, exists := variables[name]; exists {
 			t.Errorf("the Narrative Job received %s, which it does not need", name)
@@ -142,7 +139,7 @@ func TestOnlyTheNarrativeJobMayWriteTheNarrative(t *testing.T) {
 		t.Fatal(err)
 	}
 	pod := env.CreatePodFor(t, investigation, server.DefaultAgentServiceAccount)
-	token := env.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.Audience)
+	token := env.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.AudienceForPage(string(tr.UID)))
 	agent := env.ClientWithToken(tr.Name, token)
 
 	if _, result, err := agent.GetNarrative(t.Context()); err == nil || result.StatusCode != http.StatusForbidden {
@@ -188,45 +185,6 @@ func TestNarrativeIsWrittenOnceAndIsBounded(t *testing.T) {
 	}
 	if got := env.Get(t, tr.Name); got.Status.Narrative != written {
 		t.Errorf("Narrative = %q, want %q", got.Status.Narrative, written)
-	}
-}
-
-func TestNarrativeRecordingIsMountedForALiveCapture(t *testing.T) {
-	t.Parallel()
-	env := testenv.Start(t, withPatchResources(), testenv.WithAgentRuntime(controller.AgentRuntimeConfig{
-		Provider:               anthropicProvider,
-		RecordingPVC:           recordingClaimName,
-		NarrativeRecordingFile: "/recordings/narrative.json",
-	}))
-	tr := recoveredPage(t, env)
-	narrative := env.StartNarrative(t, tr.Name)
-
-	pod := narrative.Job.Spec.Template.Spec
-	variables := map[string]corev1.EnvVar{}
-	for _, variable := range pod.Containers[0].Env {
-		variables[variable.Name] = variable
-	}
-	if variables[agentapi.EnvModelProvider].Value != anthropicProvider {
-		t.Errorf("provider = %q, want %q", variables[agentapi.EnvModelProvider].Value, anthropicProvider)
-	}
-	if got := variables[agentapi.EnvRecordingFile].Value; got != "/recordings/narrative.json" {
-		t.Errorf("%s = %q, want the narrative recording", agentapi.EnvRecordingFile, got)
-	}
-	requireSecretKey(t, variables["ANTHROPIC_API_KEY"], controller.AgentCredentialsSecret, "ANTHROPIC_API_KEY", false)
-	var mounted bool
-	for _, volume := range pod.Volumes {
-		if volume.PersistentVolumeClaim != nil {
-			if volume.PersistentVolumeClaim.ClaimName != recordingClaimName {
-				t.Errorf("recording claim = %q, want %q", volume.PersistentVolumeClaim.ClaimName, recordingClaimName)
-			}
-			mounted = true
-		}
-	}
-	if !mounted {
-		t.Error("a Narrative Job that captures a recording must mount the capture claim")
-	}
-	if pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 65532 {
-		t.Error("the capture claim must be writable by filesystem group 65532")
 	}
 }
 

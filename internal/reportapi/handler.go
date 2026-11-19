@@ -2,13 +2,17 @@ package reportapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -20,12 +24,20 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/agentauth"
 	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/proposal"
+	"github.com/a-hagi613/pagerless/internal/tools"
 )
 
 // maxBodyBytes bounds a request body. Agent output is untrusted.
 const maxBodyBytes = 1 << 20
+
+// ContentStore holds a Proposal's complete file content under its hash.
+type ContentStore interface {
+	// SaveProposalContents records the content of each edited file.
+	SaveProposalContents(ctx context.Context, hash string, files map[string][]byte, at time.Time) error
+}
 
 // Handler serves the agent API.
 type Handler struct {
@@ -35,6 +47,13 @@ type Handler struct {
 	Status *page.StatusStore
 	// Proposals validates Proposals.
 	Proposals *proposal.Pipeline
+	// Evidence is the record of the tool calls a Finding may cite.
+	Evidence tools.Store
+	// Blobs reads the Target Repository, so a FilePatch records the base blob
+	// and content digest of every file it changes.
+	Blobs tools.GitHubReader
+	// Contents stores the complete content under the Proposal hash.
+	Contents ContentStore
 	// Clock timestamps steps.
 	Clock clock.PassiveClock
 }
@@ -87,15 +106,6 @@ func (h *Handler) handleNarrative(next endpoint) http.HandlerFunc {
 func (h *Handler) serve(authorize authorizer, next endpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok {
-			token = ""
-		}
-		caller, err := h.Auth.Identify(ctx, strings.TrimSpace(token))
-		if err != nil {
-			h.writeAuthError(ctx, w, err)
-			return
-		}
 		var t v1alpha1.Page
 		key := types.NamespacedName{Namespace: h.Auth.Namespace, Name: r.PathValue("name")}
 		if err := h.Status.Reader.Get(ctx, key, &t); err != nil {
@@ -105,6 +115,15 @@ func (h *Handler) serve(authorize authorizer, next endpoint) http.HandlerFunc {
 				return
 			}
 			h.writeInternal(ctx, w, err)
+			return
+		}
+		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok {
+			token = ""
+		}
+		caller, err := h.Auth.Identify(ctx, strings.TrimSpace(token), agentauth.Audience(&t))
+		if err != nil {
+			h.writeAuthError(ctx, w, err)
 			return
 		}
 		if err := authorize(ctx, caller, &t); err != nil {
@@ -180,6 +199,10 @@ func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Rea
 		if event.Finding != nil {
 			status.Findings = mergeFindings(status.Findings, []v1alpha1.Finding{*event.Finding})
 		}
+		if event.Kind == v1alpha1.StepKindSuspiciousOutput {
+			status.SuspiciousOutputs = appendBounded(status.SuspiciousOutputs,
+				agentapi.MaxSuspiciousOutputs, event.Summary)
+		}
 		return nil
 	})
 	if err != nil {
@@ -205,21 +228,42 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 	// The agent's first report is attempt 1; every report that is refused gives it one more try, up to the limit.
 	attempt := t.Status.ValidationAttempts + 1
 	errs := report.Check()
+	action := report.ActionFor()
+	if len(errs) == 0 && report.IsV2() {
+		errs = append(errs, h.verifyIdentity(t, report)...)
+	}
+	if len(errs) == 0 && report.IsV2() {
+		errs = append(errs, h.verifyCitations(ctx, t, report.Findings)...)
+	}
+	contents := map[string][]byte(nil)
+	if len(errs) == 0 {
+		action, contents, errs = h.prepareFilePatch(ctx, t, action)
+	}
 	if len(errs) == 0 && len(mergeFindings(t.Status.Findings, report.Findings)) == 0 {
 		errs = []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}}
 	}
 	if len(errs) > 0 {
-		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
+		h.refuse(ctx, w, t, attempt, action, errs)
 		return
 	}
-	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Page: t, Action: report.Proposal}, attempt)
+	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Page: t, Action: action}, attempt)
 	if err != nil {
 		h.writeInternal(ctx, w, err)
 		return
 	}
 	if len(errs) > 0 {
-		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
+		h.refuse(ctx, w, t, attempt, action, errs)
 		return
+	}
+	if len(contents) > 0 {
+		if h.Contents == nil {
+			h.writeInternal(ctx, w, errors.New("the Proposal content store is not configured"))
+			return
+		}
+		if err := h.Contents.SaveProposalContents(ctx, built.Hash, contents, h.Clock.Now()); err != nil {
+			h.writeInternal(ctx, w, err)
+			return
+		}
 	}
 	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Page) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
@@ -238,6 +282,15 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		if report.Usage != nil {
 			latest.Status.Usage = report.Usage
 		}
+		if report.Capabilities != nil {
+			if len(report.Capabilities.StructuredOutput) > 0 {
+				latest.Status.StructuredOutput = report.Capabilities.StructuredOutput
+			}
+			latest.Status.UsageSource = report.Capabilities.UsageSource
+		}
+		if latest.Status.UsageSource == "" && report.Usage != nil && report.Usage.Estimated {
+			latest.Status.UsageSource = "estimated"
+		}
 		latest.Status.Phase = v1alpha1.PhaseProposed
 		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
 			Type:               v1alpha1.ConditionInvestigated,
@@ -253,6 +306,160 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		return
 	}
 	writeJSON(w, http.StatusOK, agentapi.ReportResponse{Accepted: true, Phase: updated.Status.Phase})
+}
+
+// prepareFilePatch resolves the base blob and content digest of every file a
+// FilePatch changes, and returns the content to store under the Proposal hash.
+// It refuses a file that is not in the Target Repository rather than recording a
+// Proposal that can never be a reviewable change.
+func (h *Handler) prepareFilePatch(
+	ctx context.Context, t *v1alpha1.Page, action v1alpha1.ProposedAction,
+) (v1alpha1.ProposedAction, map[string][]byte, []agentapi.ValidationError) {
+	if action.Action != v1alpha1.ActionFilePatch || action.Parameters == nil || action.Parameters.FilePatch == nil {
+		return action, nil, nil
+	}
+	if h.Blobs == nil {
+		return action, nil, []agentapi.ValidationError{{
+			Field: "proposal.kind", Message: "repository reads are not configured",
+		}}
+	}
+	repository, ok := tools.RepositoryForPage(t)
+	if !ok {
+		return action, nil, []agentapi.ValidationError{{
+			Field: "proposal.kind", Message: "the Page has no Target Repository, so a FilePatch cannot be grounded",
+		}}
+	}
+	files := action.Parameters.FilePatch.DeepCopy()
+	contents := make(map[string][]byte, len(files.Files))
+	var errs []agentapi.ValidationError
+	for i := range files.Files {
+		file := &files.Files[i]
+		blob, err := h.Blobs.File(ctx, repository, repository.Ref, file.Path)
+		if err != nil {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   fmt.Sprintf("proposal.files[%d].path", i),
+				Message: file.Path + " is not a file at the Target Repository's ref",
+			})
+			continue
+		}
+		if blob.SHA == "" {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   fmt.Sprintf("proposal.files[%d].baseBlob", i),
+				Message: "the repository did not report the base blob",
+			})
+			continue
+		}
+		sum := sha256.Sum256([]byte(file.UpdatedContent))
+		file.BaseBlob = blob.SHA
+		file.ContentDigest = hex.EncodeToString(sum[:])
+		contents[file.Path] = []byte(file.UpdatedContent)
+		file.UpdatedContent = ""
+	}
+	if len(errs) > 0 {
+		return action, nil, errs
+	}
+	parameters := *action.Parameters
+	parameters.FilePatch = files
+	action.Parameters = &parameters
+	return action, contents, nil
+}
+
+// verifyIdentity refuses a report that names a different Page than the one the
+// token and the URL identify.
+func (h *Handler) verifyIdentity(t *v1alpha1.Page, report agentapi.Report) []agentapi.ValidationError {
+	if report.Page == nil {
+		return nil
+	}
+	var errs []agentapi.ValidationError
+	if report.Page.Name != t.Name {
+		errs = append(errs, agentapi.ValidationError{Field: "page.name", Message: "the report names a different Page"})
+	}
+	if report.Page.UID != string(t.UID) {
+		errs = append(errs, agentapi.ValidationError{Field: "page.uid", Message: "the report names a different Page UID"})
+	}
+	if report.Page.Namespace != t.Namespace {
+		errs = append(errs, agentapi.ValidationError{Field: "page.namespace", Message: "the report names a different namespace"})
+	}
+	return errs
+}
+
+// verifyCitations refuses a Finding that cites a tool call the Page never made,
+// or a pointer that does not resolve in the recorded result. It is the
+// authoritative check that a Diagnosis cannot be supported by invented evidence.
+func (h *Handler) verifyCitations(
+	ctx context.Context, t *v1alpha1.Page, findings []v1alpha1.Finding,
+) []agentapi.ValidationError {
+	if h.Evidence == nil {
+		return nil
+	}
+	var errs []agentapi.ValidationError
+	for i, finding := range findings {
+		field := fmt.Sprintf("findings[%d]", i)
+		if finding.ToolCallID == "" {
+			errs = append(errs, agentapi.ValidationError{
+				Field: field + ".toolCallId", Message: "every Finding must cite a recorded tool call",
+			})
+			continue
+		}
+		record, ok, err := h.Evidence.Get(ctx, string(t.UID), finding.ToolCallID)
+		if err != nil {
+			errs = append(errs, agentapi.ValidationError{Field: field + ".toolCallId", Message: "the evidence record could not be read"})
+			continue
+		}
+		if !ok || record.Outcome != "ok" {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   field + ".toolCallId",
+				Message: fmt.Sprintf("no tool call named %q was made for this Page", finding.ToolCallID),
+			})
+			continue
+		}
+		if finding.Pointer == "" {
+			errs = append(errs, agentapi.ValidationError{
+				Field: field + ".pointer", Message: "every Finding must name a pointer into its tool result",
+			})
+			continue
+		}
+		if !pointerResolves(record, finding.Pointer) {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   field + ".pointer",
+				Message: fmt.Sprintf("the pointer %q does not resolve in the recorded result", finding.Pointer),
+			})
+		}
+	}
+	return errs
+}
+
+// pointerResolves reports whether a JSON Pointer resolves inside the stored
+// tool result, which the agent saw as {ok, data, meta}.
+func pointerResolves(record tools.Record, pointer string) bool {
+	document := map[string]any{}
+	var data any
+	if err := json.Unmarshal(record.Data, &data); err != nil {
+		return false
+	}
+	document["data"] = data
+	document["meta"] = map[string]any{"callId": record.CallID, "tool": record.Tool}
+	current := any(document)
+	for token := range strings.SplitSeq(strings.TrimPrefix(pointer, "/"), "/") {
+		token = strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~")
+		switch typed := current.(type) {
+		case map[string]any:
+			value, ok := typed[token]
+			if !ok {
+				return false
+			}
+			current = value
+		case []any:
+			index, err := strconv.Atoi(token)
+			if err != nil || index < 0 || index >= len(typed) {
+				return false
+			}
+			current = typed[index]
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // maxRefusalMessageRunes bounds the ProposalRefused condition message. Two
@@ -390,6 +597,15 @@ func (h *Handler) narrative(ctx context.Context, w http.ResponseWriter, body io.
 // verificationConcluded reports whether Verification has reached a terminal outcome.
 func verificationConcluded(phase v1alpha1.Phase) bool {
 	return phase == v1alpha1.PhaseRecovered || phase == v1alpha1.PhaseNotRecovered
+}
+
+// appendBounded appends a value, dropping the oldest when the slice is full.
+func appendBounded(values []string, limit int, value string) []string {
+	values = append(values, value)
+	if len(values) > limit {
+		values = slices.Clone(values[len(values)-limit:])
+	}
+	return values
 }
 
 // mergeFindings appends the new Findings that are not already recorded, up to

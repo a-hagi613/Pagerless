@@ -254,7 +254,7 @@ func (r *VerificationReconciler) ensureNarrative(ctx context.Context, p *v1alpha
 	if p.Status.Narrative != "" {
 		return nil
 	}
-	job := buildNarrativeJob(p, r.NarrativeJob)
+	job := NarrativeJob(p, r.NarrativeJob)
 	if err := controllerutil.SetControllerReference(p, job, r.Scheme); err != nil {
 		return fmt.Errorf("own the Narrative Job: %w", err)
 	}

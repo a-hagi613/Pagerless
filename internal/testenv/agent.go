@@ -42,13 +42,14 @@ func (e *Env) StartAgent(t testing.TB, pageName string) *StandInAgent {
 		t.Fatalf("get agent Job: %v", err)
 	}
 	pod := e.CreatePodFor(t, &job, server.DefaultAgentServiceAccount)
-	token := e.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.Audience)
+	token := e.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.AudienceForPage(string(tr.UID)))
 	return &StandInAgent{
 		Pod:   pod,
 		Token: token,
 		API: &agentapi.Client{
 			BaseURL: e.ReportURL,
 			Page:    pageName,
+			PageUID: string(tr.UID),
 			Token:   func() (string, error) { return token, nil },
 		},
 	}
@@ -143,9 +144,12 @@ func (e *Env) UnboundTokenFor(t testing.TB, namespace, serviceAccount, audience 
 
 // ClientWithToken returns an agent API client for the Page that presents the token.
 func (e *Env) ClientWithToken(pageName, token string) *agentapi.Client {
+	var page v1alpha1.Page
+	_ = e.Client.Get(context.Background(), types.NamespacedName{Namespace: Namespace, Name: pageName}, &page)
 	return &agentapi.Client{
 		BaseURL: e.ReportURL,
 		Page:    pageName,
+		PageUID: string(page.UID),
 		Token:   func() (string, error) { return token, nil },
 	}
 }

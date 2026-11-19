@@ -55,7 +55,7 @@ func (e *Env) StartNarrative(t testing.TB, pageName string) *StandInNarrative {
 		t.Fatalf("wait for Narrative Job %s: %v", jobKey.Name, err)
 	}
 	pod := e.CreatePodFor(t, &job, server.DefaultAgentServiceAccount)
-	token := e.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.Audience)
+	token := e.TokenFor(t, pod, server.DefaultAgentServiceAccount, agentapi.AudienceForPage(string(tr.UID)))
 	return &StandInNarrative{
 		Job:   &job,
 		Pod:   pod,
@@ -63,6 +63,7 @@ func (e *Env) StartNarrative(t testing.TB, pageName string) *StandInNarrative {
 		API: &agentapi.Client{
 			BaseURL: e.ReportURL,
 			Page:    pageName,
+			PageUID: string(tr.UID),
 			Token:   func() (string, error) { return token, nil },
 		},
 	}

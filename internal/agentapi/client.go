@@ -18,6 +18,8 @@ type Client struct {
 	BaseURL string
 	// Page is the name of the Page the agent belongs to.
 	Page string
+	// PageUID is the Page's UID, sent with every request as defence in depth.
+	PageUID string
 	// Token returns the current projected service account token.
 	Token func() (string, error)
 	// HTTPClient performs the requests. It defaults to http.DefaultClient.
@@ -96,6 +98,10 @@ func (c *Client) doRaw(ctx context.Context, method, path string, payload []byte)
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.PageUID != "" {
+		req.Header.Set(PageUIDHeader, c.PageUID)
+		req.Header.Set(PageUIDHeaderCompat, c.PageUID)
 	}
 	if c.Token != nil {
 		token, err := c.Token()

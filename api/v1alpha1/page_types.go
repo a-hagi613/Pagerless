@@ -123,6 +123,8 @@ const (
 	ReasonAgentEndedWithoutReport = "AgentEndedWithoutReport"
 	// ReasonAgentJobMissing means the agent Job disappeared before the agent reported.
 	ReasonAgentJobMissing = "AgentJobMissing"
+	// ReasonBudgetExhausted means the investigation spent one of its four budgets.
+	ReasonBudgetExhausted = "BudgetExhausted"
 	// ReasonValidationFailedTwice means the agent's second Proposal also failed Validation.
 	ReasonValidationFailedTwice = "ValidationFailedTwice"
 	// ReasonStaleProposal means the Proposal's base moved and it could not be re-rendered.
@@ -427,7 +429,7 @@ type PageSpec struct {
 }
 
 // StepKind classifies a step event reported by the agent.
-// +kubebuilder:validation:Enum=ToolCall;Finding;Progress
+// +kubebuilder:validation:Enum=ToolCall;Finding;Progress;SuspiciousOutput
 type StepKind string
 
 const (
@@ -437,6 +439,10 @@ const (
 	StepKindFinding StepKind = "Finding"
 	// StepKindProgress records a stage change in the agent's graph.
 	StepKindProgress StepKind = "Progress"
+	// StepKindSuspiciousOutput records an attempt to escape the investigation's
+	// scope, such as a write tool outside the catalogue or an echoed envelope
+	// nonce. It never stops a read-only run.
+	StepKindSuspiciousOutput StepKind = "SuspiciousOutput"
 )
 
 // MaxSteps is the number of most recent steps kept in a Page's status.
@@ -484,6 +490,9 @@ const (
 	FindingKindEvent FindingKind = "Event"
 	// FindingKindCommit is a Target Repository commit.
 	FindingKindCommit FindingKind = "Commit"
+	// FindingKindObject is a Kubernetes object's state, such as a container's
+	// termination reason.
+	FindingKindObject FindingKind = "Object"
 )
 
 // Finding is one cited piece of evidence that supports a Diagnosis.
@@ -503,6 +512,18 @@ type Finding struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=500
 	Summary string `json:"summary"`
+
+	// ToolCallID names the recorded tool call the evidence came from. The
+	// server verifies it exists for this Page before accepting the Finding.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	ToolCallID string `json:"toolCallId,omitempty"`
+
+	// Pointer is the JSON Pointer into the recorded tool result that the
+	// Finding cites. The server verifies that it resolves.
+	// +optional
+	// +kubebuilder:validation:MaxLength=500
+	Pointer string `json:"pointer,omitempty"`
 }
 
 // DecisionOutcome is the result of a human decision.
@@ -583,6 +604,17 @@ type Usage struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=100
 	CostUSD float64 `json:"costUSD"`
+
+	// ModelCalls is the number of model calls the investigation made.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=1000
+	ModelCalls int32 `json:"modelCalls,omitempty"`
+
+	// Estimated is true when the provider omitted its usage and the figures were
+	// estimated locally. The Page never presents an estimate as a measurement.
+	// +optional
+	Estimated bool `json:"estimated,omitempty"`
 }
 
 // PullRequestState is the provider's view of the pull request.
@@ -858,7 +890,6 @@ type InvestigationStatus struct {
 	Job string `json:"job,omitempty"`
 }
 
-// MaxAlerts is the number of inbound alerts a Page records.
 const MaxAlerts = 20
 
 // AlertState is the state of one inbound alert.
@@ -948,6 +979,43 @@ type EvidenceSummary struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	Redactions int32 `json:"redactions,omitempty"`
+}
+
+// ToolCallRecord is the Page's bounded record of one tool call the broker served.
+type ToolCallRecord struct {
+	// CallID is the server's identifier for the call, which a Finding cites.
+	// +required
+	// +kubebuilder:validation:MaxLength=128
+	CallID string `json:"callId"`
+
+	// Tool is the catalogue name of the tool.
+	// +required
+	// +kubebuilder:validation:MaxLength=128
+	Tool string `json:"tool"`
+
+	// Arguments is a bounded rendering of the model's arguments.
+	// +optional
+	// +kubebuilder:validation:MaxLength=300
+	Arguments string `json:"arguments,omitempty"`
+
+	// Bytes is the size of the stored result.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Bytes int64 `json:"bytes,omitempty"`
+
+	// Redactions is the number of secret-shaped matches removed from the result.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Redactions int32 `json:"redactions,omitempty"`
+
+	// Outcome is ok, out_of_scope, unknown_tool, budget_exhausted, or error.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	Outcome string `json:"outcome,omitempty"`
+
+	// Time is when the broker served the call.
+	// +required
+	Time metav1.Time `json:"time"`
 }
 
 // PageStatus is the observed state of a Page. Only pagerless-server writes it (ADR-0001).
@@ -1058,6 +1126,36 @@ type PageStatus struct {
 	// Usage is the model usage of the investigation, as the agent reported it in its accepted report.
 	// +optional
 	Usage *Usage `json:"usage,omitempty"`
+
+	// ToolCalls is the bounded record of the tool calls the broker served, so an
+	// operator can trace every Finding to a real read.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	ToolCalls []ToolCallRecord `json:"toolCalls,omitempty"`
+
+	// RedactionCount is the number of secret-shaped matches the broker removed
+	// from tool results over the whole investigation.
+	// +optional
+	RedactionCount int32 `json:"redactionCount,omitempty"`
+
+	// SuspiciousOutputs are the attempts the broker or the agent detected to
+	// escape the investigation's scope. They never stop a read-only run.
+	// +optional
+	// +kubebuilder:validation:MaxItems=20
+	// +listType=atomic
+	SuspiciousOutputs []string `json:"suspiciousOutputs,omitempty"`
+
+	// StructuredOutput records the structured-output rung that produced each
+	// stage, so a degraded installation is visible.
+	// +optional
+	StructuredOutput map[string]string `json:"structuredOutput,omitempty"`
+
+	// UsageSource records where the reported usage came from: provider,
+	// estimated, or mixed.
+	// +optional
+	// +kubebuilder:validation:Enum=provider;estimated;mixed
+	UsageSource string `json:"usageSource,omitempty"`
 
 	// Findings are the cited evidence the agent reported.
 	// +optional

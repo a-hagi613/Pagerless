@@ -28,6 +28,8 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	webassets "github.com/a-hagi613/pagerless/dashboard"
+	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/agentauth"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/connectors"
 	"github.com/a-hagi613/pagerless/internal/connectors/base"
@@ -49,6 +51,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/subject"
+	"github.com/a-hagi613/pagerless/internal/tools"
 	"github.com/a-hagi613/pagerless/internal/verification"
 	"github.com/a-hagi613/pagerless/internal/watcher"
 	"github.com/a-hagi613/pagerless/internal/webhooks"
@@ -59,8 +62,10 @@ const (
 	DefaultAgentServiceAccount = "pagerless-agent"
 	// DefaultServerServiceAccount is pagerless-server's own service account.
 	DefaultServerServiceAccount = "pagerless-server"
-	// DefaultAgentDeadline is the agent Job's active deadline: the five-minute budget of ADR-0010.
-	DefaultAgentDeadline = 5 * time.Minute
+	// DefaultAgentDeadline is the agent Job's active deadline. It exceeds the
+	// investigation's 300-second wall-clock budget, so the agent always has time
+	// to post its final outcome.
+	DefaultAgentDeadline = 420 * time.Second
 	// DefaultNarrativeDeadline is the Narrative Job's active deadline: one short model call, not an investigation.
 	DefaultNarrativeDeadline = 2 * time.Minute
 	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Target's metrics.
@@ -170,6 +175,10 @@ type Config struct {
 	GitHubRepository string
 	// GitHubToken returns the write-scoped token that publishes a Proposal. It is required when Sandbox is set.
 	GitHubToken func() (string, error)
+	// GitHubReadToken returns the read-only token the tool broker uses. It
+	// defaults to GitHubToken; the broker never sees the write credential when a
+	// separate read token is configured.
+	GitHubReadToken func() (string, error)
 	// AllowedNamespaces are the namespaces whose Targets the executable Actions may change.
 	AllowedNamespaces []string
 	// PatchBounds are the permitted ranges of PatchResources requests and limits.
@@ -240,7 +249,7 @@ func (c Config) validate() error {
 	case c.ReportListener == nil:
 		return errors.New("report listener is required")
 	}
-	if err := c.AgentRuntime.ValidateRecording(); err != nil {
+	if err := c.AgentRuntime.ValidateModel(); err != nil {
 		return err
 	}
 	switch {
@@ -266,8 +275,7 @@ func (c Config) validate() error {
 			return errors.New("a GitHub token source is required when a Sandbox is configured")
 		}
 	}
-	// A Job cannot authenticate to the model provider without this.
-	return c.AgentRuntime.ValidateGateway()
+	return nil
 }
 
 func (c Config) withDefaults() Config {
@@ -279,6 +287,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.AgentDeadline == 0 {
 		c.AgentDeadline = DefaultAgentDeadline
+	}
+	if c.GitHubReadToken == nil {
+		c.GitHubReadToken = c.GitHubToken
 	}
 	if c.NarrativeDeadline == 0 {
 		c.NarrativeDeadline = DefaultNarrativeDeadline
@@ -508,18 +519,47 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("set up the retention controller: %w", err)
 	}
 
+	authenticator := &agentauth.Authenticator{
+		Client:         mgr.GetClient(),
+		Reader:         mgr.GetAPIReader(),
+		Namespace:      cfg.Namespace,
+		ServiceAccount: cfg.AgentServiceAccount,
+	}
+	evidence := &tools.HistoryStore{Store: historyStore}
+	githubRead := &tools.HTTPGitHub{APIURL: cfg.GitHubAPIURL, Token: cfg.GitHubReadToken}
 	handler := &reportapi.Handler{
-		Auth: &reportapi.Authenticator{
-			Client:         mgr.GetClient(),
-			Reader:         mgr.GetAPIReader(),
-			Namespace:      cfg.Namespace,
-			ServiceAccount: cfg.AgentServiceAccount,
-		},
+		Auth:      authenticator,
 		Status:    store,
 		Proposals: proposals,
+		Evidence:  evidence,
+		Blobs:     githubRead,
+		Contents:  historyStore,
 		Clock:     cfg.Clock,
 	}
-	mux := newReportHandler(cfg, mgr.GetClient(), mgr.GetAPIReader(), store, historyStore, setup, handler)
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create the clientset for pod logs: %w", err)
+	}
+	toolBroker := &tools.Broker{
+		Reader:     mgr.GetAPIReader(),
+		PodLogs:    podLogs{clientset: clientset},
+		GitHub:     githubRead,
+		Store:      evidence,
+		Sink:       &page.ToolSink{Store: store},
+		Clock:      cfg.Clock,
+		Evidence:   "history",
+		Context:    &tools.HistoryContext{Store: historyStore},
+		Connectors: tools.RegistryConnectors{Registry: setup.registry},
+		Limits: tools.Limits{
+			ToolCalls:   agentapi.DefaultToolCallBudget,
+			ModelCalls:  agentapi.DefaultModelCallBudget,
+			InputTokens: agentapi.DefaultInputTokenBudget,
+			Seconds:     agentapi.DefaultWallClockBudget,
+		},
+	}
+	toolsHandler := &tools.Handler{Auth: authenticator, Broker: toolBroker}
+	mux := newReportHandler(cfg, mgr.GetClient(), mgr.GetAPIReader(), store, historyStore, setup,
+		handler, toolsHandler)
 	if err := mgr.Add(serve("report API", cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
 	}
@@ -632,6 +672,7 @@ func (r *recorder) StepRecorded(
 // cluster with no monitoring stack still opens Pages on native evidence.
 type connectorSetup struct {
 	assembler    controller.EvidenceCollector
+	registry     *connectors.Registry
 	subjectRules []subject.Rule
 	alerting     connectors.AlertingConfig
 }
@@ -673,6 +714,7 @@ func buildConnectors(
 		return connectorSetup{}, err
 	}
 	return connectorSetup{
+		registry: registry,
 		assembler: &contextbundle.Assembler{
 			Reader: reader, Native: registry.Native, Logs: registry.Logs, Metrics: registry.Metrics,
 			AlertStates: registry.AlertStates, Sanitizer: sanitizer,
@@ -714,9 +756,13 @@ func firstNonEmptyList(first, second []string) []string {
 // receiver when it is configured, the v2 webhook receiver, and the agent API.
 func newReportHandler(
 	cfg Config, apiClient client.Client, reader client.Reader, status *page.StatusStore,
-	historyStore *history.Store, setup connectorSetup, fallback http.Handler,
+	historyStore *history.Store, setup connectorSetup, fallback, toolsHandler http.Handler,
 ) http.Handler {
 	mux := http.NewServeMux()
+	if toolsHandler != nil {
+		mux.Handle("GET /v1/pages/{name}/investigation", toolsHandler)
+		mux.Handle("POST /v1/pages/{name}/tools/{tool}", toolsHandler)
+	}
 	if cfg.AlertmanagerURL != "" {
 		mux.Handle(alerts.Path, &alerts.Receiver{
 			Client: apiClient, Store: status, Namespace: cfg.Namespace,
@@ -786,4 +832,21 @@ func addDashboard(
 		return fmt.Errorf("add the dashboard: %w", err)
 	}
 	return nil
+}
+
+// podLogs reads the pod log subresource through the clientset. The broker cannot
+// use the controller-runtime client for it, because logs are a subresource.
+type podLogs struct {
+	clientset kubernetes.Interface
+}
+
+// GetLogs returns one container's log bytes.
+func (p podLogs) GetLogs(
+	ctx context.Context, namespace, pod string, options *corev1.PodLogOptions,
+) ([]byte, error) {
+	raw, err := p.clientset.CoreV1().Pods(namespace).GetLogs(pod, options).DoRaw(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read logs of pod %s/%s: %w", namespace, pod, err)
+	}
+	return raw, nil
 }
