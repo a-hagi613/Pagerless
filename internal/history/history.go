@@ -12,6 +12,19 @@
 // Trigger after retention has deleted the Page resource. A step stores the bounded step the server accepted,
 // with its Finding as JSON when the step carried one. History therefore cannot be rewritten by the application.
 //
+// Version 4 adds the session revocation table that logout needs, because a signed cookie cannot be withdrawn
+// and the token slice issues one; version 5 adds two more bounded, mutable tables that are operational state
+// rather than history:
+//
+//	revoked_sessions(jti PRIMARY KEY, expires_at)
+//	context_bundles(page_uid PRIMARY KEY, namespace, name, hash, bytes, truncated, collected_at, body)
+//	webhook_deliveries(id, delivery_key UNIQUE, source, sender, fingerprint, status,
+//		subject, page, received_at, outcome, reason)
+//
+// The Context Bundle is stored once per Page: a second write for the same Page UID is ignored, which keeps the
+// body out of the Page object while making the bundle available to the agent. A webhook delivery row is the
+// durable idempotency key of one inbound alert and is pruned after one hour, so it cannot grow without bound.
+//
 // Schema version 3 adds the two mutable runtime tables that deduplication needs, because a Cooldown must
 // outlive the Page resource and the one-hour Event TTL:
 //
@@ -45,7 +58,7 @@ import (
 )
 
 // SchemaVersion is the version of the schema that this package creates and reads.
-const SchemaVersion = 3
+const SchemaVersion = 5
 
 const (
 	// snapshotsTable holds one row per Phase change.
@@ -54,6 +67,10 @@ const (
 	stepsTable = "page_steps"
 	// revokedSessionsTable holds session identifiers (jti) revoked by logout until their cookie expires.
 	revokedSessionsTable = "revoked_sessions"
+	// bundlesTable holds the Context Bundle of a Page.
+	bundlesTable = "context_bundles"
+	// deliveriesTable holds the idempotency key of every inbound alert.
+	deliveriesTable = "webhook_deliveries"
 )
 
 // schema is applied to a new database. It is idempotent so that a restart reopens the same file.
@@ -144,6 +161,30 @@ var schema = []string{
 		expires_at INTEGER NOT NULL
 	)`,
 	`CREATE INDEX IF NOT EXISTS ` + revokedSessionsTable + `_by_expiry ON ` + revokedSessionsTable + ` (expires_at)`,
+	`CREATE TABLE IF NOT EXISTS ` + bundlesTable + ` (
+		page_uid TEXT PRIMARY KEY,
+		namespace TEXT NOT NULL,
+		name TEXT NOT NULL,
+		hash TEXT NOT NULL,
+		bytes INTEGER NOT NULL,
+		truncated INTEGER NOT NULL,
+		collected_at TEXT NOT NULL,
+		body TEXT NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS ` + deliveriesTable + ` (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		delivery_key TEXT NOT NULL UNIQUE,
+		source TEXT NOT NULL,
+		sender TEXT NOT NULL,
+		fingerprint TEXT NOT NULL,
+		status TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		page TEXT NOT NULL,
+		received_at TEXT NOT NULL,
+		outcome TEXT NOT NULL,
+		reason TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS ` + deliveriesTable + `_by_received ON ` + deliveriesTable + ` (received_at)`,
 }
 
 // Store is an append-only history database.

@@ -26,12 +26,12 @@ func newPage(name string, created time.Time) *v1alpha1.Page {
 				Namespace: "sandbox",
 				Name:      "checkout",
 			},
-			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI, Pod: "checkout-abc"},
+			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI, Pod: testPage},
 		},
 		Status: v1alpha1.PageStatus{Phase: v1alpha1.PhasePending},
 	}
 	tr.Name = name
-	tr.Namespace = "pagerless"
+	tr.Namespace = testNamespace
 	tr.UID = types.UID("uid-" + name)
 	tr.CreationTimestamp = metav1.NewTime(created)
 	return tr
@@ -80,7 +80,7 @@ func openVersion1(t *testing.T, path string) {
 	_, err = db.ExecContext(context.Background(),
 		`INSERT INTO page_snapshots (page_uid, namespace, name, phase, observed_at, status)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"uid-old", "pagerless", "page-old", string(v1alpha1.PhaseRecovered),
+		"uid-old", testNamespace, "page-old", string(v1alpha1.PhaseRecovered),
 		formatTime(startTime.Add(time.Minute)), string(status),
 	)
 	if err != nil {
