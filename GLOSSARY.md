@@ -164,3 +164,17 @@ _Avoid_: adapter, integration, plugin, MCP server
 The human accountable for one installation, who supplies its credentials,
 approves Proposals, and owns the Target Repositories.
 _Avoid_: admin, user, owner, approver (as a synonym)
+
+## Surfaces
+
+**Portal**:
+The browser surface that `pagerless-server` serves from the same Page resources
+the CLI reads, with the same decision path. It is a view over Pages, not a second
+control plane.
+_Avoid_: dashboard, UI, console, web app
+
+**CLI**:
+The `kubectl page` plugin, distributed as `kubectl-page` through Krew and
+Homebrew. It reads and patches Pages through the Kubernetes API with the
+operator's kubeconfig and never calls `pagerless-server`.
+_Avoid_: tool, client, kubectl-triage
