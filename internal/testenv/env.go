@@ -43,6 +43,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/proposal"
+	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/watcher"
 )
@@ -111,20 +112,22 @@ type Env struct {
 }
 
 type options struct {
-	validators        func(*Env) map[v1alpha1.Action]proposal.ActionValidator
-	proposalPoll      time.Duration
-	pullRequestPoll   time.Duration
-	verificationPoll  time.Duration
-	retentionPoll     time.Duration
-	agentDeadline     time.Duration
-	agentRuntime      controller.AgentRuntimeConfig
-	alertNamespaces   []string
-	alertToken        func() (string, error)
-	dashboardUser     string
-	dashboardApprover bool
-	dashboardAuth     dashboardapi.Auth
-	dashboardAddress  string
-	watcher           *watcher.Config
+	validators           func(*Env) map[v1alpha1.Action]proposal.ActionValidator
+	proposalPoll         time.Duration
+	pullRequestPoll      time.Duration
+	verificationPoll     time.Duration
+	retentionPoll        time.Duration
+	agentDeadline        time.Duration
+	agentRuntime         controller.AgentRuntimeConfig
+	alertNamespaces      []string
+	alertToken           func() (string, error)
+	dashboardUser        string
+	dashboardApprover    bool
+	dashboardAuth        dashboardapi.Auth
+	dashboardAddress     string
+	watcher              *watcher.Config
+	credentials          func(*Env) map[string]string
+	repositoryFromSecret bool
 }
 
 // WithWatcher enables the cluster watcher with the given configuration. The
@@ -137,6 +140,52 @@ func WithWatcher(cfg watcher.Config) Option {
 
 // Option customizes the harness.
 type Option func(*options)
+
+// harnessTargetRepository returns the server's explicit Target Repository
+// settings. A test that derives them from the credentials Secret gets the zero
+// values, so the server must read the Secret.
+func harnessTargetRepository(
+	env *Env, fromSecret bool,
+) (sandbox.Repository, string, string, func() (string, error)) {
+	if fromSecret {
+		return sandbox.Repository{}, "", "", nil
+	}
+	return env.SandboxRepository(), GitHubRepository, env.GitHub.URL,
+		func() (string, error) { return env.GitHub.Token(), nil }
+}
+
+// seedCredentials writes onboarding values into the Secret the chart created.
+func seedCredentials(t testing.TB, env *Env, values map[string]string) {
+	t.Helper()
+	var secret corev1.Secret
+	key := client.ObjectKey{Namespace: Namespace, Name: controller.DefaultCredentialsSecret}
+	if err := env.Client.Get(t.Context(), key, &secret); err != nil {
+		t.Fatalf("read the credentials Secret: %v", err)
+	}
+	if secret.Data == nil {
+		secret.Data = map[string][]byte{}
+	}
+	for name, value := range values {
+		secret.Data[name] = []byte(value)
+	}
+	if err := env.Client.Update(t.Context(), &secret); err != nil {
+		t.Fatalf("seed the credentials Secret: %v", err)
+	}
+}
+
+// WithCredentials writes these keys into the credentials Secret before the
+// server starts, so a test can configure onboarding data the way a real
+// installation does.
+func WithCredentials(values func(*Env) map[string]string) Option {
+	return func(o *options) { o.credentials = values }
+}
+
+// WithTargetRepositoryFromSecret clears the server's explicit Target
+// Repository flags, so the harness exercises the derivation from the
+// credentials Secret.
+func WithTargetRepositoryFromSecret() Option {
+	return func(o *options) { o.repositoryFromSecret = true }
+}
 
 // WithValidators sets the Actions that Validation accepts. The function runs
 // after the API server and the Sandbox exist, and receives the harness so
@@ -292,6 +341,9 @@ func Start(t testing.TB, opts ...Option) *Env {
 	env.GitHub = NewFakeGitHub(t, env.Sandbox)
 	env.ArgoCD = NewFakeArgoCD(t)
 	env.Alertmanager = NewFakeAlertmanager(t)
+	if o.credentials != nil {
+		seedCredentials(t, env, o.credentials(env))
+	}
 	validators := proposal.DefaultValidators()
 	if o.validators != nil {
 		validators = o.validators(env)
@@ -309,6 +361,8 @@ func Start(t testing.TB, opts ...Option) *Env {
 	if agentRuntime.ModelKeyKey == "" {
 		agentRuntime.ModelKeyKey = controller.ModelAPIKeyName
 	}
+	repository, githubRepository, githubAPIURL, githubToken := harnessTargetRepository(
+		env, o.repositoryFromSecret)
 	mgr, err := server.New(serverConfig, server.Config{
 		Namespace:                Namespace,
 		AgentImage:               AgentImage,
@@ -319,10 +373,10 @@ func Start(t testing.TB, opts ...Option) *Env {
 		DashboardListener:        dashboardListener,
 		GrafanaURL:               "http://grafana.monitoring.test",
 		HistoryPath:              historyPath,
-		Sandbox:                  env.SandboxRepository(),
-		GitHubAPIURL:             env.GitHub.URL,
-		GitHubRepository:         GitHubRepository,
-		GitHubToken:              func() (string, error) { return env.GitHub.Token(), nil },
+		Sandbox:                  repository,
+		GitHubAPIURL:             githubAPIURL,
+		GitHubRepository:         githubRepository,
+		GitHubToken:              githubToken,
 		AgentDeadline:            o.agentDeadline,
 		ProposalPollInterval:     o.proposalPoll,
 		PullRequestPollInterval:  o.pullRequestPoll,

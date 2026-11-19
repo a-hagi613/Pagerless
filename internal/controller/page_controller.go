@@ -53,7 +53,15 @@ type PageReconciler struct {
 	// Runtime refreshes the model endpoint from the credentials Secret, so a
 	// settings write takes effect on the next Page. It is optional.
 	Runtime RuntimeSource
+	// Repository resolves the Target Repository for a Page that has none, so
+	// the agent can read the repository and ground a FilePatch in it. It is
+	// optional; a Page without a repository can still be diagnosed.
+	Repository RepositorySource
 }
+
+// RepositorySource returns the Target Repository to record on a Page, or nil
+// when the installation has none.
+type RepositorySource func(ctx context.Context) (*v1alpha1.Resolution, error)
 
 // EvidenceCollector assembles and stores the Context Bundle of a Page. The
 // Context Bundle is gathered once, before the agent's first model call, and a
@@ -167,6 +175,22 @@ func (r *PageReconciler) startInvestigation(ctx context.Context, p *v1alpha1.Pag
 			logf.FromContext(ctx).Error(err, "assemble the Context Bundle", "page", p.Name)
 		} else {
 			evidence = bundle.Summary()
+		}
+	}
+	if p.Status.Repository == nil && p.Spec.Repository == nil && r.Repository != nil {
+		resolution, err := r.Repository(ctx)
+		if err != nil {
+			return fmt.Errorf("resolve the Target Repository for Page %s: %w", p.Name, err)
+		}
+		if resolution != nil {
+			if _, err := r.Status.Update(ctx, client.ObjectKeyFromObject(p), func(latest *v1alpha1.Page) error {
+				if latest.Status.Repository == nil {
+					latest.Status.Repository = resolution
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("record the Target Repository on Page %s: %w", p.Name, err)
+			}
 		}
 	}
 	job := AgentJob(p, r.Runtime.jobConfig(ctx, r.Job))

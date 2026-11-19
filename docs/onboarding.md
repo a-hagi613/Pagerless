@@ -22,10 +22,10 @@ from the same Secret. None of the six keys above is required for the server to
 start.
 
 The server re-reads `AI_BASE_URL` and `AI_MODEL` from the Secret when it starts
-each agent Job, so a settings write takes effect on the next Page without a
-restart. The workflow from a completed Secret to an opened Pull Request still
-needs the Target Repository wiring described in the README's Current limitation
-note; an installation without it diagnoses Pages and ends them as Diagnosed.
+each agent Job, and resolves the Target Repository from `GITHUB_REPO`,
+`GITHUB_API_URL`, and `GITHUB_TOKEN` when a Page starts and when an approved
+Proposal is published. Completing the Secret therefore takes effect without a
+restart, including the Pull Request path.
 
 ## Path 1: the Portal
 
@@ -105,9 +105,8 @@ kubectl -n pagerless get secret pagerless-credentials \
 
 An installation without a Target Repository can still diagnose a Page: it ends
 the Page as Diagnosed with no change recommended, because Pagerless only changes
-a cluster through a pull request. That is also the current behaviour of an
-installation with `GITHUB_REPO` set, until the Target Repository wiring lands
-(see the README's Current limitation note).
+a cluster through a pull request. Set `targetRepository.enabled=false` to make
+that diagnose-only shape explicit for an air-gapped cluster.
 
 ## Next
 

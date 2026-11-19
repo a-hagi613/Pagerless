@@ -40,6 +40,16 @@ type Config struct {
 	// Token returns the write-scoped token that pushes the branch. It is read for each push, so that a rotated
 	// Secret takes effect.
 	Token func() (string, error)
+	// Contents loads a FilePatch Proposal's whole-file content by hash. It is
+	// required for the v2 FilePatch writer, which sends whole files through the
+	// GitHub API instead of applying a git patch.
+	Contents FilePatchContents
+}
+
+// FilePatchContents loads the content of a FilePatch Proposal's files under the
+// Proposal hash.
+type FilePatchContents interface {
+	ProposalContents(ctx context.Context, hash string) (map[string][]byte, error)
 }
 
 // Publisher publishes Proposals as pull requests. It is safe for concurrent use.
@@ -82,6 +92,9 @@ func Branch(tr *v1alpha1.Page) (string, error) {
 // Publish commits the Proposal to its branch, opens the pull request if it is not open yet, and reports the pull
 // request's state. A second call for the same Proposal observes the first call's result instead of acting again.
 func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Page) (Result, error) {
+	if tr.Status.Proposal != nil && tr.Status.Proposal.Action == v1alpha1.ActionFilePatch {
+		return p.publishFilePatch(ctx, tr)
+	}
 	branch, err := Branch(tr)
 	if err != nil {
 		return Result{}, err
@@ -114,6 +127,73 @@ func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Page) (Result, err
 		result.Closed = true
 	}
 	return result, nil
+}
+
+// publishFilePatch opens the pull request that carries a whole-file Proposal
+// through the isolated GitHub API writer. The writer receives only the
+// server-validated Page identity, approval hash, base commit, and contents; it
+// never sees model text or a patch.
+func (p *Publisher) publishFilePatch(ctx context.Context, tr *v1alpha1.Page) (Result, error) {
+	if p.cfg.GitHub == nil || p.cfg.GitHub.Repository == "" {
+		return Result{}, errors.New("the pull request writer is not configured")
+	}
+	if p.cfg.Contents == nil {
+		return Result{}, errors.New("the Proposal content store is not configured")
+	}
+	proposal := tr.Status.Proposal
+	if proposal.Base == nil || proposal.Base.Commit == "" {
+		return Result{}, errors.New("the Page's Proposal records no base commit, so it cannot be published")
+	}
+	files, err := p.filePatchFiles(ctx, proposal)
+	if err != nil {
+		return Result{}, err
+	}
+	branch := p.cfg.Sandbox.Branch
+	if branch == "" {
+		branch = "main"
+	}
+	result, err := p.cfg.GitHub.Ensure(ctx, pr.Approved{
+		Page: pr.PageRef{Namespace: tr.Namespace, Name: tr.Name, UID: string(tr.UID)},
+		Hash: proposal.Hash, BaseBranch: branch, BaseCommit: proposal.Base.Commit,
+		Files: files, Title: title(tr), Body: body(tr),
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	out := Result{
+		Branch: result.Branch, PullRequestURL: result.URL, PullRequestNumber: result.Number,
+	}
+	if pull, err := p.cfg.GitHub.FindPullRequest(ctx, result.Branch); err == nil && pull != nil {
+		out.Merged = pull.MergedAt != nil || pull.MergeCommitSHA != ""
+		out.MergeCommit = pull.MergeCommitSHA
+		out.Closed = pull.State == "closed" && !out.Merged
+	}
+	return out, nil
+}
+
+// filePatchFiles joins the Proposal's file identities with the content the
+// server stored under the Proposal hash. A missing content entry is a
+// server-side fault, never a reason to publish a partial change.
+func (p *Publisher) filePatchFiles(
+	ctx context.Context, proposal *v1alpha1.Proposal,
+) ([]pr.File, error) {
+	if proposal.Parameters == nil || proposal.Parameters.FilePatch == nil ||
+		len(proposal.Parameters.FilePatch.Files) == 0 {
+		return nil, errors.New("the Page's FilePatch Proposal holds no files")
+	}
+	contents, err := p.cfg.Contents.ProposalContents(ctx, proposal.Hash)
+	if err != nil {
+		return nil, fmt.Errorf("read the Proposal content: %w", err)
+	}
+	files := make([]pr.File, 0, len(proposal.Parameters.FilePatch.Files))
+	for _, edit := range proposal.Parameters.FilePatch.Files {
+		content, ok := contents[edit.Path]
+		if !ok {
+			return nil, fmt.Errorf("the Proposal content for %s is not stored", edit.Path)
+		}
+		files = append(files, pr.File{Path: edit.Path, Content: content, Digest: edit.ContentDigest})
+	}
+	return files, nil
 }
 
 // push clones the target repository, applies the stored patch on the Proposal's base commit, commits it, and
@@ -170,6 +250,9 @@ func title(tr *v1alpha1.Page) string {
 
 func body(tr *v1alpha1.Page) string {
 	current, decision, w := tr.Status.Proposal, tr.Status.Decision, tr.Spec.Target
+	if current.Base == nil {
+		return "Pagerless carries an approved Proposal with no recorded base commit."
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Opened by pagerless-server for Page `%s`.\n\n", tr.Name)
 	fmt.Fprintf(&b, "- Action: %s\n", current.Action)

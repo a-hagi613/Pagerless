@@ -135,6 +135,11 @@ func (f *fakeGitHub) Commits(
 	return []Commit{{SHA: "3f2a9c1", Message: "raise the memory limit"}}, nil
 }
 
+func (f *fakeGitHub) Head(_ context.Context, repository Repository, ref string) (string, error) {
+	f.repository, f.ref = repository, ref
+	return "3f2a9c1", nil
+}
+
 // fakeConnectors is a configured Connector catalogue that records each query.
 type fakeConnectors struct {
 	queries []LogQuery

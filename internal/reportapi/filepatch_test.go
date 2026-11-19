@@ -37,6 +37,10 @@ func (f fakeBlobs) Commits(
 	return nil, errors.New("unused")
 }
 
+func (f fakeBlobs) Head(context.Context, tools.Repository, string) (string, error) {
+	return f.sha, nil
+}
+
 // filePatchPage is a Page with a declared Target Repository.
 func filePatchPage() *v1alpha1.Page {
 	page := &v1alpha1.Page{}
@@ -65,7 +69,7 @@ func TestPrepareFilePatchRecordsTheBaseBlobAndDigest(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	handler := &Handler{Blobs: fakeBlobs{sha: sha}}
 	content := "kind: Deployment\nmetadata:\n  name: checkout\n"
-	action, contents, errs := handler.prepareFilePatch(context.Background(), filePatchPage(),
+	action, contents, base, rendered, errs := handler.prepareFilePatch(context.Background(), filePatchPage(),
 		filePatchAction("apps/shop/checkout.yaml", content))
 	if len(errs) != 0 {
 		t.Fatalf("errors = %+v, want the FilePatch prepared", errs)
@@ -84,14 +88,20 @@ func TestPrepareFilePatchRecordsTheBaseBlobAndDigest(t *testing.T) {
 	if string(contents["apps/shop/checkout.yaml"]) != content {
 		t.Errorf("contents = %q, want the complete file", contents)
 	}
+	if base == nil || base.Commit != sha {
+		t.Errorf("base = %+v, want the repository head %s", base, sha)
+	}
+	if rendered == nil || !strings.Contains(rendered.Patch, "name: checkout") {
+		t.Errorf("rendered change = %+v, want the reviewable whole-file diff", rendered)
+	}
 }
 
 // TestPrepareFilePatchRefusesWhatTheRepositoryDoesNotHave keeps a Proposal from
 // naming a file that does not exist.
 func TestPrepareFilePatchRefusesWhatTheRepositoryDoesNotHave(t *testing.T) {
 	t.Parallel()
-	handler := &Handler{Blobs: fakeBlobs{missing: true}}
-	_, _, errs := handler.prepareFilePatch(context.Background(), filePatchPage(),
+	handler := &Handler{Blobs: fakeBlobs{missing: true, sha: strings.Repeat("a", 40)}}
+	_, _, _, _, errs := handler.prepareFilePatch(context.Background(), filePatchPage(),
 		filePatchAction("apps/shop/missing.yaml", "kind: Deployment\n"))
 	if len(errs) != 1 || errs[0].Field != "proposal.files[0].path" {
 		t.Errorf("errors = %+v, want proposal.files[0].path", errs)
@@ -105,7 +115,7 @@ func TestPrepareFilePatchNeedsATargetRepository(t *testing.T) {
 	handler := &Handler{Blobs: fakeBlobs{sha: strings.Repeat("a", 40)}}
 	page := filePatchPage()
 	page.Spec.Repository = nil
-	_, _, errs := handler.prepareFilePatch(context.Background(), page,
+	_, _, _, _, errs := handler.prepareFilePatch(context.Background(), page,
 		filePatchAction("apps/shop/checkout.yaml", "kind: Deployment\n"))
 	if len(errs) != 1 || errs[0].Field != "proposal.kind" {
 		t.Errorf("errors = %+v, want proposal.kind", errs)

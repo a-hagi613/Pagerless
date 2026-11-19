@@ -6,10 +6,10 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 )
 
-// unifiedDiff renders the Diff from the base content to the proposed content.
+// UnifiedDiff renders the Diff from the base content to the proposed content.
 // The server derives it, so a model-supplied patch cannot be inconsistent with
 // the base commit.
-func unifiedDiff(path string, base, proposed []byte) (FileDiff, error) {
+func UnifiedDiff(path string, base, proposed []byte) (FileDiff, error) {
 	from := difflib.SplitLines(string(base))
 	to := difflib.SplitLines(string(proposed))
 	text, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{

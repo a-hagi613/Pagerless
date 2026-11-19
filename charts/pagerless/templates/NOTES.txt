@@ -3,10 +3,10 @@ Pagerless {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespac
 The cluster identity is read-only. Pagerless reads failures and proposes every
 remediation as a pull request; it never writes to a workload, Event, or Node.
 
-This release diagnoses Pages and records decisions. It does not yet open the
-Pull Request that carries an approved Proposal, because the chart does not wire
-the Target Repository into the pull-request reconciler. The README's Current
-limitation note is the source of truth for that gap.
+The Target Repository is resolved from GITHUB_REPO in the credentials Secret,
+with GITHUB_API_URL selecting a GitHub Enterprise host. Complete it at /settings
+or with `kubectl page config set github`. Set targetRepository.enabled=false in
+values.yaml for a diagnose-only installation with no repository.
 
 {{- if .Values.rbac.watchAllNamespaces }}
 

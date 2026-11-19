@@ -23,7 +23,6 @@ import (
 
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
-	"github.com/a-hagi613/pagerless/internal/github"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
@@ -152,10 +151,10 @@ func run() error {
 			"minimum replica count in Scale")
 		scaleMax = flag.Int("scale-max-replicas", int(defaultScale.Max),
 			"maximum replica count in Scale")
-		githubAPIURL = flag.String("github-api-url", github.DefaultGitHubAPI,
-			"base URL of the Target Repository's GitHub API")
+		githubAPIURL = flag.String("github-api-url", "",
+			"base URL of the Target Repository's GitHub API; empty derives it from GITHUB_API_URL or github.com")
 		githubRepository = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
-			"owner/name of the Target Repository; empty derives it from --target-repository-url")
+			"owner/name of the Target Repository; empty derives it from --target-repository-url or GITHUB_REPO")
 		githubTokenFile = flag.String("github-token-file", defaultGitHubTokenFile,
 			"file that holds the write-scoped token that publishes a Proposal")
 		argoCDURL = flag.String("argocd-url", "",
@@ -169,6 +168,8 @@ func run() error {
 			"base URL of Alertmanager; empty disables the alert receiver and the alert-resolution check")
 		alertmanagerTokenFile = flag.String("alertmanager-token-file", defaultAlertmanagerTokenFile,
 			"file that holds the required bearer token for Alertmanager webhook deliveries")
+		targetRepositoryEnabled = flag.Bool("target-repository-enabled", true,
+			"resolve the Target Repository from the credentials Secret and open pull requests; false runs diagnose-only")
 		connectorsConfig = flag.String("connectors-config", "",
 			"path of the Connector configuration ConfigMap; empty disables every external Connector")
 		webhookAlertmanagerTokenFile = flag.String("webhook-alertmanager-token-file", "",
@@ -304,6 +305,7 @@ func run() error {
 		CredentialsExternalManager: *credentialsExternalManager,
 		CredentialsMountPath:       *credentialsMountPath,
 		Version:                    version,
+		DisableTargetRepository:    !*targetRepositoryEnabled,
 	}
 	if *argoCDURL != "" {
 		cfg.ArgoCDToken = tokenFromFile(*argoCDTokenFile)

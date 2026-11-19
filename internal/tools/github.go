@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,8 @@ type GitHubReader interface {
 	File(ctx context.Context, repository Repository, ref, filePath string) (File, error)
 	// Commits lists recent commits at a ref, optionally for one path.
 	Commits(ctx context.Context, repository Repository, ref, filePath string, limit int) ([]Commit, error)
+	// Head returns the commit SHA that a ref points at.
+	Head(ctx context.Context, repository Repository, ref string) (string, error)
 }
 
 // TreeEntry is one path in a repository tree.
@@ -145,6 +148,21 @@ func (g *HTTPGitHub) Tree(ctx context.Context, repository Repository, ref, direc
 }
 
 // File reads one repository file's decoded text.
+// Head returns the commit SHA that a repository ref points at.
+func (g *HTTPGitHub) Head(ctx context.Context, repository Repository, ref string) (string, error) {
+	requestPath := fmt.Sprintf("/repos/%s/%s/commits/%s", repository.Owner, repository.Name, url.PathEscape(ref))
+	var answer struct {
+		SHA string `json:"sha"`
+	}
+	if err := g.get(ctx, requestPath, &answer); err != nil {
+		return "", err
+	}
+	if answer.SHA == "" {
+		return "", errors.New("the repository returned no commit for " + ref)
+	}
+	return answer.SHA, nil
+}
+
 func (g *HTTPGitHub) File(ctx context.Context, repository Repository, ref, filePath string) (File, error) {
 	if !validRepositoryPath(filePath) {
 		return File{}, fmt.Errorf("path %q is not a repository-relative path", filePath)

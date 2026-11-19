@@ -88,6 +88,7 @@ a rule widens. See [`docs/adr/0037`](../../docs/adr/0037-read-only-cluster-ident
 | `auth.session.secure` | `""` | Cookie Secure attribute; empty derives it from `dashboard.baseUrl`. |
 | `auth.bearerToken` | `false` | Accept a Bearer bootstrap token on `/api/*` for scripted calls. |
 | `auth.proxy.identityHeader` | `""` | Trusted header that names the operator in `disabled` mode. |
+| `targetRepository.enabled` | `true` | Resolve the Target Repository from `GITHUB_REPO` and open the pull request; false runs diagnose-only. |
 | `credentials.existingSecret` | `""` | An externally managed Secret; the chart renders no credentials Secret and the settings are read-only. |
 | `credentials.secretName` | `pagerless-credentials` | The Secret the chart creates and the Deployment mounts. |
 | `credentials.mountPath` | `/var/run/pagerless/credentials` | Read-only mount path. |

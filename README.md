@@ -5,7 +5,7 @@
 <h1 align="center">Pagerless</h1>
 
 <p align="center">
-  <strong>A standalone, read-only Kubernetes remediation operator that turns a failing Target into a diagnosis and one reviewable Proposal.</strong>
+  <strong>A standalone, read-only Kubernetes remediation operator that turns a failing Target into a diagnosis and one reviewable pull request.</strong>
 </p>
 
 <p align="center">
@@ -53,9 +53,9 @@ reads, so the two surfaces cannot disagree about a diagnosis or a decision.
    bounds — and stores it with a hash.
 5. A human reviews the diff and approves that exact hash in the Portal or with
    `kubectl page approve`.
-6. The isolated writer opens one branch and one pull request once the Target
-   Repository is configured. The repository's CI and reviewers decide the
-   merge; after it, deterministic checks record whether the Target recovered.
+6. The isolated writer opens one branch and one pull request against the Target
+   Repository. The repository's CI and reviewers decide the merge; after it,
+   deterministic checks record whether the Target recovered.
 
 ```mermaid
 flowchart LR
@@ -111,14 +111,12 @@ broker, gateway, or admission webhook. The release notes print the sign-in
 steps: port-forward the Portal, decode the bootstrap token, sign in at `/login`,
 and finish onboarding at `/settings`.
 
-> **Current limitation.** The chart does not yet connect `GITHUB_REPO` from the
-> credentials Secret to the server's Target Repository. The pull-request
-> reconciler is registered only when `--target-repository-url` is set, and the
-> chart leaves it empty. An installation built from the published chart watches
-> failures, opens Pages, diagnoses them, and records the operator's decision, but
-> does not open the Pull Request that carries an approved Proposal. That wiring
-> is the remaining blocker for a first install to be a complete remediation
-> product.
+The Target Repository is resolved from `GITHUB_REPO` in the credentials Secret,
+using `GITHUB_API_URL` for a GitHub Enterprise host and `https://github.com`
+otherwise. Completing the Secret after onboarding is enough: the server re-reads
+it when a Page starts and when an approved Proposal is published. An air-gapped
+installation that has no repository sets `targetRepository.enabled=false` and
+runs diagnose-only.
 
 ## One capability, two surfaces
 

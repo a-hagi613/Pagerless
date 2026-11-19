@@ -110,6 +110,16 @@ pod starts, and the Portal and the CLI report the settings as read-only.
 [`docs/onboarding.md`](onboarding.md) covers each way of filling it, including
 finishing an installation that started without credentials.
 
+## Target Repository
+
+The chart resolves the Target Repository from `GITHUB_REPO` in that Secret and
+uses `GITHUB_API_URL` to select a GitHub Enterprise host; otherwise it uses
+`https://github.com`. The server re-reads the Secret when a Page starts and when
+an approved Proposal is published, so onboarding completes the path without a
+restart. An air-gapped installation with no repository sets
+`targetRepository.enabled=false`; it then diagnoses Pages and records decisions
+without opening a pull request.
+
 ## Verify the installation
 
 ```bash

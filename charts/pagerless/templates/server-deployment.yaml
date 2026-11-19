@@ -70,6 +70,7 @@ spec:
             - --watcher-node-pages-mode=ignore
             {{- end }}
             - --target-repository-url=
+            - --target-repository-enabled={{ .Values.targetRepository.enabled }}
             - --argocd-url=
             - --alertmanager-url=
             - --connectors-config=/etc/pagerless/connectors/connectors.yaml

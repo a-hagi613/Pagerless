@@ -28,10 +28,14 @@ import (
 	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/tools"
+	"github.com/a-hagi613/pagerless/internal/validation"
 )
 
 // maxBodyBytes bounds a request body. Agent output is untrusted.
 const maxBodyBytes = 1 << 20
+
+// maxRenderedChangeBytes matches the Page CRD's renderedChange.patch limit.
+const maxRenderedChangeBytes = 32768
 
 // ContentStore holds a Proposal's complete file content under its hash.
 type ContentStore interface {
@@ -236,8 +240,10 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		errs = append(errs, h.verifyCitations(ctx, t, report.Findings)...)
 	}
 	contents := map[string][]byte(nil)
+	var base *v1alpha1.ProposalBase
+	var rendered *v1alpha1.RenderedChange
 	if len(errs) == 0 {
-		action, contents, errs = h.prepareFilePatch(ctx, t, action)
+		action, contents, base, rendered, errs = h.prepareFilePatch(ctx, t, action)
 	}
 	if len(errs) == 0 && len(mergeFindings(t.Status.Findings, report.Findings)) == 0 {
 		errs = []agentapi.ValidationError{{Field: "findings", Message: errNoFindings.Error()}}
@@ -246,7 +252,9 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		h.refuse(ctx, w, t, attempt, action, errs)
 		return
 	}
-	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Page: t, Action: action}, attempt)
+	built, errs, err := h.Proposals.Build(ctx, proposal.Request{
+		Page: t, Action: action, Base: base, RenderedChange: rendered,
+	}, attempt)
 	if err != nil {
 		h.writeInternal(ctx, w, err)
 		return
@@ -314,23 +322,31 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 // Proposal that can never be a reviewable change.
 func (h *Handler) prepareFilePatch(
 	ctx context.Context, t *v1alpha1.Page, action v1alpha1.ProposedAction,
-) (v1alpha1.ProposedAction, map[string][]byte, []agentapi.ValidationError) {
+) (v1alpha1.ProposedAction, map[string][]byte, *v1alpha1.ProposalBase, *v1alpha1.RenderedChange, []agentapi.ValidationError) {
 	if action.Action != v1alpha1.ActionFilePatch || action.Parameters == nil || action.Parameters.FilePatch == nil {
-		return action, nil, nil
+		return action, nil, nil, nil, nil
 	}
 	if h.Blobs == nil {
-		return action, nil, []agentapi.ValidationError{{
+		return action, nil, nil, nil, []agentapi.ValidationError{{
 			Field: "proposal.kind", Message: "repository reads are not configured",
 		}}
 	}
 	repository, ok := tools.RepositoryForPage(t)
 	if !ok {
-		return action, nil, []agentapi.ValidationError{{
+		return action, nil, nil, nil, []agentapi.ValidationError{{
 			Field: "proposal.kind", Message: "the Page has no Target Repository, so a FilePatch cannot be grounded",
 		}}
 	}
+	head, err := h.Blobs.Head(ctx, repository, repository.Ref)
+	if err != nil || head == "" {
+		return action, nil, nil, nil, []agentapi.ValidationError{{
+			Field: "proposal.base", Message: "the Target Repository's branch could not be read",
+		}}
+	}
+	base := &v1alpha1.ProposalBase{Commit: head, TargetGeneration: t.Generation}
 	files := action.Parameters.FilePatch.DeepCopy()
 	contents := make(map[string][]byte, len(files.Files))
+	var rendered strings.Builder
 	var errs []agentapi.ValidationError
 	for i := range files.Files {
 		file := &files.Files[i]
@@ -349,6 +365,22 @@ func (h *Handler) prepareFilePatch(
 			})
 			continue
 		}
+		diff, err := validation.UnifiedDiff(file.Path, []byte(blob.Content), []byte(file.UpdatedContent))
+		if err != nil {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   fmt.Sprintf("proposal.files[%d].path", i),
+				Message: "the rendered change could not be computed for " + file.Path,
+			})
+			continue
+		}
+		if rendered.Len()+len(diff.Diff) > maxRenderedChangeBytes {
+			errs = append(errs, agentapi.ValidationError{
+				Field:   "proposal.files",
+				Message: "the rendered change is larger than the Page can hold; propose fewer files",
+			})
+			continue
+		}
+		rendered.WriteString(diff.Diff)
 		sum := sha256.Sum256([]byte(file.UpdatedContent))
 		file.BaseBlob = blob.SHA
 		file.ContentDigest = hex.EncodeToString(sum[:])
@@ -356,12 +388,16 @@ func (h *Handler) prepareFilePatch(
 		file.UpdatedContent = ""
 	}
 	if len(errs) > 0 {
-		return action, nil, errs
+		return action, nil, nil, nil, errs
 	}
 	parameters := *action.Parameters
 	parameters.FilePatch = files
 	action.Parameters = &parameters
-	return action, contents, nil
+	change := &v1alpha1.RenderedChange{Patch: rendered.String()}
+	if len(files.Files) == 1 {
+		change.Path = files.Files[0].Path
+	}
+	return action, contents, base, change, nil
 }
 
 // verifyIdentity refuses a report that names a different Page than the one the
