@@ -33,6 +33,11 @@ const (
 	// maxFiles is the number of files a Proposal may change.
 	maxFiles = 5
 
+	// The GitHub request field names that the writer sends in more than one place.
+	fieldHead  = "head"
+	fieldBody  = "body"
+	fieldState = "state"
+
 	requestTimeout = 30 * time.Second
 	maxResponse    = 8 << 20
 )
@@ -204,7 +209,7 @@ func (c *Client) Ensure(ctx context.Context, approved Approved) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
-	pullRequest, created, err := c.ensurePullRequest(ctx, branch, approved, headSHA)
+	pullRequest, created, err := c.ensurePullRequest(ctx, branch, approved)
 	if err != nil {
 		return Result{}, err
 	}
@@ -281,7 +286,7 @@ func (c *Client) ensureCommit(ctx context.Context, branch string, approved Appro
 // ensurePullRequest returns the Pull Request for the branch, opening it when it
 // does not exist.
 func (c *Client) ensurePullRequest(
-	ctx context.Context, branch string, approved Approved, headSHA string,
+	ctx context.Context, branch string, approved Approved,
 ) (pullRequest, bool, error) {
 	found, err := c.findPullRequest(ctx, branch)
 	if err != nil {
@@ -304,9 +309,6 @@ func (c *Client) ensurePullRequest(
 		return *found, false, nil
 	case err != nil:
 		return pullRequest{}, false, fmt.Errorf("open the Pull Request for %s: %w", branch, err)
-	}
-	if opened.Head.SHA != "" {
-		headSHA = opened.Head.SHA
 	}
 	return *opened, true, nil
 }

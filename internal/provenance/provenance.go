@@ -86,7 +86,7 @@ type Repository interface {
 	// truncated.
 	Tree(ctx context.Context, ref string) (paths []string, truncated bool, err error)
 	// File returns one file's content at the reference.
-	File(ctx context.Context, ref, path string) ([]byte, error)
+	File(ctx context.Context, ref, filePath string) ([]byte, error)
 }
 
 // Application is an Argo CD Application as the resolver reads it.
@@ -401,8 +401,8 @@ func (r githubRepository) Tree(ctx context.Context, ref string) ([]string, bool,
 }
 
 // File reads one file at the reference.
-func (r githubRepository) File(ctx context.Context, ref, path string) ([]byte, error) {
-	file, err := r.client.File(ctx, ref, path)
+func (r githubRepository) File(ctx context.Context, ref, filePath string) ([]byte, error) {
+	file, err := r.client.File(ctx, ref, filePath)
 	if err != nil {
 		return nil, err
 	}

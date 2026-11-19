@@ -146,7 +146,7 @@ func requireRefusal(t *testing.T, result validation.Result, fragments ...string)
 	if result.Passed {
 		t.Fatalf("Validation passed, want a refusal: %+v", result)
 	}
-	var joined []string
+	joined := make([]string, 0, len(result.Errors))
 	for _, refusal := range result.Errors {
 		joined = append(joined, refusal.Field+": "+refusal.Message)
 	}
@@ -181,20 +181,28 @@ func TestRefusesWhatThePolicyForbids(t *testing.T) {
 		},
 		{
 			name: "cluster role", path: "apps/checkout/clusterrole.yaml",
-			base:      "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: checkout\nrules: []\n",
-			proposed:  "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: checkout\nrules:\n  - apiGroups: [\"\"]\n    resources: [pods]\n    verbs: [get]\n",
+			base: "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\n" +
+				"metadata:\n  name: checkout\nrules: []\n",
+			proposed: "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\n" +
+				"metadata:\n  name: checkout\nrules:\n  - apiGroups: [\"\"]\n" +
+				"    resources: [pods]\n    verbs: [get]\n",
 			fragments: []string{"kind ClusterRole is always refused"},
 		},
 		{
 			name: "custom resource definition", path: "apps/checkout/crd.yaml",
-			base:      "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\n",
-			proposed:  "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\nmetadata:\n  name: widgets.example.com\nspec: {}\n",
+			base: "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n" +
+				"metadata:\n  name: widgets.example.com\n",
+			proposed: "apiVersion: apiextensions.k8s.io/v1\nkind: CustomResourceDefinition\n" +
+				"metadata:\n  name: widgets.example.com\nspec: {}\n",
 			fragments: []string{"kind CustomResourceDefinition is always refused"},
 		},
 		{
 			name: "webhook configuration", path: "apps/checkout/webhook.yaml",
-			base:      "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nmetadata:\n  name: checkout\nwebhooks: []\n",
-			proposed:  "apiVersion: admissionregistration.k8s.io/v1\nkind: ValidatingWebhookConfiguration\nmetadata:\n  name: checkout\nwebhooks:\n  - name: check.example.com\n",
+			base: "apiVersion: admissionregistration.k8s.io/v1\n" +
+				"kind: ValidatingWebhookConfiguration\nmetadata:\n  name: checkout\nwebhooks: []\n",
+			proposed: "apiVersion: admissionregistration.k8s.io/v1\n" +
+				"kind: ValidatingWebhookConfiguration\nmetadata:\n  name: checkout\n" +
+				"webhooks:\n  - name: check.example.com\n",
 			fragments: []string{"kind ValidatingWebhookConfiguration is always refused"},
 		},
 		{
@@ -213,8 +221,9 @@ func TestRefusesWhatThePolicyForbids(t *testing.T) {
 		},
 		{
 			name: "changed selector", path: manifestPath,
-			base:      deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2),
-			proposed:  strings.Replace(deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2), "app: checkout", "app: checkout-v2", 1),
+			base: deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2),
+			proposed: strings.Replace(
+				deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2), "app: checkout", "app: checkout-v2", 1),
 			fragments: []string{"spec.selector may not change"},
 		},
 		{
@@ -230,8 +239,9 @@ func TestRefusesWhatThePolicyForbids(t *testing.T) {
 		},
 		{
 			name: "service account", path: manifestPath,
-			base:      deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2),
-			proposed:  strings.Replace(deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2), "serviceAccountName: checkout", "serviceAccountName: admin", 1),
+			base: deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2),
+			proposed: strings.Replace(deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2),
+				"serviceAccountName: checkout", "serviceAccountName: admin", 1),
 			fragments: []string{"serviceAccountName may not change"},
 		},
 	}
@@ -252,7 +262,7 @@ func TestRefusesNewFilesAndTooManyFiles(t *testing.T) {
 	requireRefusal(t, validate(t, repo, newFile), "is not a file at the base commit")
 
 	files := map[string]string{}
-	var edits []testFile
+	edits := make([]testFile, 0, 6)
 	for index := range 6 {
 		path := fmt.Sprintf("apps/app%d/deployment.yaml", index)
 		content := deployment(fmt.Sprintf("app%d", index), "ghcr.io/acme/app:1.0.0", 2)
@@ -331,7 +341,8 @@ func TestOpenAPIRejectsAnUnknownContainerField(t *testing.T) {
 	t.Parallel()
 	const manifestPath = "apps/checkout/deployment.yaml"
 	base := deployment("checkout", "ghcr.io/acme/checkout:1.0.0", 2)
-	broken := strings.Replace(base, "          image:", "          resource:\n            limits:\n              memory: 1Gi\n          image:", 1)
+	broken := strings.Replace(base, "          image:",
+		"          resource:\n            limits:\n              memory: 1Gi\n          image:", 1)
 	repo := newRepo(map[string]string{manifestPath: base})
 	requireRefusal(t, validate(t, repo, edit(repo, manifestPath, broken)), "unknown field", "resource")
 

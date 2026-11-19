@@ -367,7 +367,7 @@ func (w *schemaWalker) validateObject(value any, schema map[string]any, path str
 			}
 		default:
 			findings = append(findings, at(fieldPath,
-				fmt.Sprintf("is an unknown field of the schema and would be pruned by the API server")))
+				"is an unknown field of the schema and would be pruned by the API server"))
 		}
 	}
 	if minimum, ok := asInt(schema["minProperties"]); ok && int64(len(object)) < minimum {

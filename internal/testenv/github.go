@@ -28,6 +28,9 @@ const (
 type PullRequestState string
 
 const (
+	// fieldSHA is the GitHub request and answer field that carries a Git object SHA.
+	fieldSHA = "sha"
+
 	// PROpen is an open pull request.
 	PROpen PullRequestState = "open"
 	// PRMerged is a merged pull request.
@@ -262,7 +265,7 @@ func (g *FakeGitHub) readRef(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ref":    g.branchRef(branch),
-		"object": map[string]string{"sha": sha, "type": "commit"},
+		"object": map[string]string{fieldSHA: sha, "type": "commit"},
 	})
 }
 
@@ -287,7 +290,7 @@ func (g *FakeGitHub) createRef(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ref":    request.Ref,
-		"object": map[string]string{"sha": request.SHA, "type": "commit"},
+		"object": map[string]string{fieldSHA: request.SHA, "type": "commit"},
 	})
 }
 
@@ -310,7 +313,7 @@ func (g *FakeGitHub) createBlob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, message(err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"sha": sha})
+	writeJSON(w, http.StatusCreated, map[string]string{fieldSHA: sha})
 }
 
 func (g *FakeGitHub) createTree(w http.ResponseWriter, r *http.Request) {
@@ -349,7 +352,7 @@ func (g *FakeGitHub) createTree(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, message(err.Error()))
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"sha": sha})
+	writeJSON(w, http.StatusCreated, map[string]string{fieldSHA: sha})
 }
 
 // treeEntry is one entry of a Git tree request.
@@ -382,8 +385,8 @@ func (g *FakeGitHub) createCommit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"sha":  sha,
-		"tree": map[string]string{"sha": request.Tree},
+		fieldSHA: sha,
+		"tree":   map[string]string{fieldSHA: request.Tree},
 	})
 }
 
@@ -398,7 +401,7 @@ func (g *FakeGitHub) readCommit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, message("Not Found"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sha": r.PathValue("sha"), "tree": map[string]string{"sha": tree}})
+	writeJSON(w, http.StatusOK, map[string]any{fieldSHA: r.PathValue("sha"), "tree": map[string]string{fieldSHA: tree}})
 }
 
 func (g *FakeGitHub) list(w http.ResponseWriter, r *http.Request) {

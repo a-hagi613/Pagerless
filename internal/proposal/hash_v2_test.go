@@ -12,34 +12,38 @@ import (
 
 // v2Page returns a Page with a v2 FilePatch Proposal and a Resolution.
 func v2Page() *v1alpha1.Page {
-	return &v1alpha1.Page{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "pagerless", Name: "checkout", UID: types.UID("uid-1")},
+	page := &v1alpha1.Page{
 		Spec: v1alpha1.PageSpec{
 			Target: v1alpha1.TargetReference{
 				APIVersion: "apps/v1", Kind: v1alpha1.TargetKindDeployment,
-				Namespace: "shop", Name: "checkout",
+				Namespace: "shop", Name: checkoutName,
 			},
 		},
 		Status: v1alpha1.PageStatus{
 			Diagnosis: "The memory limit is too low.",
 			Repository: &v1alpha1.Resolution{
 				URL: "https://github.com/acme/gitops", Branch: "main",
-				Path: "apps/checkout/deployment.yaml", EditTarget: "apps/checkout/deployment.yaml",
+				Path: deploymentPath, EditTarget: deploymentPath,
 				EditTargetKind: v1alpha1.EditTargetBaseManifest,
 				Source:         v1alpha1.ResolutionSourceArgoCDTrackingID, Confidence: v1alpha1.ConfidenceExact,
 				ResolvedAt: &metav1.Time{},
-				Attempts:   []v1alpha1.ResolutionAttempt{{Source: v1alpha1.ResolutionSourceHint, Outcome: v1alpha1.ResolutionAttemptSkipped}},
+				Attempts: []v1alpha1.ResolutionAttempt{{
+					Source:  v1alpha1.ResolutionSourceHint,
+					Outcome: v1alpha1.ResolutionAttemptSkipped,
+				}},
 			},
 			Proposal: &v1alpha1.Proposal{
 				Kind: v1alpha1.ProposalKindFilePatch,
 				Base: &v1alpha1.ProposalBase{Commit: "base-1", TargetGeneration: 7},
 				Files: []v1alpha1.FileEdit{{
-					Path: "apps/checkout/deployment.yaml", BaseBlob: "blob-1",
+					Path: deploymentPath, BaseBlob: "blob-1",
 					ContentDigest: "digest-1", Rationale: "the Deployment's manifest",
 				}},
 			},
 		},
 	}
+	page.Namespace, page.Name, page.UID = pageNamespace, checkoutName, types.UID("uid-1")
+	return page
 }
 
 // hashOf returns the Page's v2 hash.
@@ -67,9 +71,11 @@ func TestProposalHashChangesWithItsInputs(t *testing.T) {
 	t.Parallel()
 	base := hashOf(t, v2Page())
 	cases := map[string]func(*v1alpha1.Page){
-		"base commit":       func(p *v1alpha1.Page) { p.Status.Proposal.Base.Commit = "base-2" },
-		"file content":      func(p *v1alpha1.Page) { p.Status.Proposal.Files[0].ContentDigest = "digest-2" },
-		"resolution":        func(p *v1alpha1.Page) { p.Status.Repository.EditTarget = "apps/checkout/overlays/prod/patch.yaml" },
+		"base commit":  func(p *v1alpha1.Page) { p.Status.Proposal.Base.Commit = "base-2" },
+		"file content": func(p *v1alpha1.Page) { p.Status.Proposal.Files[0].ContentDigest = "digest-2" },
+		"resolution": func(p *v1alpha1.Page) {
+			p.Status.Repository.EditTarget = patchPath
+		},
 		"target generation": func(p *v1alpha1.Page) { p.Status.Proposal.Base.TargetGeneration = 8 },
 		"diagnosis":         func(p *v1alpha1.Page) { p.Status.Diagnosis = "Something else." },
 		"proposal kind":     func(p *v1alpha1.Page) { p.Status.Proposal.Kind = v1alpha1.ProposalKindDiagnosisOnly },

@@ -49,15 +49,6 @@ type document struct {
 	} `yaml:"metadata"`
 }
 
-// group returns the API group of the document's apiVersion.
-func (d document) group() string {
-	group, _, _ := strings.Cut(d.APIVersion, "/")
-	if !strings.Contains(d.APIVersion, "/") {
-		return ""
-	}
-	return group
-}
-
 // defines reports whether the document is the failing object.
 func (d document) defines(ref v1alpha1.TargetReference) bool {
 	if d.Kind != string(ref.Kind) || d.Metadata.Name != ref.Name {
@@ -143,7 +134,7 @@ func overlayDirs(manifestPath string) []string {
 }
 
 // kustomizationAt reads the kustomization in a directory, if one exists.
-func (l *ladder) kustomizationAt(ctx context.Context, dir string) (*kustomizationFile, bool, error) {
+func (l *ladder) kustomizationAt(ctx context.Context, dir string) (*kustomizationFile, bool) {
 	for _, name := range []string{"kustomization.yaml", "kustomization.yml", "Kustomization"} {
 		content, err := l.read(ctx, path.Join(dir, name))
 		if err != nil {
@@ -151,11 +142,11 @@ func (l *ladder) kustomizationAt(ctx context.Context, dir string) (*kustomizatio
 		}
 		var file kustomizationFile
 		if err := yaml.Unmarshal(content, &file); err != nil {
-			return nil, false, nil
+			return nil, false
 		}
-		return &file, true, nil
+		return &file, true
 	}
-	return nil, false, nil
+	return nil, false
 }
 
 // patchTargetMatches reports whether a patch target selects the failing object.
@@ -212,8 +203,8 @@ func (l *ladder) fetch(ctx context.Context, p string) []byte {
 func (l *ladder) overlayCandidates(ctx context.Context, manifestPath string) []candidate {
 	var candidates []candidate
 	for _, dir := range overlayDirs(manifestPath) {
-		file, ok, err := l.kustomizationAt(ctx, dir)
-		if err != nil || !ok {
+		file, ok := l.kustomizationAt(ctx, dir)
+		if !ok {
 			continue
 		}
 		for _, entry := range append(slices.Clone(file.Patches), strategicPatches(file)...) {
@@ -221,7 +212,9 @@ func (l *ladder) overlayCandidates(ctx context.Context, manifestPath string) []c
 			if entry.Path == "" || patchPath == "" || patchPath == manifestPath {
 				continue
 			}
-			if patchTargetMatches(entry.Target, l.object.Reference) || patchDefines(l.fetch(ctx, patchPath), l.object.Reference) {
+			matchesTarget := patchTargetMatches(entry.Target, l.object.Reference)
+			matchesContent := patchDefines(l.fetch(ctx, patchPath), l.object.Reference)
+			if matchesTarget || matchesContent {
 				candidates = append(candidates, candidate{path: manifestPath, edit: editTarget{
 					path: patchPath, kind: v1alpha1.EditTargetOverlayPatch,
 				}})
@@ -265,8 +258,8 @@ func (l *ladder) kustomizeManifests(ctx context.Context, dir string, depth int, 
 		return nil
 	}
 	seen[dir] = struct{}{}
-	file, ok, err := l.kustomizationAt(ctx, dir)
-	if err != nil || !ok {
+	file, ok := l.kustomizationAt(ctx, dir)
+	if !ok {
 		return nil
 	}
 	var manifestsFound []string
@@ -333,8 +326,8 @@ func (l *ladder) kustomizationPatchEdits(
 		return nil
 	}
 	seen[dir] = struct{}{}
-	file, ok, err := l.kustomizationAt(ctx, dir)
-	if err != nil || !ok {
+	file, ok := l.kustomizationAt(ctx, dir)
+	if !ok {
 		return nil
 	}
 	var edits []editTarget

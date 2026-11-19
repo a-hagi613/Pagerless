@@ -23,7 +23,7 @@ func unifiedDiff(path string, base, proposed []byte) (FileDiff, error) {
 		return FileDiff{}, err
 	}
 	diff := FileDiff{Path: path, Diff: text}
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		switch {
 		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
 		case strings.HasPrefix(line, "+"):

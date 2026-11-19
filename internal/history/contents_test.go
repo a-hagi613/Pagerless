@@ -56,7 +56,8 @@ func TestProposalContentsAreAppendOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	ctx := context.Background()
-	if err := store.SaveProposalContents(ctx, contentHash, map[string][]byte{"a.yaml": []byte("a")}, startTime); err != nil {
+	err = store.SaveProposalContents(ctx, contentHash, map[string][]byte{"a.yaml": []byte("a")}, startTime)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.ExecContext(ctx,

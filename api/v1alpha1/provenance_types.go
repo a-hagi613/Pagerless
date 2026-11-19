@@ -16,7 +16,11 @@ limitations under the License.
 
 package v1alpha1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"slices"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 // Confidence ranks how well a Resolution is grounded in the Target Repository.
 // It decides whether an unattended draft pull request may be opened and never
@@ -253,10 +257,5 @@ func (s PageSpec) ExcludesProposalHash(hash string) bool {
 	if hash == "" {
 		return false
 	}
-	for _, excluded := range s.ExcludedProposalHashes {
-		if excluded == hash {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.ExcludedProposalHashes, hash)
 }

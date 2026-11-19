@@ -32,9 +32,10 @@ func (l *ladder) rungHint(ctx context.Context) bool {
 		l.fail(source, "the source-path hint names a file that does not define the Target")
 		return false
 	}
-	candidates := []candidate{{path: hint, edit: editTarget{
+	candidates := make([]candidate, 0, 8)
+	candidates = append(candidates, candidate{path: hint, edit: editTarget{
 		path: hint, kind: v1alpha1.EditTargetBaseManifest,
-	}}}
+	}})
 	candidates = append(candidates, l.overlayCandidates(ctx, hint)...)
 	if editHint != "" {
 		if l.fetch(ctx, editHint) == nil {
@@ -114,7 +115,8 @@ func (l *ladder) rungInstance(ctx context.Context) bool {
 		return false
 	}
 	if len(found) == 0 {
-		l.fail(source, fmt.Sprintf("the Application %s does not agree with the repository and no file defines the Target", instance))
+		l.fail(source, fmt.Sprintf(
+			"the Application %s does not agree with the repository and no file defines the Target", instance))
 		return false
 	}
 	candidates := l.manifestCandidates(ctx, found)
@@ -163,7 +165,8 @@ func (l *ladder) rungFluxKustomization(ctx context.Context) bool {
 		return false
 	}
 	if len(candidates) == 0 {
-		l.fail(source, fmt.Sprintf("the Flux Kustomization path %s holds no file that defines the Target", kustomization.Path))
+		l.fail(source, fmt.Sprintf(
+			"the Flux Kustomization path %s holds no file that defines the Target", kustomization.Path))
 		return false
 	}
 	return l.commit(source, v1alpha1.ConfidenceConfigured, "", candidates)
@@ -208,7 +211,9 @@ func (l *ladder) rungHelmMetadata(ctx context.Context) bool {
 			return true
 		}
 	}
-	if app, err := l.resolver.cfg.Objects.Application(ctx, l.resolver.cfg.ApplicationsNamespace, name); err == nil && app != nil {
+	if app, err := l.resolver.cfg.Objects.Application(
+		ctx, l.resolver.cfg.ApplicationsNamespace, name,
+	); err == nil && app != nil {
 		if candidates, _ := l.applicationCandidates(ctx, app); len(candidates) > 0 {
 			return l.commit(source, v1alpha1.ConfidenceConfigured, "", candidates)
 		}
