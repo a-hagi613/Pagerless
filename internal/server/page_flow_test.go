@@ -35,7 +35,7 @@ func noActionReport() agentapi.Report {
 	return agentapi.Report{
 		Diagnosis: "The checkout container exceeds its memory limit and is OOMKilled.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal:  v1alpha1.ProposedAction{Action: v1alpha1.ActionNoAction},
+		Proposal:  agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{Action: v1alpha1.ActionNoAction}},
 	}
 }
 
@@ -53,8 +53,8 @@ func TestNewPageStartsAnAgentJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := job.Spec.ActiveDeadlineSeconds; got == nil || *got != 300 {
-		t.Errorf("activeDeadlineSeconds = %v, want 300", got)
+	if got := job.Spec.ActiveDeadlineSeconds; got == nil || *got != 420 {
+		t.Errorf("activeDeadlineSeconds = %v, want the 420-second deadline", got)
 	}
 	if got := job.Spec.Template.Spec.ServiceAccountName; got != server.DefaultAgentServiceAccount {
 		t.Errorf("serviceAccountName = %q, want pagerless-agent", got)
@@ -73,20 +73,17 @@ func TestNewPageStartsAnAgentJob(t *testing.T) {
 			}
 		}
 	}
-	if len(audiences) != 2 || audiences[0] != agentapi.Audience ||
-		audiences[1] != "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless" {
-		t.Errorf("projected token audiences = %v, want the report and Keycloak realm audiences", audiences)
+	if len(audiences) != 1 || audiences[0] != agentapi.AudienceForPage(string(created.UID)) {
+		t.Errorf("projected token audiences = %v, want only the Page's report audience", audiences)
 	}
 	if owner := job.OwnerReferences; len(owner) != 1 || owner[0].Kind != "Page" || owner[0].Name != created.Name {
 		t.Errorf("Job owner references = %+v, want the Page", owner)
 	}
 	env0 := job.Spec.Template.Spec.Containers[0].Env
 	want := map[string]string{
-		agentapi.EnvPage:            created.Name,
-		agentapi.EnvTargetKind:      "Deployment",
-		agentapi.EnvTargetNamespace: "sandbox",
-		agentapi.EnvTargetName:      checkout,
-		agentapi.EnvServerURL:       env.ReportURL,
+		agentapi.EnvPage:      created.Name,
+		agentapi.EnvPageUID:   string(created.UID),
+		agentapi.EnvServerURL: env.ReportURL,
 	}
 	for _, v := range env0 {
 		delete(want, v.Name)

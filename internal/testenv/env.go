@@ -288,17 +288,17 @@ func Start(t testing.TB, opts ...Option) *Env {
 		validators = o.validators(env)
 	}
 	agentRuntime := o.agentRuntime
-	if agentRuntime.GatewayURL == "" {
-		agentRuntime.GatewayURL = "http://mcp-gateway.agentgateway-system.svc.cluster.local"
+	if agentRuntime.ModelBaseURL == "" {
+		agentRuntime.ModelBaseURL = "https://model.test/v1"
 	}
-	if agentRuntime.KeycloakIssuer == "" {
-		agentRuntime.KeycloakIssuer = "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless"
+	if agentRuntime.ModelName == "" {
+		agentRuntime.ModelName = "test-model"
 	}
-	if agentRuntime.KeycloakTokenURL == "" {
-		agentRuntime.KeycloakTokenURL = agentRuntime.KeycloakIssuer + "/protocol/openid-connect/token"
+	if agentRuntime.ModelKeySecret == "" {
+		agentRuntime.ModelKeySecret = controller.DefaultCredentialsSecret
 	}
-	if agentRuntime.KeycloakClientID == "" {
-		agentRuntime.KeycloakClientID = controller.DefaultKeycloakClientID
+	if agentRuntime.ModelKeyKey == "" {
+		agentRuntime.ModelKeyKey = controller.ModelAPIKeyName
 	}
 	mgr, err := server.New(serverConfig, server.Config{
 		Namespace:                Namespace,

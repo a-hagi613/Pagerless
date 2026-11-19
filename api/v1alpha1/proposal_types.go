@@ -24,10 +24,12 @@ import (
 // Action is one kind of remediation that a Proposal can recommend. Every
 // remaining Action is delivered as a pull request: Pagerless never mutates the
 // cluster.
-// +kubebuilder:validation:Enum=Scale;PatchResources;Rollback;NoAction
+// +kubebuilder:validation:Enum=FilePatch;Scale;PatchResources;Rollback;NoAction
 type Action string
 
 const (
+	// ActionFilePatch changes whole files in the Target Repository through a pull request.
+	ActionFilePatch Action = "FilePatch"
 	// ActionScale changes the Target's replica count through a pull request.
 	ActionScale Action = "Scale"
 	// ActionPatchResources changes a container's requests and limits through a pull request.
@@ -42,7 +44,7 @@ const (
 // a pull request against the Target Repository. NoAction changes nothing.
 func (a Action) DeliveredByPullRequest() bool {
 	switch a {
-	case ActionScale, ActionPatchResources, ActionRollback:
+	case ActionFilePatch, ActionScale, ActionPatchResources, ActionRollback:
 		return true
 	default:
 		return false
@@ -85,10 +87,31 @@ type RollbackParameters struct {
 	Commit string `json:"commit"`
 }
 
+// FilePatchParameters are the parameters of the FilePatch Action: the files the
+// Proposal changes, and how certain the model is that they are the right ones.
+type FilePatchParameters struct {
+	// Files are the whole-file changes, in the order the model proposed them.
+	// +required
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=5
+	// +listType=atomic
+	Files []FileEdit `json:"files"`
+
+	// Confidence records how the edit target was chosen. It is empty when the
+	// model did not state one.
+	// +optional
+	// +kubebuilder:validation:Enum=exact;configured;identity;name-only
+	Confidence string `json:"confidence,omitempty"`
+}
+
 // ActionParameters holds the typed parameters of an Action. At most one field is set, and it must match the Action.
 // NoAction has no parameters.
 // +kubebuilder:validation:MaxProperties=1
 type ActionParameters struct {
+	// FilePatch holds the parameters of the FilePatch Action.
+	// +optional
+	FilePatch *FilePatchParameters `json:"filePatch,omitempty"`
+
 	// Scale holds the parameters of the Scale Action.
 	// +optional
 	Scale *ScaleParameters `json:"scale,omitempty"`
@@ -103,6 +126,7 @@ type ActionParameters struct {
 }
 
 // ProposedAction is the part of a Proposal that the agent supplies: one Action with its parameters.
+// +kubebuilder:validation:XValidation:rule="self.action == 'FilePatch' ? (has(self.parameters) && has(self.parameters.filePatch)) : (!has(self.parameters) || !has(self.parameters.filePatch))",message="parameters.filePatch must be set exactly when the action is FilePatch"
 // +kubebuilder:validation:XValidation:rule="self.action == 'Scale' ? (has(self.parameters) && has(self.parameters.scale)) : (!has(self.parameters) || !has(self.parameters.scale))",message="parameters.scale must be set exactly when the action is Scale"
 // +kubebuilder:validation:XValidation:rule="self.action == 'PatchResources' ? (has(self.parameters) && has(self.parameters.patchResources)) : (!has(self.parameters) || !has(self.parameters.patchResources))",message="parameters.patchResources must be set exactly when the action is PatchResources"
 // +kubebuilder:validation:XValidation:rule="self.action == 'Rollback' ? (has(self.parameters) && has(self.parameters.rollback)) : (!has(self.parameters) || !has(self.parameters.rollback))",message="parameters.rollback must be set exactly when the action is Rollback"
@@ -114,6 +138,17 @@ type ProposedAction struct {
 	// Parameters are the typed parameters of the Action.
 	// +optional
 	Parameters *ActionParameters `json:"parameters,omitempty"`
+
+	// Reason explains a DiagnosisOnly conclusion. It is set only alongside
+	// ActionNoAction, and it is empty for a report that supplied no reason.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1000
+	Reason string `json:"reason,omitempty"`
+
+	// Recommendation is the action a human should take for a DiagnosisOnly conclusion.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2000
+	Recommendation string `json:"recommendation,omitempty"`
 }
 
 // RenderedChange is the exact change that Validation rendered, which the approver reviews and the publisher
@@ -174,6 +209,12 @@ type FileEdit struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=500
 	Path string `json:"path"`
+
+	// UpdatedContent is the complete new content the model supplied. The Page
+	// stores only its digest; the server holds the content under the Proposal
+	// hash so that status stays small.
+	// +optional
+	UpdatedContent string `json:"updatedContent,omitempty"`
 
 	// BaseBlob is the Git blob SHA of the file at the recorded base commit.
 	// +required

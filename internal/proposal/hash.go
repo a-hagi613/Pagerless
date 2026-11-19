@@ -32,6 +32,7 @@ type hashInput struct {
 	Scale    *int32                   `json:"scale,omitempty"`
 	Patch    *patchInput              `json:"patchResources,omitempty"`
 	Rollback *string                  `json:"rollback,omitempty"`
+	Files    []fileInput              `json:"files,omitempty"`
 	Change   *v1alpha1.RenderedChange `json:"renderedChange,omitempty"`
 	Base     *v1alpha1.ProposalBase   `json:"base,omitempty"`
 }
@@ -40,6 +41,31 @@ type pageIdentity struct {
 	Namespace string    `json:"namespace"`
 	Name      string    `json:"name"`
 	UID       types.UID `json:"uid"`
+}
+
+// fileInput covers one whole-file edit. The content is hashed rather than
+// embedded, so a hash is a fixed-size identity for any Proposal size.
+type fileInput struct {
+	Path       string `json:"path"`
+	Digest     string `json:"digest"`
+	Rationale  string `json:"rationale"`
+	Confidence string `json:"confidence,omitempty"`
+}
+
+// fileInputs encodes a FilePatch's files in the order the model proposed them.
+func fileInputs(parameters *v1alpha1.FilePatchParameters) []fileInput {
+	if parameters == nil {
+		return nil
+	}
+	inputs := make([]fileInput, 0, len(parameters.Files))
+	for _, file := range parameters.Files {
+		sum := sha256.Sum256([]byte(file.UpdatedContent))
+		inputs = append(inputs, fileInput{
+			Path: file.Path, Digest: hex.EncodeToString(sum[:]), Rationale: file.Rationale,
+			Confidence: parameters.Confidence,
+		})
+	}
+	return inputs
 }
 
 type patchInput struct {
@@ -101,6 +127,9 @@ func Hash(
 		if p.Rollback != nil {
 			commit := p.Rollback.Commit
 			input.Rollback = &commit
+		}
+		if p.FilePatch != nil {
+			input.Files = fileInputs(p.FilePatch)
 		}
 	}
 	encoded, err := json.Marshal(input)

@@ -184,12 +184,12 @@ func patchReport(container string, requests, limits corev1.ResourceList) agentap
 	return agentapi.Report{
 		Diagnosis: "The container is OOMKilled because its memory limit is too low.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal: v1alpha1.ProposedAction{
+		Proposal: agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{
 			Action: v1alpha1.ActionPatchResources,
 			Parameters: &v1alpha1.ActionParameters{PatchResources: &v1alpha1.PatchResourcesParameters{
 				Container: container, Requests: requests, Limits: limits,
 			}},
-		},
+		}},
 	}
 }
 
@@ -215,10 +215,10 @@ func rollbackReport(commit string) agentapi.Report {
 	return agentapi.Report{
 		Diagnosis: "The last change to the file the Target reads broke it, so that change should be reverted.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal: v1alpha1.ProposedAction{
+		Proposal: agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionRollback,
 			Parameters: &v1alpha1.ActionParameters{Rollback: &v1alpha1.RollbackParameters{Commit: commit}},
-		},
+		}},
 	}
 }
 

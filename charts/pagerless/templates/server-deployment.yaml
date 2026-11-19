@@ -99,6 +99,25 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            # The model endpoint's non-secret half, and the Secret the agent Job
+            # mounts for its model key. The API key value is never read by the
+            # server: the Job mounts the Secret key directly.
+            - name: AI_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pagerless.credentialsSecret" . }}
+                  key: AI_BASE_URL
+                  optional: true
+            - name: AI_MODEL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pagerless.credentialsSecret" . }}
+                  key: AI_MODEL
+                  optional: true
+            - name: PAGERLESS_CREDENTIALS_SECRET
+              value: {{ include "pagerless.credentialsSecret" . }}
+            - name: PAGERLESS_MODEL_API_KEY_KEY
+              value: AI_API_KEY
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

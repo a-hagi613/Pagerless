@@ -19,7 +19,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/github"
@@ -137,7 +136,7 @@ func run() error {
 			"branch of the Target Repository that pull requests target")
 		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
 			"optional file that holds the read-only token for the HTTPS Target Repository")
-		patchable = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
+		patchable = flag.String("patch-namespaces", os.Getenv("PAGERLESS_ALLOWED_NAMESPACES"),
 			"comma-separated namespaces whose Targets PatchResources and Rollback may change")
 		patchMinCPU = flag.String("patch-min-cpu", defaultCPU.Min.String(),
 			"minimum CPU request or limit in PatchResources")
@@ -402,25 +401,20 @@ func parseScaleBounds(minimum, maximum int) (scale.Bounds, error) {
 	return scale.Bounds{Min: int32(minimum), Max: int32(maximum)}, nil
 }
 
-// agentRuntimeFromEnvironment copies the non-secret configuration supplied by the bootstrap.
-// Inference credentials are referenced directly by agent Jobs, not read by the server.
+// agentRuntimeFromEnvironment copies the non-secret configuration supplied by the
+// bootstrap or the chart. The model API key never reaches the server as a value:
+// agent Jobs mount the credentials Secret's key directly.
 func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
 	return controller.AgentRuntimeConfig{
-		Provider:               os.Getenv(agentapi.EnvModelProvider),
-		GatewayURL:             os.Getenv(agentapi.EnvMCPGatewayURL),
-		KeycloakIssuer:         os.Getenv(agentapi.EnvKeycloakIssuer),
-		KeycloakTokenURL:       os.Getenv(agentapi.EnvKeycloakTokenURL),
-		KeycloakClientID:       os.Getenv(agentapi.EnvKeycloakClientID),
-		ReplayFile:             os.Getenv(agentapi.EnvReplayFile),
-		RecordingFile:          os.Getenv(agentapi.EnvRecordingFile),
-		RecordingPVC:           os.Getenv("PAGERLESS_RECORDING_PVC"),
-		NarrativeReplayFile:    os.Getenv(agentapi.EnvNarrativeReplayFile),
-		NarrativeRecordingFile: os.Getenv(controller.NarrativeRecordingFileEnv),
-		SandboxOwner:           os.Getenv(agentapi.EnvSandboxOwner),
-		SandboxRepo:            os.Getenv(agentapi.EnvSandboxRepo),
-		ArgoCDApplication:      os.Getenv(agentapi.EnvArgoCDApplication),
-		AllowedNamespaces:      os.Getenv(agentapi.EnvAllowedNamespaces),
-		AWSRegion:              os.Getenv("AWS_REGION"),
+		ModelBaseURL:               os.Getenv("AI_BASE_URL"),
+		ModelName:                  os.Getenv("AI_MODEL"),
+		ModelKeySecret:             os.Getenv("PAGERLESS_CREDENTIALS_SECRET"),
+		ModelKeyKey:                os.Getenv("PAGERLESS_MODEL_API_KEY_KEY"),
+		ModelHeaders:               os.Getenv("PAGERLESS_MODEL_HEADERS"),
+		ModelStructuredOutput:      os.Getenv("PAGERLESS_MODEL_STRUCTURED_OUTPUT"),
+		ModelMaxTokensField:        os.Getenv("PAGERLESS_MODEL_MAX_TOKENS_FIELD"),
+		ModelSupportsTemperature:   os.Getenv("PAGERLESS_MODEL_SUPPORTS_TEMPERATURE"),
+		AllowInsecureModelEndpoint: os.Getenv("PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT") == "1",
 	}
 }
 

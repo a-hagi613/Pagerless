@@ -65,9 +65,10 @@ func NewPipeline(clk clock.PassiveClock, validators map[v1alpha1.Action]ActionVa
 }
 
 // DefaultValidators returns the validators that this version of
-// pagerless-server accepts: NoAction only.
+// pagerless-server accepts: FilePatch and NoAction.
 func DefaultValidators() map[v1alpha1.Action]ActionValidator {
 	return map[v1alpha1.Action]ActionValidator{
+		v1alpha1.ActionFilePatch: filePatchValidator(),
 		v1alpha1.ActionNoAction: ActionValidatorFunc(func(context.Context, Request) (Outcome, error) {
 			return Outcome{}, nil
 		}),

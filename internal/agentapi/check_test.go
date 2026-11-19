@@ -17,10 +17,10 @@ func rollbackReport(commit string) Report {
 			Source:  "github: list recent Sandbox commits",
 			Summary: "the newest commit changes the checkout image to a tag that does not exist",
 		}},
-		Proposal: v1alpha1.ProposedAction{
+		Proposal: ReportProposal{ProposedAction: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionRollback,
 			Parameters: &v1alpha1.ActionParameters{Rollback: &v1alpha1.RollbackParameters{Commit: commit}},
-		},
+		}},
 	}
 }
 
@@ -69,7 +69,7 @@ func TestReportRequiresExactlyTheParametersOfItsAction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			report := rollbackReport("3f2a9c1")
-			report.Proposal = tc.proposal
+			report.Proposal = ReportProposal{ProposedAction: tc.proposal}
 			errs := report.Check()
 			for _, e := range errs {
 				if e.Field == tc.wantField {

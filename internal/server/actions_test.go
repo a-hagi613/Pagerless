@@ -26,10 +26,10 @@ func scaleReport(replicas int32) agentapi.Report {
 	return agentapi.Report{
 		Diagnosis: "The Target is at its capacity, so it needs more replicas.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal: v1alpha1.ProposedAction{
+		Proposal: agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionScale,
 			Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: replicas}},
-		},
+		}},
 	}
 }
 

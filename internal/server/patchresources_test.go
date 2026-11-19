@@ -273,10 +273,10 @@ func TestEveryRefusedProposalIsRecordedOnThePage(t *testing.T) {
 	second, err := agent.API.PostReport(t.Context(), agentapi.Report{
 		Diagnosis: "A replica count of zero would stop the traffic.",
 		Findings:  []v1alpha1.Finding{logFinding},
-		Proposal: v1alpha1.ProposedAction{
+		Proposal: agentapi.ReportProposal{ProposedAction: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionScale,
 			Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 0}},
-		},
+		}},
 	})
 	if err != nil || second.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("second report: %+v, %v, want 422", second, err)
