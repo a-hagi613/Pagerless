@@ -267,11 +267,16 @@ jobs:
           kubectl --namespace pagerless rollout status deployment/pagerless-server --timeout=300s
           deployments="$(kubectl --namespace pagerless get deployments --no-headers | wc -l)"
           [ "$deployments" = "1" ] || { echo "expected one Deployment, found $deployments"; exit 1; }
+          names="$(kubectl --namespace pagerless get deployments --output name)"
+          [ "$names" = "deployment.apps/pagerless-server" ] ||
+            { echo "expected deployment.apps/pagerless-server, found $names"; exit 1; }
           statefulsets="$(kubectl --namespace pagerless get statefulsets --no-headers 2>/dev/null | wc -l)"
           [ "$statefulsets" = "0" ] || { echo "the chart rendered $statefulsets StatefulSets"; exit 1; }
-          helm list --namespace pagerless --output json |
-            grep --quiet --extended-regexp "\"version\": *\"${VERSION}\"" ||
+          listing="$(helm list --namespace pagerless --output json)"
+          grep --quiet --extended-regexp "\"version\": *\"${VERSION}\"" <<<"$listing" ||
             { echo "the installed chart version is not ${VERSION}"; exit 1; }
+          grep --quiet --extended-regexp "\"app_version\": *\"${VERSION}\"" <<<"$listing" ||
+            { echo "the installed chart appVersion is not ${VERSION}"; exit 1; }
       - name: Download the published plugin manifest and formula
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

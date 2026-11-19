@@ -140,5 +140,5 @@ that Secret.
 
 ## Values
 
-[`charts/pagerless/README.md`](../charts/pagerless/README.md) documents every
-value, the rendered object inventory, and the read-only grant.
+[`charts/pagerless/README.md`](../charts/pagerless/README.md) documents the
+values, the rendered object inventory, and the read-only grant.
