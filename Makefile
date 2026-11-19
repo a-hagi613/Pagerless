@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
+.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
 
 
 help: ## List the available targets.
@@ -31,11 +31,14 @@ CLI_BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 build-cli: ## Build the kubectl-page plugin into bin/.
 	go build -trimpath -ldflags "-X github.com/a-hagi613/pagerless/internal/cli.Version=$(CLI_VERSION) -X github.com/a-hagi613/pagerless/internal/cli.Commit=$(CLI_COMMIT) -X github.com/a-hagi613/pagerless/internal/cli.BuildDate=$(CLI_BUILD_DATE)" -o bin/kubectl-page ./cmd/kubectl-page
 
+brand-assets: ## Regenerate the brand assets from docs/assets/pagerless-mascot-source.png.
+	bash hack/brand-assets.sh
+
 dashboard-build: ## Build the dashboard into dashboard/dist for the Go embed.
 	cd dashboard && npm ci && npm run build
 
-dashboard-check: ## Typecheck and lint the dashboard.
-	cd dashboard && npm ci && npm run typecheck && npm run lint
+dashboard-check: ## Typecheck, lint, and unit-test the dashboard.
+	cd dashboard && npm ci && npm run typecheck && npm run lint && npm run test
 
 build-images: ## Build the server and agent container images locally.
 	docker build --file Dockerfile.pagerless-server --build-arg "VCS_REF=$(PAGERLESS_BUILD_REVISION)" --tag $(PAGERLESS_SERVER_IMAGE) .

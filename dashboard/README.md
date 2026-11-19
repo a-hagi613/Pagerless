@@ -98,7 +98,25 @@ real `pagerless-server` on envtest, including its bootstrap-token sign-in. `npm 
 
 ## Brand assets
 
-`public/pagerless-mascot.png` and `public/favicon.png` are the regenerated transparent marks;
-`docs/assets/pagerless-mascot.png` and `docs/assets/pagerless-icon.png` are the documentation copies. The
-40 px mark, the `Pagerless` wordmark, the `>_` chip, and the `cluster pages` subtitle are one `<Link>` home
-with an accessible name that also clears every active filter.
+`public/pagerless-mascot.png` and `public/favicon.png` are the transparent marks the Portal serves;
+`docs/assets/pagerless-mascot.png` and `docs/assets/pagerless-icon.png` are the documentation copies.
+`make brand-assets` regenerates all four from one source with `hack/brand-assets.sh`:
+
+- `docs/assets/pagerless-mascot-source.png` when it exists, otherwise the committed
+  `docs/assets/pagerless-mascot.png`.
+- `docs/assets/pagerless-mascot.png`: 512×512, transparent, trimmed to the artwork with a 4% margin.
+- `docs/assets/pagerless-icon.png`: 256×256, the mark centred on the `#0F172A` rounded tile.
+- `dashboard/public/pagerless-mascot.png`: 256×256, the Portal's copy.
+- `dashboard/public/favicon.png`: 64×64, with a larger mark than the tile so it stays legible at 16 px.
+
+The script prefers ImageMagick (`magick`, then `convert`) and falls back to Python Pillow, failing with an
+install hint when neither is present. Its output is deterministic: no timestamps or metadata, so running
+it twice leaves the tree unchanged. To adopt an owner-supplied render, commit it as
+`docs/assets/pagerless-mascot-source.png`, downscaled to at most 1024 px on its long edge, then run
+`make brand-assets` and commit the four derivatives.
+
+`src/lib/assets.test.ts` asserts that every `/…png` the Portal references exists under `public/`, is a
+non-empty RGBA PNG, and has the expected dimensions.
+
+The 40 px mark, the `Pagerless` wordmark, the `>_` chip, and the `cluster pages` subtitle are one `<Link>`
+home with an accessible name that also clears every active filter.
