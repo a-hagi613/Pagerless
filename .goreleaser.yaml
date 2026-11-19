@@ -122,6 +122,28 @@ release:
     name: pagerless
   draft: false
   prerelease: auto
+  # The four facts an operator needs before installing: what a single install
+  # contains, how to supply credentials, what the cluster identity may do, and
+  # how a change reaches a cluster. The changelog below them is generated; this
+  # is not.
+  header: |
+    Pagerless {{ .Version }} — a standalone, read-only Kubernetes remediation
+    operator.
+
+    - **Standalone install.** One Helm chart, the `pagerless-server` and
+      `pagerless-agent` images, and the `kubectl page` plugin at one version.
+      Pagerless needs no database, identity provider, message broker, admission
+      webhook, gateway, or MCP server.
+    - **Three onboarding paths.** Fill the credentials Secret by hand, with
+      `kubectl page config set`, or from a secret manager. `docs/onboarding.md`
+      documents all three.
+    - **A read-only boundary.** The cluster identity reads workloads, Events,
+      logs, and the OpenAPI schema and never writes a workload; the agent Job
+      holds no cluster RBAC at all.
+    - **A pull request is the only way Pagerless changes a cluster.** A human
+      approves one Proposal hash, the isolated writer opens one pull request, and
+      the repository's own CI decides the merge. Pagerless never merges, patches,
+      or execs.
   footer: |
     The release also publishes the chart at
     oci://ghcr.io/a-hagi613/charts/pagerless and the images at
