@@ -4,6 +4,7 @@ description: Standalone, read-only Kubernetes remediation operator that proposes
 type: application
 version: 2.0.0
 appVersion: "2.0.0"
+kubeVersion: ">=1.30.0-0"
 icon: https://raw.githubusercontent.com/a-hagi613/pagerless/main/docs/assets/pagerless-icon.png
 home: https://github.com/a-hagi613/pagerless
 sources:
