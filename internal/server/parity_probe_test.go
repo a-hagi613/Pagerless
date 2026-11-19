@@ -26,13 +26,11 @@ func TestAPortalDecisionAppliesToAnExternallyProposedPage(t *testing.T) {
 	latest := env.Get(t, created.Name)
 	latest.Status.Phase = v1alpha1.PhaseProposed
 	latest.Status.Proposal = &v1alpha1.Proposal{
-		ProposedAction: v1alpha1.ProposedAction{
-			Action:     v1alpha1.ActionScale,
-			Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 2}},
-		},
-		Hash:      hash,
-		Attempt:   1,
-		ExpiresAt: metav1.NewTime(time.Now().Add(time.Hour)),
+		Action:     v1alpha1.ActionScale,
+		Parameters: &v1alpha1.ActionParameters{Scale: &v1alpha1.ScaleParameters{Replicas: 2}},
+		Hash:       hash,
+		Attempt:    1,
+		ExpiresAt:  metav1.NewTime(time.Now().Add(time.Hour)),
 	}
 	if err := env.Client.Status().Update(t.Context(), latest); err != nil {
 		t.Fatalf("propose the Page: %v", err)
