@@ -402,6 +402,15 @@ type PageSpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	PreviousPage string `json:"previousPage,omitempty"`
+
+	// ExcludedProposalHashes are Proposal hashes that this Page must not propose
+	// again. A Recurrence excludes the Proposal hash of the Page that recorded
+	// NotRecovered, so that the same change cannot be proposed forever.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:Pattern=`^[0-9a-f]{64}$`
+	// +listType=atomic
+	ExcludedProposalHashes []string `json:"excludedProposalHashes,omitempty"`
 }
 
 // StepKind classifies a step event reported by the agent.
@@ -438,12 +447,12 @@ type Step struct {
 
 	// Tool names the tool for a ToolCall step.
 	// +optional
-	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:MaxLength=64
 	Tool string `json:"tool,omitempty"`
 
 	// Summary is a short description of the step.
 	// +required
-	// +kubebuilder:validation:MaxLength=300
+	// +kubebuilder:validation:MaxLength=200
 	Summary string `json:"summary"`
 }
 
@@ -473,13 +482,13 @@ type Finding struct {
 	// Source cites where the evidence came from, such as a tool call and its query.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=500
+	// +kubebuilder:validation:MaxLength=300
 	Source string `json:"source"`
 
 	// Summary states what the evidence shows.
 	// +required
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=1000
+	// +kubebuilder:validation:MaxLength=500
 	Summary string `json:"summary"`
 }
 
@@ -527,7 +536,7 @@ type Decision struct {
 type VerificationCheck struct {
 	// Name identifies the check.
 	// +required
-	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:MaxLength=64
 	Name string `json:"name"`
 
 	// Passed reports whether the check passed.
@@ -536,7 +545,7 @@ type VerificationCheck struct {
 
 	// Message explains the result.
 	// +optional
-	// +kubebuilder:validation:MaxLength=500
+	// +kubebuilder:validation:MaxLength=300
 	Message string `json:"message,omitempty"`
 }
 
@@ -640,44 +649,6 @@ type PullRequest struct {
 	// MergedAt is when the pull request merged.
 	// +optional
 	MergedAt *metav1.Time `json:"mergedAt,omitempty"`
-}
-
-// RepositoryResolution records how the Target Repository was found. A weak
-// method is visible to the operator and blocks unattended pull requests.
-type RepositoryResolution struct {
-	// URL is the resolved repository URL.
-	// +optional
-	// +kubebuilder:validation:MaxLength=500
-	URL string `json:"url,omitempty"`
-
-	// Branch is the resolved branch.
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	Branch string `json:"branch,omitempty"`
-
-	// Path is the Target's manifest path inside the repository.
-	// +optional
-	// +kubebuilder:validation:MaxLength=500
-	Path string `json:"path,omitempty"`
-
-	// Method names how the repository was found, such as TrackingID or NameMatch.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	Method string `json:"method,omitempty"`
-
-	// Confidence is exact for a provenance method and heuristic otherwise.
-	// +optional
-	// +kubebuilder:validation:Enum=Exact;Heuristic
-	Confidence string `json:"confidence,omitempty"`
-
-	// BaseCommit is the commit a Proposal was rendered against.
-	// +optional
-	// +kubebuilder:validation:MaxLength=64
-	BaseCommit string `json:"baseCommit,omitempty"`
-
-	// ResolvedAt is when resolution ran.
-	// +optional
-	ResolvedAt *metav1.Time `json:"resolvedAt,omitempty"`
 }
 
 // CooldownStatus is the recurrence bookkeeping that outlives the investigation.
@@ -1048,9 +1019,9 @@ type PageStatus struct {
 	// +optional
 	Investigation *InvestigationStatus `json:"investigation,omitempty"`
 
-	// Repository is the resolved Target Repository.
+	// Repository is the resolved Target Repository, as the provenance ladder found it.
 	// +optional
-	Repository *RepositoryResolution `json:"repository,omitempty"`
+	Repository *Resolution `json:"repository,omitempty"`
 
 	// AgentJobName is the name of the agent Job.
 	// +optional
