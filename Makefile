@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
+.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent check-links validate verify-chart release-tools release-check release-snapshot preflight dev down install
 
 
 help: ## List the available targets.
@@ -84,6 +84,9 @@ release-snapshot: release-tools ## Build the release archives, checksums, SBOMs,
 
 validate: ## Render the chart and validate it with the pinned kubeconform.
 	bash hack/validate-manifests.sh
+
+check-links: ## Check every relative link and anchor in the tracked Markdown.
+	bash hack/check-links.sh
 
 verify-chart: ## Install the chart on a throwaway kind cluster and prove the read-only grant.
 	bash hack/verify-chart.sh

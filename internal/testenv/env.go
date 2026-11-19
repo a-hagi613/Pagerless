@@ -474,15 +474,15 @@ func (e *Env) WaitForPhase(t testing.TB, name string, phase v1alpha1.Phase) *v1a
 	return e.WaitFor(t, name, "phase is "+string(phase), inPhase)
 }
 
-// WaitForApproved polls until the Page holds an Approval: it is Approved,
-// or Executing once pagerless-server has handed an Approved Proposal that is
-// delivered by pull request to the Executor, which happens within moments.
+// WaitForApproved polls until the Page holds an Approval: it is Approved, or
+// PullRequestOpen once pagerless-server has handed an Approved Proposal to the
+// pull request engine, which happens within moments.
 func (e *Env) WaitForApproved(t testing.TB, name string) *v1alpha1.Page {
 	t.Helper()
 	approved := func(tr *v1alpha1.Page) bool {
 		return tr.Status.Phase == v1alpha1.PhaseApproved || tr.Status.Phase == v1alpha1.PhasePullRequestOpen
 	}
-	return e.WaitFor(t, name, "phase is Approved or Executing", approved)
+	return e.WaitFor(t, name, "phase is Approved or PullRequestOpen", approved)
 }
 
 // RequirePhaseStays asserts that a Page stays in the phase for long enough that

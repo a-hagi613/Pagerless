@@ -32,7 +32,7 @@ func TestServerPodSatisfiesThePodSecurityStandardOfItsNamespace(t *testing.T) {
 			continue
 		}
 		pod := &corev1.Pod{
-			Name:      "pagerless-server-dry-run",
+			Name:      "pagerless-server-probe",
 			Namespace: deployment.Namespace,
 			Labels:    deployment.Spec.Template.Labels,
 			Spec:      deployment.Spec.Template.Spec,

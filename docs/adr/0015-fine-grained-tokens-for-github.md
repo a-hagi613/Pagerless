@@ -2,6 +2,15 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-16
+- **Amended by:** [ADR-0033](0033-one-credentials-secret.md), [ADR-0043](0043-the-github-writer-is-isolated.md)
+
+> Amended in v2.0: there is no second token holder. Every credential, the GitHub
+> token included, is one key of the Credentials Secret ([ADR-0033](0033-one-credentials-secret.md)),
+> and the write capability is held only by the isolated writer in
+> `internal/github/pr` ([ADR-0043](0043-the-github-writer-is-isolated.md)); the
+> Executor the write token existed for is gone
+> ([ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md)). Reads stay
+> read-only.
 
 ## Context
 

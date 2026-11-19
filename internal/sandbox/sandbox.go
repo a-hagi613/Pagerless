@@ -40,7 +40,8 @@ var safePath = regexp.MustCompile(`^[A-Za-z0-9._/@+=,-]+$`)
 type Repository struct {
 	// URL is where git clones the Sandbox from.
 	URL string
-	// Branch is the branch that Argo CD deploys and the Executor's pull requests target.
+	// Branch is the branch that Argo CD deploys and that an approved Proposal's
+	// pull request targets.
 	Branch string
 	// ReadToken returns the read-only Sandbox token. It is read once per Head or Checkout so rotation is observed.
 	// When set, URL must be HTTPS without embedded credentials, a query, or a fragment.

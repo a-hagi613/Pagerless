@@ -103,7 +103,7 @@ func TestRollbackRevertsTheCommitThatBrokeTheTarget(t *testing.T) {
 		t.Errorf("Validation moved the Sandbox head from %s to %s", head, env.Sandbox.Head())
 	}
 
-	// The Executor applies the stored revert by pull request, as for any Proposal.
+	// The pull request engine applies the stored revert by pull request, as for any Proposal.
 	approve(t, env, tr)
 	executing := withPullRequest(t, env, tr.Name)
 	prs := env.GitHub.PullRequests()
