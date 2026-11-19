@@ -48,8 +48,8 @@ func (r *BareRepo) AuthorTime(ref string) string {
 	return strings.TrimSpace(git(r.t, r.URL, "log", "-1", "--format=%at", ref))
 }
 
-// MergeBranch squash-merges the branch into main, as GitHub does when
-// auto-merge completes, and returns the merge commit.
+// MergeBranch squash-merges the branch into main, as the Operator does when
+// they merge a Pull Request, and returns the merge commit.
 func (r *BareRepo) MergeBranch(branch, message string) string {
 	r.t.Helper()
 	git(r.t, r.work, "fetch", "origin")
