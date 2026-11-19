@@ -466,6 +466,12 @@ spec:
                       - Event
                       - Commit
                       type: string
+                    pointer:
+                      description: |-
+                        Pointer is the JSON Pointer into the recorded tool result that the
+                        Finding cites. The server verifies that it resolves.
+                      maxLength: 500
+                      type: string
                     source:
                       description: Source cites where the evidence came from, such
                         as a tool call and its query.
@@ -476,6 +482,12 @@ spec:
                       description: Summary states what the evidence shows.
                       maxLength: 500
                       minLength: 1
+                      type: string
+                    toolCallId:
+                      description: |-
+                        ToolCallID names the recorded tool call the evidence came from. The
+                        server verifies it exists for this Page before accepting the Finding.
+                      maxLength: 128
                       type: string
                   required:
                   - kind
@@ -607,6 +619,7 @@ spec:
                   action:
                     description: Action is the remediation.
                     enum:
+                    - FilePatch
                     - Scale
                     - PatchResources
                     - Rollback
@@ -674,6 +687,12 @@ spec:
                           maxLength: 300
                           minLength: 1
                           type: string
+                        updatedContent:
+                          description: |-
+                            UpdatedContent is the complete new content the model supplied. The Page
+                            stores only its digest; the server holds the content under the Proposal
+                            hash so that status stays small.
+                          type: string
                       required:
                       - baseBlob
                       - contentDigest
@@ -701,6 +720,73 @@ spec:
                     description: Parameters are the typed parameters of the Action.
                     maxProperties: 1
                     properties:
+                      filePatch:
+                        description: FilePatch holds the parameters of the FilePatch
+                          Action.
+                        properties:
+                          confidence:
+                            description: |-
+                              Confidence records how the edit target was chosen. It is empty when the
+                              model did not state one.
+                            enum:
+                            - exact
+                            - configured
+                            - identity
+                            - name-only
+                            type: string
+                          files:
+                            description: Files are the whole-file changes, in the
+                              order the model proposed them.
+                            items:
+                              description: |-
+                                FileEdit is one whole-file change against the recorded base commit. The Page
+                                records the file's identity and the digest of its new content; the content
+                                itself is held by the server under that digest, so that Page status stays
+                                small and never carries repository bytes. The server derives the Diff from
+                                the content, so a model-supplied patch cannot be inconsistent with the base.
+                              properties:
+                                baseBlob:
+                                  description: BaseBlob is the Git blob SHA of the
+                                    file at the recorded base commit.
+                                  pattern: ^[0-9a-f]{40,64}$
+                                  type: string
+                                contentDigest:
+                                  description: |-
+                                    ContentDigest is the lowercase hexadecimal SHA-256 digest of the complete
+                                    new content of the file.
+                                  pattern: ^[0-9a-f]{64}$
+                                  type: string
+                                path:
+                                  description: Path is the Target Repository path,
+                                    relative to the repository root.
+                                  maxLength: 500
+                                  minLength: 1
+                                  type: string
+                                rationale:
+                                  description: Rationale states why this file is the
+                                    edit target for the Diagnosis.
+                                  maxLength: 300
+                                  minLength: 1
+                                  type: string
+                                updatedContent:
+                                  description: |-
+                                    UpdatedContent is the complete new content the model supplied. The Page
+                                    stores only its digest; the server holds the content under the Proposal
+                                    hash so that status stays small.
+                                  type: string
+                              required:
+                              - baseBlob
+                              - contentDigest
+                              - path
+                              - rationale
+                              type: object
+                            maxItems: 5
+                            minItems: 1
+                            type: array
+                            x-kubernetes-list-type: atomic
+                        required:
+                        - files
+                        type: object
                       patchResources:
                         description: PatchResources holds the parameters of the PatchResources
                           Action.
@@ -758,6 +844,17 @@ spec:
                         - replicas
                         type: object
                     type: object
+                  reason:
+                    description: |-
+                      Reason explains a DiagnosisOnly conclusion. It is set only alongside
+                      ActionNoAction, and it is empty for a report that supplied no reason.
+                    maxLength: 1000
+                    type: string
+                  recommendation:
+                    description: Recommendation is the action a human should take
+                      for a DiagnosisOnly conclusion.
+                    maxLength: 2000
+                    type: string
                   renderedChange:
                     description: RenderedChange is the exact change that Validation
                       rendered.
@@ -859,6 +956,10 @@ spec:
                 - hash
                 type: object
                 x-kubernetes-validations:
+                - message: parameters.filePatch must be set exactly when the action
+                    is FilePatch
+                  rule: 'self.action == ''FilePatch'' ? (has(self.parameters) && has(self.parameters.filePatch))
+                    : (!has(self.parameters) || !has(self.parameters.filePatch))'
                 - message: parameters.scale must be set exactly when the action is
                     Scale
                   rule: 'self.action == ''Scale'' ? (has(self.parameters) && has(self.parameters.scale))
@@ -927,6 +1028,12 @@ spec:
                     maxLength: 500
                     type: string
                 type: object
+              redactionCount:
+                description: |-
+                  RedactionCount is the number of secret-shaped matches the broker removed
+                  from tool results over the whole investigation.
+                format: int32
+                type: integer
               repository:
                 description: Repository is the resolved Target Repository, as the
                   provenance ladder found it.
@@ -1111,6 +1218,7 @@ spec:
                       - ToolCall
                       - Finding
                       - Progress
+                      - SuspiciousOutput
                       type: string
                     summary:
                       description: Summary is a short description of the step.
@@ -1132,6 +1240,13 @@ spec:
                 maxItems: 50
                 type: array
                 x-kubernetes-list-type: atomic
+              structuredOutput:
+                additionalProperties:
+                  type: string
+                description: |-
+                  StructuredOutput records the structured-output rung that produced each
+                  stage, so a degraded installation is visible.
+                type: object
               subject:
                 description: Subject mirrors the canonical Subject identity the watcher
                   resolved.
@@ -1264,6 +1379,15 @@ spec:
                   this Page already covered their Fingerprint.
                 format: int32
                 type: integer
+              suspiciousOutputs:
+                description: |-
+                  SuspiciousOutputs are the attempts the broker or the agent detected to
+                  escape the investigation's scope. They never stop a read-only run.
+                items:
+                  type: string
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
               terminalAt:
                 description: |-
                   TerminalAt is when the Page reached its terminal phase. The retention
@@ -1274,6 +1398,56 @@ spec:
                 description: ToolCallCount is the number of tool calls the agent reported.
                 format: int32
                 type: integer
+              toolCalls:
+                description: |-
+                  ToolCalls is the bounded record of the tool calls the broker served, so an
+                  operator can trace every Finding to a real read.
+                items:
+                  description: ToolCallRecord is the Page's bounded record of one
+                    tool call the broker served.
+                  properties:
+                    arguments:
+                      description: Arguments is a bounded rendering of the model's
+                        arguments.
+                      maxLength: 300
+                      type: string
+                    bytes:
+                      description: Bytes is the size of the stored result.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    callId:
+                      description: CallID is the server's identifier for the call,
+                        which a Finding cites.
+                      maxLength: 128
+                      type: string
+                    outcome:
+                      description: Outcome is ok, out_of_scope, unknown_tool, budget_exhausted,
+                        or error.
+                      maxLength: 32
+                      type: string
+                    redactions:
+                      description: Redactions is the number of secret-shaped matches
+                        removed from the result.
+                      format: int32
+                      minimum: 0
+                      type: integer
+                    time:
+                      description: Time is when the broker served the call.
+                      format: date-time
+                      type: string
+                    tool:
+                      description: Tool is the catalogue name of the tool.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - callId
+                  - time
+                  - tool
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
               triggerCount:
                 description: TriggerCount is the number of Triggers that opened or
                   joined the Page.
@@ -1289,11 +1463,23 @@ spec:
                     maximum: 100
                     minimum: 0
                     type: number
+                  estimated:
+                    description: |-
+                      Estimated is true when the provider omitted its usage and the figures were
+                      estimated locally. The Page never presents an estimate as a measurement.
+                    type: boolean
                   inputTokens:
                     description: InputTokens counts every input token the investigation's
                       model calls read, including cached tokens.
                     format: int64
                     maximum: 10000000
+                    minimum: 0
+                    type: integer
+                  modelCalls:
+                    description: ModelCalls is the number of model calls the investigation
+                      made.
+                    format: int32
+                    maximum: 1000
                     minimum: 0
                     type: integer
                   outputTokens:
@@ -1308,6 +1494,15 @@ spec:
                 - inputTokens
                 - outputTokens
                 type: object
+              usageSource:
+                description: |-
+                  UsageSource records where the reported usage came from: provider,
+                  estimated, or mixed.
+                enum:
+                - provider
+                - estimated
+                - mixed
+                type: string
               validationAttempts:
                 description: ValidationAttempts is the number of Proposals from the
                   agent that failed Validation.

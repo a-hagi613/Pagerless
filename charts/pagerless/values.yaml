@@ -191,6 +191,15 @@ ingress:
 
 # --- Scheduling -------------------------------------------------------------
 
+# Egress policy for the agent Job. The Job has exactly two destinations: the
+# server's tool API and the model endpoint, with link-local excluded so the
+# instance metadata service is unreachable. It is enforced only on a CNI that
+# implements NetworkPolicy.
+agentEgress:
+  enabled: true
+  # Port of the model endpoint (443 for every hosted provider).
+  modelPort: 443
+
 resources:
   requests:
     cpu: 50m

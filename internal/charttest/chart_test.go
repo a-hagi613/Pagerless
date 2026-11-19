@@ -17,7 +17,10 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/connectors"
+	"github.com/a-hagi613/pagerless/internal/controller"
 )
 
 // releaseNamespace is the namespace every namespaced object is installed into.
@@ -151,6 +154,7 @@ func TestTheDefaultRenderIsOneReadOnlyShell(t *testing.T) {
 		"ConfigMap/pagerless-connectors",
 		"CustomResourceDefinition/pages.pagerless.dev",
 		"Deployment/pagerless-server",
+		"NetworkPolicy/pagerless-agent-egress",
 		"PersistentVolumeClaim/pagerless-data",
 		"Role/pagerless-approver",
 		"Role/pagerless-server",
@@ -903,6 +907,147 @@ func TestNativeLogCollectionIsMandatory(t *testing.T) {
 	} {
 		if !strings.Contains(server, want) {
 			t.Errorf("the Deployment lacks %q", want)
+		}
+	}
+}
+
+// TestTheAgentEgressPolicyHasTwoDestinationsAndExcludesLinkLocal renders the
+// agent Job's egress policy: the server (with cluster DNS) and the model
+// endpoint, and nothing else.
+func TestTheAgentEgressPolicyHasTwoDestinationsAndExcludesLinkLocal(t *testing.T) {
+	t.Parallel()
+	documents := render(t)
+	policy := find(t, documents, "NetworkPolicy", "pagerless-agent-egress")
+
+	spec, ok := policy.Raw["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("the policy has no spec")
+	}
+	selector, _ := spec["podSelector"].(map[string]any)
+	labels, _ := selector["matchLabels"].(map[string]any)
+	if labels["app.kubernetes.io/name"] != "pagerless-agent" {
+		t.Errorf("pod selector = %v, want the agent Job pods", selector)
+	}
+	types, _ := spec["policyTypes"].([]any)
+	if len(types) != 1 || types[0] != "Egress" {
+		t.Errorf("policy types = %v, want Egress only", types)
+	}
+	rules, _ := spec["egress"].([]any)
+	if len(rules) != 2 {
+		t.Fatalf("egress rules = %d, want exactly two destinations", len(rules))
+	}
+	server, _ := rules[0].(map[string]any)
+	serverPeers, _ := server["to"].([]any)
+	if len(serverPeers) != 2 {
+		t.Errorf("the first rule has %d peers, want the server and cluster DNS", len(serverPeers))
+	}
+	model, _ := rules[1].(map[string]any)
+	modelPeers, _ := model["to"].([]any)
+	if len(modelPeers) != 2 {
+		t.Fatalf("the model rule has %d peers, want the IPv4 and IPv6 default routes", len(modelPeers))
+	}
+	var ipv4, ipv6 bool
+	for _, peer := range modelPeers {
+		entry, _ := peer.(map[string]any)
+		block, _ := entry["ipBlock"].(map[string]any)
+		cidr, _ := block["cidr"].(string)
+		except, _ := block["except"].([]any)
+		switch cidr {
+		case "0.0.0.0/0":
+			ipv4 = true
+			if !containsValue(except, "169.254.0.0/16") {
+				t.Errorf("the IPv4 model route does not exclude link-local: %v", except)
+			}
+		case "::/0":
+			ipv6 = true
+			if !containsValue(except, "fe80::/10") {
+				t.Errorf("the IPv6 model route does not exclude link-local: %v", except)
+			}
+		default:
+			t.Errorf("unexpected model destination %q", cidr)
+		}
+	}
+	if !ipv4 || !ipv6 {
+		t.Errorf("model routes = %v, want both the IPv4 and IPv6 default routes", modelPeers)
+	}
+	// Nothing in the policy allows the metadata service or another namespace.
+	for _, rule := range rules {
+		entry, _ := rule.(map[string]any)
+		encoded, err := yaml.Marshal(entry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "169.254.169.254") {
+			t.Errorf("the policy names the metadata address directly: %s", encoded)
+		}
+	}
+}
+
+// containsValue reports whether a rendered list holds a string.
+func containsValue(values []any, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTheRenderedAgentJobMountsOnlyTheReportTokenAndModelKey pins the agent
+// Job's credential contract next to the chart that constrains its egress. The
+// Job itself is rendered by the server for each Page, so this test builds it
+// with the production builder rather than a Helm template.
+func TestTheRenderedAgentJobMountsOnlyTheReportTokenAndModelKey(t *testing.T) {
+	t.Parallel()
+	page := &v1alpha1.Page{}
+	page.Name, page.Namespace = "checkout-oom", releaseNamespace
+	page.UID = "0f3a1b2c-1111-4222-8333-444455556666"
+	job := controller.AgentJob(page, controller.AgentJobConfig{
+		Image: "agent:test", ServiceAccount: "pagerless-agent", ServerURL: "http://server", Deadline: 420,
+		Runtime: controller.AgentRuntimeConfig{
+			ModelBaseURL: "https://model.test/v1", ModelName: "model",
+			ModelKeySecret: controller.DefaultCredentialsSecret, ModelKeyKey: controller.ModelAPIKeyName,
+		},
+	})
+	pod := job.Spec.Template.Spec
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Error("the agent Job must not mount the API-server-audience token")
+	}
+	projected := map[string]string{}
+	secrets := map[string]string{}
+	var others []string
+	for _, volume := range pod.Volumes {
+		switch {
+		case volume.Projected != nil:
+			for _, source := range volume.Projected.Sources {
+				if source.ServiceAccountToken != nil {
+					projected[volume.Name] = source.ServiceAccountToken.Audience
+				}
+			}
+		case volume.Secret != nil:
+			secrets[volume.Name] = volume.Secret.SecretName
+		default:
+			others = append(others, volume.Name)
+		}
+	}
+	want := agentapi.AudienceForPage(string(page.UID))
+	if len(projected) != 1 || projected["report-token"] != want {
+		t.Errorf("projected tokens = %v, want only report-token with audience %q", projected, want)
+	}
+	if len(secrets) != 1 || secrets["model-key"] != controller.DefaultCredentialsSecret {
+		t.Errorf("Secret volumes = %v, want only model-key", secrets)
+	}
+	if len(others) != 1 || others[0] != "temporary" {
+		t.Errorf("other volumes = %v, want only the temporary emptyDir", others)
+	}
+	for _, variable := range pod.Containers[0].Env {
+		if variable.ValueFrom != nil {
+			t.Errorf("%s is sourced from a Secret or field, want mounted files only", variable.Name)
+		}
+		for _, forbidden := range []string{"GITHUB", "CONNECTOR", "KUBECONFIG"} {
+			if strings.Contains(variable.Name, forbidden) {
+				t.Errorf("the agent Job receives %s", variable.Name)
+			}
 		}
 	}
 }

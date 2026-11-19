@@ -93,6 +93,20 @@
         }
       }
     },
+    "agentEgress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "modelPort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
     "approvers": {
       "type": "object",
       "additionalProperties": false,

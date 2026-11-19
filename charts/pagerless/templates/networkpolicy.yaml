@@ -1,0 +1,63 @@
+{{- /*
+The agent Job's egress policy. An investigation reads only through
+pagerless-server's tool broker and calls only the model endpoint, so the Job has
+exactly two egress destinations (spec §2.6):
+
+  1. pagerless-server, plus the cluster DNS it needs to resolve the model host;
+  2. the model endpoint, expressed as the IPv4 and IPv6 default routes with
+     link-local excluded, so the instance metadata service at 169.254.169.254
+     and every other link-local address is unreachable.
+
+No other rule exists. A compromised agent binary therefore cannot reach the
+Kubernetes API, a Connector, GitHub, or the metadata service, whatever the model
+asks it to do. Enable this policy only where the CNI enforces NetworkPolicy; the
+chart does not pretend it protects a cluster that ignores it.
+*/ -}}
+{{- if .Values.agentEgress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pagerless-agent-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-agent") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pagerless-agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pagerless-server
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fe80::/10
+      ports:
+        - protocol: TCP
+          port: {{ .Values.agentEgress.modelPort }}
+{{- end }}
