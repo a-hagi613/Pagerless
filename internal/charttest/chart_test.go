@@ -5,9 +5,12 @@ package charttest
 
 import (
 	"bytes"
+	"encoding/json"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -17,6 +20,9 @@ import (
 
 // releaseNamespace is the namespace every namespaced object is installed into.
 const releaseNamespace = "pagerless"
+
+// credentialsSecretName is the Secret the chart pre-creates for credentials.
+const credentialsSecretName = "pagerless-credentials"
 
 // forbiddenNames lists the objects the standalone chart must never render.
 var forbiddenNames = []string{
@@ -147,7 +153,9 @@ func TestTheDefaultRenderIsOneReadOnlyShell(t *testing.T) {
 		"Role/pagerless-approver",
 		"Role/pagerless-server",
 		"RoleBinding/pagerless-server",
+		"Secret/pagerless-admin-secret",
 		"Secret/pagerless-credentials",
+		"Secret/pagerless-session-key",
 		"Service/pagerless-server",
 		"ServiceAccount/pagerless-agent",
 		"ServiceAccount/pagerless-server",
@@ -229,8 +237,7 @@ func TestTheReleaseRoleMatchesTheCheckedInAllowlist(t *testing.T) {
 	got := ruleSet(t, role)
 	want := []string{
 		`group="" resources=[pods] verbs=[get list watch] names=[]`,
-		`group="" resources=[secrets] verbs=[get] names=[pagerless-admin-secret pagerless-credentials]`,
-		`group="" resources=[secrets] verbs=[patch update] names=[pagerless-credentials]`,
+		`group="" resources=[secrets] verbs=[get patch update] names=[pagerless-credentials]`,
 		`group="batch" resources=[jobs] verbs=[create delete get list watch] names=[]`,
 		`group="pagerless.dev" resources=[pages/finalizers] verbs=[update] names=[]`,
 		`group="pagerless.dev" resources=[pages/status] verbs=[get patch update] names=[]`,
@@ -388,7 +395,7 @@ func TestTheWatchModesAreMutuallyExclusiveAndValidated(t *testing.T) {
 func TestTheCredentialsSecretIsPrecreatedEmptyOrOmitted(t *testing.T) {
 	t.Parallel()
 	documents := render(t)
-	secret := find(t, documents, "Secret", "pagerless-credentials")
+	secret := find(t, documents, "Secret", credentialsSecretName)
 	data, ok := secret.Raw["stringData"].(map[string]any)
 	if !ok {
 		t.Fatalf("the credentials Secret has no stringData: %+v", secret.Raw)
@@ -410,13 +417,19 @@ func TestTheCredentialsSecretIsPrecreatedEmptyOrOmitted(t *testing.T) {
 		t.Parallel()
 		external := render(t, "credentials.existingSecret=team-credentials")
 		for _, doc := range external {
-			if doc.Kind == "Secret" {
-				t.Fatalf("the chart renders Secret %q, want none", doc.Metadata.Name)
+			if doc.Kind == "Secret" && (doc.Metadata.Name == credentialsSecretName || doc.Metadata.Name == "team-credentials") {
+				t.Fatalf("the chart renders credentials Secret %q, want none when existingSecret is set", doc.Metadata.Name)
 			}
 		}
 		deployment := find(t, external, "Deployment", "pagerless-server")
 		if !strings.Contains(renderedString(deployment.Raw), "team-credentials") {
 			t.Error("the Deployment does not mount the externally managed Secret")
+		}
+		role := find(t, external, "Role", "pagerless-server")
+		for _, parsed := range parseRules(t, role) {
+			if slices.Contains(parsed.resources, "secrets") {
+				t.Errorf("Role pagerless-server still grants Secrets when existingSecret is set: %s", parsed)
+			}
 		}
 	})
 }
@@ -489,7 +502,7 @@ func assertNoWidening(t *testing.T, doc document, r rule) {
 			t.Errorf("%s %q grants Secrets without resourceNames: %s", doc.Kind, doc.Metadata.Name, r)
 		}
 		for _, allowed := range r.names {
-			if allowed != "pagerless-credentials" && allowed != "pagerless-admin-secret" {
+			if allowed != credentialsSecretName {
 				t.Errorf("%s %q grants Secret %q: %s", doc.Kind, doc.Metadata.Name, allowed, r)
 			}
 		}
@@ -580,5 +593,268 @@ func TestThePageCRDIsServedWithTheV2Contract(t *testing.T) {
 		if slices.Contains(phaseEnum, retired) {
 			t.Errorf("Phase enum still holds the retired phase %s", retired)
 		}
+	}
+}
+
+func TestValuesSchemaEnforcesAdditionalPropertiesFalseAndRejectsSecrets(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	schemaPath := filepath.Join(root, "charts", "pagerless", "values.schema.json")
+	raw, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read values.schema.json: %v", err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("parse values.schema.json: %v", err)
+	}
+
+	var objectCount int
+	var checkObjects func(path string, node any)
+	checkObjects = func(path string, node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			if typed["type"] == "object" {
+				objectCount++
+				if ap, ok := typed["additionalProperties"].(bool); !ok || ap {
+					t.Errorf("schema object at %s has additionalProperties=%v, want false", path, typed["additionalProperties"])
+				}
+			}
+			for key, child := range typed {
+				checkObjects(path+"."+key, child)
+			}
+		case []any:
+			for i, child := range typed {
+				checkObjects(path+"["+string(rune('0'+i))+"]", child)
+			}
+		}
+	}
+	checkObjects("$", schema)
+	if objectCount == 0 {
+		t.Fatal("values.schema.json defines no objects")
+	}
+
+	for _, forbiddenSet := range []string{
+		"auth.adminPassword=hunter2",
+		"credentials.apiKey=sk-secret",
+		"credentials.aiApiKey=sk-secret",
+		"agent.apiKey=sk-secret",
+		"github.token=ghp_secret",
+		"unknownTopLevelKey=true",
+	} {
+		stderr := renderError(t, forbiddenSet)
+		if !strings.Contains(stderr, "additionalProperties") &&
+			!strings.Contains(stderr, "values don't meet the specifications") {
+			t.Errorf("helm template --set %s error = %q, want schema rejection", forbiddenSet, stderr)
+		}
+	}
+}
+
+func TestValuesYAMLLeavesContainNoSecretBearingFields(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "charts", "pagerless", "values.yaml"))
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values map[string]any
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("decode values.yaml: %v", err)
+	}
+
+	secretPattern := regexp.MustCompile(`(?i)(credential|apikey|api_key|token|password|secret|key)s?$`)
+	allowedLeaves := map[string]bool{
+		"images.pullSecrets":                          true,
+		"serviceAccount.automountServiceAccountToken": true,
+		"credentials.existingSecret":                  true,
+		"credentials.secretName":                      true,
+		"portal.writeCredentials":                     true,
+		"auth.adminSecret.create":                     true,
+		"auth.adminSecret.name":                       true,
+		"auth.adminSecret.key":                        true,
+		"auth.adminSecret.length":                     true,
+		"auth.adminSecret.keep":                       true,
+		"auth.session.secretName":                     true,
+		"auth.session.key":                            true,
+		"auth.bearerToken":                            true,
+	}
+
+	var leafCount int
+	var walk func(prefix string, node any)
+	walk = func(prefix string, node any) {
+		if m, ok := node.(map[string]any); ok && len(m) > 0 {
+			for k, v := range m {
+				next := k
+				if prefix != "" {
+					next = prefix + "." + k
+				}
+				walk(next, v)
+			}
+			return
+		}
+		leafCount++
+		if secretPattern.MatchString(prefix) && !allowedLeaves[prefix] {
+			t.Errorf("values.yaml leaf %q matches secret pattern and is not an allowed reference/boolean", prefix)
+		}
+	}
+	walk("", values)
+	if leafCount == 0 {
+		t.Fatal("enumerated 0 leaves in values.yaml")
+	}
+}
+
+func TestAuthModeAndSecretsContract(t *testing.T) {
+	t.Parallel()
+	docs := render(t)
+	adminSecret := find(t, docs, "Secret", "pagerless-admin-secret")
+	annotations := adminSecret.Raw["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if got := annotations["helm.sh/resource-policy"]; got != "keep" {
+		t.Errorf("pagerless-admin-secret resource-policy = %v, want keep", got)
+	}
+	tokenVal, _ := adminSecret.Raw["stringData"].(map[string]any)["token"].(string)
+	if len(tokenVal) != 48 {
+		t.Errorf("generated bootstrap token length = %d, want 48", len(tokenVal))
+	}
+
+	sessionSecret := find(t, docs, "Secret", "pagerless-session-key")
+	annotations = sessionSecret.Raw["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if got := annotations["helm.sh/resource-policy"]; got != "keep" {
+		t.Errorf("pagerless-session-key resource-policy = %v, want keep", got)
+	}
+	keyVal, _ := sessionSecret.Raw["stringData"].(map[string]any)["key"].(string)
+	if len(keyVal) < 32 {
+		t.Errorf("generated session key length = %d, want >= 32", len(keyVal))
+	}
+
+	t.Run("disabled mode renders no auth secrets", func(t *testing.T) {
+		t.Parallel()
+		disabled := render(t, "auth.mode=disabled")
+		for _, doc := range disabled {
+			if doc.Kind == "Secret" && doc.Metadata.Name != "pagerless-credentials" {
+				t.Errorf("disabled mode rendered Secret %q", doc.Metadata.Name)
+			}
+		}
+	})
+
+	t.Run("disabled mode with ingress and no identityHeader fails render", func(t *testing.T) {
+		t.Parallel()
+		stderr := renderError(t, "auth.mode=disabled", "ingress.enabled=true")
+		if !strings.Contains(stderr, "identityHeader") {
+			t.Errorf("error = %q, want it to require auth.proxy.identityHeader", stderr)
+		}
+	})
+
+	t.Run("disabled mode with ingress and identityHeader renders Ingress", func(t *testing.T) {
+		t.Parallel()
+		proxied := render(t, "auth.mode=disabled", "ingress.enabled=true", "auth.proxy.identityHeader=X-Auth-Request-User")
+		find(t, proxied, "Ingress", "pagerless-server")
+	})
+
+	t.Run("token mode with create=false and empty name fails render", func(t *testing.T) {
+		t.Parallel()
+		stderr := renderError(t, "auth.adminSecret.create=false", "auth.adminSecret.name=")
+		if !strings.Contains(stderr, "adminSecret") {
+			t.Errorf("error = %q, want it to mention auth.adminSecret", stderr)
+		}
+	})
+}
+
+func TestNotesTxtCoversTokenDisabledAndExistingSecretModes(t *testing.T) {
+	t.Parallel()
+	renderNotes := func(t *testing.T, sets ...string) string {
+		t.Helper()
+		root := repoRoot(t)
+		// Render NOTES.txt via helm install --dry-run=client so .Release.Namespace and notes are printed.
+		installArgs := make([]string, 0, 6+2*len(sets))
+		installArgs = append(installArgs,
+			"install", "pagerless", filepath.Join(root, "charts", "pagerless"),
+			"--namespace", releaseNamespace, "--dry-run=client")
+		for _, set := range sets {
+			installArgs = append(installArgs, "--set", set)
+		}
+		cmd := exec.Command("helm", installArgs...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("helm install --dry-run=client: %v: %s", err, stderr.String())
+		}
+		_, notes, ok := strings.Cut(stdout.String(), "NOTES:\n")
+		if !ok {
+			t.Fatalf("helm dry-run output contained no NOTES section:\n%s", stdout.String())
+		}
+		return notes
+	}
+
+	t.Run("default token mode", func(t *testing.T) {
+		t.Parallel()
+		notes := renderNotes(t)
+		for _, want := range []string{
+			"kubectl -n pagerless port-forward svc/pagerless-server 8080:8080",
+			"kubectl -n pagerless get secret pagerless-admin-secret",
+			"base64decode",
+			"kubectl -n pagerless delete secret pagerless-admin-secret",
+			"/settings",
+		} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("default NOTES.txt lacks %q:\n%s", want, notes)
+			}
+		}
+	})
+
+	t.Run("disabled mode", func(t *testing.T) {
+		t.Parallel()
+		notes := renderNotes(t, "auth.mode=disabled")
+		if !strings.Contains(notes, "WARNING") || !strings.Contains(notes, "disabled") {
+			t.Errorf("disabled NOTES.txt lacks warning block:\n%s", notes)
+		}
+	})
+
+	t.Run("existingSecret mode", func(t *testing.T) {
+		t.Parallel()
+		notes := renderNotes(t, "credentials.existingSecret=team-credentials")
+		for _, want := range []string{
+			"team-credentials",
+			"read-only",
+			"AI_BASE_URL",
+			"AI_API_KEY",
+			"AI_MODEL",
+			"GITHUB_TOKEN",
+			"GITHUB_REPO",
+			"CONNECTOR_<NAME>_TOKEN",
+		} {
+			if !strings.Contains(notes, want) {
+				t.Errorf("existingSecret NOTES.txt lacks %q:\n%s", want, notes)
+			}
+		}
+	})
+}
+
+func TestRepoWideOnlyOneScopedRoleGrantsSecrets(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	var hits []string
+	err := filepath.WalkDir(filepath.Join(root, "charts"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".yaml") && !strings.HasSuffix(path, ".tpl") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(raw), "resources: [secrets]") || strings.Contains(string(raw), `resources: ["secrets"]`) {
+			rel, _ := filepath.Rel(root, path)
+			hits = append(hits, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantHits := []string{filepath.Join("charts", "pagerless", "templates", "rbac.yaml")}
+	if !slices.Equal(hits, wantHits) {
+		t.Errorf("files granting secrets RBAC = %v, want only %v", hits, wantHits)
 	}
 }

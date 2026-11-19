@@ -3,7 +3,8 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install dashboard-preview
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart release-tools release-check release-snapshot preflight dev down install
+
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-16s %s\n", $$1, $$2}'
@@ -91,6 +92,3 @@ down: ## Delete the local development kind cluster.
 
 install: ## Install Pagerless into an existing Kubernetes cluster.
 	bash hack/install.sh
-
-dashboard-preview: ## Start the live Dashboard preview on port 8080.
-	bash hack/dashboard-preview.sh start

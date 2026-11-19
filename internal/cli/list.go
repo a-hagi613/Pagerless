@@ -3,99 +3,73 @@ package cli
 import (
 	"fmt"
 	"io"
-	"slices"
 	"strconv"
-	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/util/duration"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
 // newListCommand returns the command that lists the Pages, most recent first.
-func newListCommand(conn *connection) *cobra.Command {
+// The columns are the Page resource's own printer columns, so the CLI and
+// `kubectl get pages` cannot disagree.
+func newListCommand(opts *options) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List Pages, most recent first",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		Short: "List Pages, most recent first, with the resource's printer columns",
+		Args:  noArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := parseFormat(output)
 			if err != nil {
 				return err
 			}
-			cl, err := conn.connect()
+			s, err := openSession(cmd, opts)
 			if err != nil {
 				return err
 			}
-			var list v1alpha1.PageList
-			if err := cl.client.List(cmd.Context(), &list, client.InNamespace(PageNamespace)); err != nil {
-				return fmt.Errorf("list Pages: %w", err)
+			records, raw, err := s.pages(cmd.Context())
+			if err != nil {
+				return err
 			}
-			items := list.Items
-			slices.SortFunc(items, newestFirst)
-			for i := range items {
-				items[i].TypeMeta = metaFor("Page")
-			}
-			return writeList(cmd.OutOrStdout(), format, items)
+			return writeList(cmd.OutOrStdout(), format, records, raw, opts.pageNamespace)
 		},
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output format: json or yaml")
 	return cmd
 }
 
-// newestFirst orders Pages by creation time, newest first, then by name.
-func newestFirst(a, b v1alpha1.Page) int {
-	switch {
-	case a.CreationTimestamp.After(b.CreationTimestamp.Time):
-		return -1
-	case b.CreationTimestamp.After(a.CreationTimestamp.Time):
-		return 1
-	default:
-		return strings.Compare(a.Name, b.Name)
-	}
-}
-
 // writeList writes the Pages as a table, or as JSON or YAML.
-func writeList(w io.Writer, format string, items []v1alpha1.Page) error {
-	if items == nil {
-		items = []v1alpha1.Page{}
-	}
-	list := v1alpha1.PageList{
-		TypeMeta: metaFor("PageList"),
-		Items:    items,
-	}
+func writeList(w io.Writer, format string, records []*record, raw any, namespace string) error {
 	switch format {
 	case formatJSON:
-		return writeJSON(w, &list)
+		return writeJSON(w, raw)
 	case formatYAML:
-		return writeYAML(w, &list)
+		return writeYAML(w, raw)
 	}
-	if len(items) == 0 {
-		_, err := fmt.Fprintf(w, "No Pages found in namespace %q.\n", PageNamespace)
+	if len(records) == 0 {
+		_, err := fmt.Fprintf(w, "No Pages found in namespace %q.\n", namespace)
 		return err
 	}
-	return writeTable(w, items)
+	return writeTable(w, records)
 }
 
 // writeTable writes one row per Page.
-func writeTable(w io.Writer, items []v1alpha1.Page) error {
+func writeTable(w io.Writer, records []*record) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	p := &printer{w: tw}
 	p.printf("NAME\tTARGET\tPHASE\tTRIGGER\tPR\tAGE\n")
-	for i := range items {
-		tr := &items[i]
+	for _, rec := range records {
 		p.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
-			tr.Name,
-			tr.Spec.Target.Name,
-			phaseLabel(tr.Status.Phase),
-			tr.Spec.Trigger.Source,
-			pullRequestNumber(tr.Status.PullRequest),
-			duration.HumanDuration(time.Since(tr.CreationTimestamp.Time)),
+			rec.Name,
+			rec.Target.Name,
+			phaseLabel(rec.Phase),
+			rec.Trigger.Source,
+			pullRequestNumber(rec.PullRequest),
+			duration.HumanDuration(time.Since(rec.CreatedAt)),
 		)
 	}
 	if p.err != nil {
@@ -122,5 +96,8 @@ func phaseLabel(phase v1alpha1.Phase) string {
 
 // targetLabel returns a Target as kind/namespace/name.
 func targetLabel(ref v1alpha1.TargetReference) string {
+	if ref.Namespace == "" {
+		return string(ref.Kind) + "/" + ref.Name
+	}
 	return string(ref.Kind) + "/" + ref.Namespace + "/" + ref.Name
 }

@@ -6,35 +6,10 @@ import (
 	"os"
 
 	authv1 "k8s.io/api/authentication/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
-
-// loadProposedPage returns the named Page, which must be Proposed so that it has
-// a Proposal for a decision to bind to.
-func loadProposedPage(ctx context.Context, cl client.Client, name string) (*v1alpha1.Page, error) {
-	var p v1alpha1.Page
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: PageNamespace, Name: name}, &p); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("page %q not found in namespace %q", name, PageNamespace)
-		}
-		return nil, fmt.Errorf("get Page %s: %w", name, err)
-	}
-	if p.Status.Phase != v1alpha1.PhaseProposed || p.Status.Proposal == nil {
-		return nil, fmt.Errorf("page %s is in phase %s; only a Proposed Page accepts a decision",
-			name, phaseOrUnset(p.Status.Phase))
-	}
-	return &p, nil
-}
-
-func phaseOrUnset(phase v1alpha1.Phase) string {
-	if phase == "" {
-		return "unset"
-	}
-	return string(phase)
-}
 
 // submitDecision records the decision as annotations on the Page. pagerless-server
 // reconciles them into status.decision, which is the only place a decision is

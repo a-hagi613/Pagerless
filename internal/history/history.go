@@ -52,6 +52,8 @@ const (
 	snapshotsTable = "page_snapshots"
 	// stepsTable holds one row per step event.
 	stepsTable = "page_steps"
+	// revokedSessionsTable holds session identifiers (jti) revoked by logout until their cookie expires.
+	revokedSessionsTable = "revoked_sessions"
 )
 
 // schema is applied to a new database. It is idempotent so that a restart reopens the same file.
@@ -136,6 +138,12 @@ var schema = []string{
 	)`,
 	`CREATE INDEX IF NOT EXISTS failure_observations_by_subject
 		ON failure_observations (subject_key, last_seen_at DESC)`,
+	// Version 4. Session identifiers that logout revoked, until their cookie expires.
+	`CREATE TABLE IF NOT EXISTS ` + revokedSessionsTable + ` (
+		jti TEXT PRIMARY KEY,
+		expires_at INTEGER NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS ` + revokedSessionsTable + `_by_expiry ON ` + revokedSessionsTable + ` (expires_at)`,
 }
 
 // Store is an append-only history database.
@@ -525,6 +533,46 @@ func (s *Store) Close() error {
 // close it.
 func (s *Store) DB() *sql.DB {
 	return s.db
+}
+
+// RevokeSession records a session identifier (jti) as revoked until expiresAt
+// and prunes rows whose expiry has already passed as of now.
+func (s *Store) RevokeSession(ctx context.Context, jti string, now, expiresAt time.Time) error {
+	if jti == "" {
+		return errors.New("a session jti is required")
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM `+revokedSessionsTable+` WHERE expires_at <= ?`, now.Unix(),
+	); err != nil {
+		return fmt.Errorf("prune expired session revocations: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO `+revokedSessionsTable+` (jti, expires_at) VALUES (?, ?)`,
+		jti, expiresAt.Unix(),
+	); err != nil {
+		return fmt.Errorf("revoke session %s: %w", jti, err)
+	}
+	return nil
+}
+
+// IsSessionRevoked reports whether the session identifier (jti) has been revoked
+// and has not yet expired as of now.
+func (s *Store) IsSessionRevoked(ctx context.Context, jti string, now time.Time) (bool, error) {
+	if jti == "" {
+		return false, nil
+	}
+	var marker int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM `+revokedSessionsTable+` WHERE jti = ? AND expires_at > ? LIMIT 1`,
+		jti, now.Unix(),
+	).Scan(&marker)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check session revocation: %w", err)
+	}
+	return true, nil
 }
 
 // formatTime writes a time as UTC with nanosecond precision.

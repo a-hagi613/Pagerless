@@ -1,110 +1,109 @@
 # Authentication
 
-Pagerless has two front doors with two different credential stories. The CLI uses
+Pagerless has two front doors with two credential stories. `kubectl page` uses
 the operator's kubeconfig, so the Kubernetes API authenticates it and RBAC
-authorises it. The Portal is a browser application, so `pagerless-server` runs a
-sign-in flow for it and never gives the browser a cluster credential.
+authorises it. The Portal is a browser application, so `pagerless-server` signs
+the operator in and never gives the browser a cluster credential.
 
-The chart does not enable the Portal. It starts neither the dashboard listener
-nor an identity provider; the sign-in and Portal slices own the values that do.
-This page documents the sign-in implementation and the modes the v2.0 release
-ships and plans, so an operator can review the boundary before exposing it.
+Authentication has no external prerequisite: no identity provider, no database,
+and no gateway. The decisions are [ADR-0032](adr/0032-single-operator-local-authentication.md)
+(sessions) and [ADR-0033](adr/0033-one-credentials-secret.md) (credentials).
 
 ## Modes
 
-| Mode | State | Who authenticates |
+`auth.mode` accepts exactly two values.
+
+| Mode | Who authenticates | When to use it |
 | --- | --- | --- |
-| OpenID Connect | Implemented | An OIDC provider that issues an ID token for the dashboard client. |
-| Bootstrap token | Delivered by the onboarding slice | `pagerless-server` verifies a single operator token and creates the session itself. |
-| Disabled, behind a proxy | Delivered by the onboarding slice | A trusted reverse proxy authenticates the operator and asserts the identity in a header. |
+| `token` (default) | `pagerless-server` verifies one bootstrap token and issues a signed session cookie. | Any installation, including a laptop port-forward. |
+| `disabled` | Nothing: every request is `anonymous`, or attributed by an authenticating proxy's identity header. | Only behind a proxy that authenticates the operator, such as OAuth2-Proxy. |
 
-### OpenID Connect
+`disabled` is not a convenience switch. The chart refuses to render it with
+`ingress.enabled` and an empty `auth.proxy.identityHeader`, because that
+combination would publish an anonymous approval surface. It also prints a
+warning block in the release notes, and the server logs a warning at startup.
 
-The server performs the authorization-code flow with PKCE against the configured
-issuer, verifies the ID token's signature, issuer, audience, expiry, and nonce,
-and reads the user's name and groups from it. The flags are:
+## Token mode
 
-| Flag | Meaning |
-| --- | --- |
-| `--dashboard-bind-address` | Enables the Portal and its API on this address. |
-| `--oidc-issuer` | The realm issuer, such as `https://sso.example.com/realms/pagerless`. |
-| `--oidc-client-id` | The confidential dashboard client. Default: `pagerless-dashboard`. |
-| `--oidc-client-secret-file` | The file that holds the client secret. |
-| `--dashboard-base-url` | The browser-facing base URL; the callback is `<base>/auth/callback`. |
-| `--approvers-group` | The group whose members may decide a Proposal. Default: `pagerless-approvers`. |
-| `--dashboard-cookie-secure` | Marks the cookies `Secure`. Default: `true`. |
+The chart generates two Secrets in the release namespace:
 
-The client secret is read on every token request, so rotating the file takes
-effect without a restart. The realm is discovered on the first sign-in, so the
-server starts before the provider is reachable.
+| Secret | Contents | Kept across `helm uninstall` |
+| --- | --- | --- |
+| `pagerless-admin-secret` | `token`: 48 alphanumerics. | Yes, unless `auth.adminSecret.keep=false`. |
+| `pagerless-session-key` | `key`: at least 32 bytes of HMAC-SHA256 key material. | Yes. |
 
-### Disabled, behind a proxy
+Both are reused on upgrade through `lookup`, so an upgrade does not rotate the
+token or sign every browser out. In GitOps, set `auth.adminSecret.create=false`
+and supply the token Secret out of band; a sync then never rotates it.
 
-With authentication disabled, the Portal trusts the identity header of a reverse
-proxy it is deployed behind, and refuses to start when no header is configured.
-The combination is dangerous, so the chart is expected to fail the render when it
-is exposed by an Ingress without a proxy. Until the onboarding slice lands, do not
-run the Portal without an OIDC issuer.
+The operator signs in once:
+
+1. Port-forward the Portal:
+   `kubectl -n pagerless port-forward svc/pagerless-server 8080:8080`.
+2. Print the token:
+   `kubectl -n pagerless get secret pagerless-admin-secret -o go-template='{{.data.token | base64decode}}{{"\n"}}'`.
+3. Open `http://localhost:8080/login` and paste it.
+4. Delete the Secret once you no longer need it:
+   `kubectl -n pagerless delete secret pagerless-admin-secret`.
+
+Deleting the token Secret stops new token sign-ins and does not invalidate an
+existing browser session, because the session is verified with
+`pagerless-session-key`. Rotating that key instead signs every session out.
+
+The token and the key are read from their mounted Secrets, so the server holds
+no `get` grant on either. The only Secrets RBAC is `get`, `update`, and `patch`
+on the credentials Secret, by `resourceNames`.
 
 ## Sessions
 
-A successful sign-in creates a server-side session and sets one opaque cookie:
+`POST /api/auth/login` compares the submitted token in constant time, after a
+fixed delay, and limits failures per source address: five attempts in five
+minutes lock that address out for five minutes with `429`, `Retry-After`, and a
+warning log. Timing therefore reveals neither the token nor how close a guess
+was.
 
-- The cookie is 32 random bytes, `HttpOnly`, `SameSite=Lax`, and `Secure` unless
-  `--dashboard-cookie-secure=false` for a local port-forward. It carries no
-  identity: the server maps it to the session it created.
-- The session holds the ID token's subject, username, groups, a CSRF token, and
-  an expiry. The default lifetime is eight hours, after which the user signs in
-  again.
-- Sessions live in the server's memory, so restarting the pod signs every user
-  out. That is deliberate: a session must not survive a crash that loses the
-  identity it was built from.
-- Sign-in attempts use a second cookie scoped to `/auth` for ten minutes. It
-  holds the state, nonce, and PKCE verifier. It needs no signature: a tampered
-  cookie cannot produce a valid ID token for the configured client.
-- `POST /logout` requires the CSRF token, deletes the session, and redirects to
-  `/signed-out`.
+A successful sign-in sets one cookie:
+
+- The cookie is `HttpOnly`, `SameSite=Lax`, path-scoped to `/`, and `Secure`
+  whenever `dashboard.baseUrl` is `https://` (or `auth.session.secure` says so
+  explicitly). Its lifetime is `auth.session.ttl`, eight hours by default.
+- Its value is `base64url(payload) "." base64url(HMAC-SHA256(key, payload))`.
+  The payload carries the cookie version, the subject, a session identifier
+  (`jti`), the issue and expiry times, and a CSRF token. The server verifies the
+  signature before it parses the payload.
+- Sessions are stateless across pod restarts because the signing key is a
+  Secret. There is no server-side session table.
+- `POST /api/auth/logout` records the `jti` in the SQLite `revoked_sessions`
+  table until the cookie expires, so a copied cookie stops working after
+  sign-out.
+
+`GET /api/auth/session` returns the signed-in subject, whether the caller may
+decide, and the CSRF token. It never returns the cookie or the key.
 
 ## CSRF
 
-Every state-changing request repeats the session's CSRF token in `X-CSRF-Token`.
-The server compares it in constant time. `SameSite=Lax` already stops a cross-site
-form from sending the session cookie; the token additionally stops a script that
-can make same-site requests from acting without reading the session. A request
-without the token, or with the wrong one, is answered with `403` and changes
-nothing.
+Every state-changing `/api/*` request authenticated by the cookie must repeat
+the session's CSRF token in `X-CSRF-Token`. It is compared in constant time, and
+a missing or wrong token is `403` and changes nothing. `SameSite=Lax` already
+stops a cross-site form from sending the cookie; the token stops a script that
+can make same-site requests from acting without reading the session.
+
+A Bearer bootstrap token is accepted on `/api/*` only when `auth.bearerToken` is
+enabled. That request skips the CSRF check for itself alone, which is what makes
+a scripted runbook possible. A Bearer header is never combined with a cookie.
+
+## Disabled mode
+
+With `auth.mode: disabled`, every request resolves to the synthetic user
+`anonymous`, or to the value of `auth.proxy.identityHeader` when the operator
+sets it (for example `X-Auth-Request-User`). The header attributes the action in
+the audit trail; it never authorises one. Anyone who can reach the Portal can
+record a decision, so the Ingress render guard exists.
 
 ## Who may decide
 
-The Portal records a decision only for a member of the approvers group. The
-username from the verified ID token is written to the Page as `decidedBy` next to
-the Proposal hash. That record is an audit trail, not an authorisation check:
-`pagerless-server` reconciles the decision annotations, and the Page's RBAC is
-what stops an unauthorised user from writing them in the first place. See
-[ADR-0031](adr/0031-approval-is-a-decision-on-the-page.md).
-
-## Threat model
-
-| Threat | Control |
-| --- | --- |
-| A stolen browser cookie | The cookie is opaque and `HttpOnly`, expires with the session, and grants only what the signed-in user may do. A stolen cookie is a session theft, not a cluster credential: it cannot read the kubeconfig or the credentials Secret. |
-| Cross-site request forgery | `SameSite=Lax` cookies plus a per-session CSRF token on every write. |
-| Cross-site scripting | Tokens never reach the browser; the session store is server-side. The Portal renders Page content through React, never as HTML. |
-| A forged token | The ID token signature, issuer, audience, expiry, and nonce are verified before a session exists. |
-| A tampered sign-in cookie | The flow cookie's state and nonce must match the callback, and the PKCE verifier must complete the exchange. |
-| Replay of a callback | The state and nonce are single-use and the flow cookie expires after ten minutes. |
-| Exposed over plain HTTP | `--dashboard-cookie-secure=true` marks the cookies `Secure`; the chart does not terminate TLS, so a proxy in front of it must. |
-| A compromised Portal pod | The Portal inherits the server's Role: read evidence, Pages in the release namespace, and no write to any workload. A compromised pod can decide a Proposal, not change a cluster. |
-| An approval by the wrong person | The approvers group is checked at decision time, and the decision is bound to the Proposal hash it was shown. |
-
-The cluster identity is the real boundary, and it is documented in
-[ADR-0037](adr/0037-read-only-cluster-identity.md). Authentication decides who may
-read the Portal and who may decide a Proposal; it never widens what the process
-can do to the cluster.
-
-## CLI authentication
-
-`kubectl page` sends no request to `pagerless-server`. It reads and patches Pages
-through the Kubernetes API with the kubeconfig's identity, so the Kubernetes
-authenticator and RBAC decide everything. `Role pagerless-approver` grants
-`get`, `list`, `watch`, and `patch` on `pages` and nothing else.
+In `token` mode the single operator account may decide, and the session subject
+is written to the Page as `decidedBy`. In `disabled` mode the proxy identity, or
+`anonymous`, is written. In kubeconfig mode the CLI declares the kubeconfig
+user. Approval authority is `patch` on `pages`; `Role pagerless-approver` grants
+exactly that ([ADR-0031](adr/0031-approval-is-a-decision-on-the-page.md)).

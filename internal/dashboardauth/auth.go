@@ -1,532 +1,781 @@
-// Package dashboardauth signs dashboard users in through the Keycloak realm
-// that issues their identity. The server performs the OpenID Connect
-// authorization-code flow with PKCE, verifies the ID token, and keeps the
-// tokens server-side: the browser holds only an opaque session cookie
-// (ADR-0020).
+// Package dashboardauth authenticates Portal and API requests without an
+// external identity provider (ADR-0032). In token mode, the operator exchanges
+// the bootstrap token from pagerless-admin-secret for an HMAC-SHA256 signed
+// session cookie keyed by pagerless-session-key, and logout records the
+// session's jti in SQLite so a copied cookie cannot be replayed. In disabled
+// mode, every request resolves to the configured proxy identity header or to
+// the synthetic user anonymous.
 package dashboardauth
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"math"
+	"net"
 	"net/http"
-	"net/url"
-	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
-	"golang.org/x/oauth2"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
-	// sessionCookieName holds the opaque session identifier. It carries no identity.
-	sessionCookieName = "pagerless_session"
-	// flowCookieName holds the state, nonce, and PKCE verifier of one sign-in attempt.
-	flowCookieName = "pagerless_oidc"
-	// flowLifetime bounds how long a sign-in attempt may take.
-	flowLifetime = 10 * time.Minute
-	// DefaultSessionTTL is how long a signed-in session lasts before the user must sign in again.
+	// ModeToken authenticates requests with the bootstrap token and an HMAC-signed cookie.
+	ModeToken = "token"
+	// ModeDisabled authenticates every request as anonymous or the proxy identity header.
+	ModeDisabled = "disabled"
+
+	// DefaultCookieName is the default name of the signed session cookie.
+	DefaultCookieName = "pagerless_session"
+	// DefaultSessionTTL is how long a signed session cookie remains valid.
 	DefaultSessionTTL = 8 * time.Hour
-	// tokenBytes is the entropy of a session identifier, CSRF token, state, or nonce.
-	tokenBytes = 32
+	// DefaultLoginMaxAttempts is the per-address failure ceiling inside DefaultLoginWindow.
+	DefaultLoginMaxAttempts = 5
+	// DefaultLoginWindow is the sliding window over which login failures are counted.
+	DefaultLoginWindow = 5 * time.Minute
+	// DefaultLoginLockout is how long a locked-out source address receives 429 responses.
+	DefaultLoginLockout = 5 * time.Minute
+	// DefaultLoginDelay is the fixed delay applied to every login attempt.
+	DefaultLoginDelay = 200 * time.Millisecond
+
+	// MinSessionKeyBytes is the minimum length in bytes of the HMAC-SHA256 signing key.
+	MinSessionKeyBytes = 32
+	// CookieVersion is the wire format version of the signed session payload.
+	CookieVersion = 1
+	// claimEntropyBytes is the random byte length of the jti and csrf claims.
+	claimEntropyBytes = 16
+	// maxLoginBodyBytes bounds the JSON payload of POST /api/auth/login.
+	maxLoginBodyBytes = 4096
+	// approversGroupName is the group that every authenticated operator holds.
+	approversGroupName = "pagerless-approvers"
+	// adminSubject is the subject and username of the single operator.
+	adminSubject = "admin"
 )
 
-// Config configures the Keycloak sign-in.
+// RevocationStore records and queries revoked session identifiers (jti).
+// *history.Store implements this interface backed by SQLite.
+type RevocationStore interface {
+	RevokeSession(ctx context.Context, jti string, now, expiresAt time.Time) error
+	IsSessionRevoked(ctx context.Context, jti string, now time.Time) (bool, error)
+}
+
+// Config configures Portal and API authentication.
 type Config struct {
-	// Issuer is the realm issuer, such as http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless.
-	Issuer string
-	// ClientID is the confidential dashboard client.
-	ClientID string
-	// ClientSecret returns the client secret. It is read on every token request so that a rotated Secret takes
-	// effect without a restart.
-	ClientSecret func() (string, error)
-	// RedirectURL is the absolute callback URL that the browser uses, such as
-	// http://localhost:8080/auth/callback.
-	RedirectURL string
-	// ApproversGroup is the realm group whose members may approve. It defaults to pagerless-approvers.
-	ApproversGroup string
-	// SessionTTL is how long a session lasts. It defaults to DefaultSessionTTL.
+	// Mode is "token" (default) or "disabled".
+	Mode string
+	// AdminToken reads the current bootstrap token from pagerless-admin-secret.
+	// It is invoked on every login or bearer check so that rotating or deleting
+	// the Secret takes effect without restarting the server.
+	AdminToken func() (string, error)
+	// SessionKey reads the current HMAC signing key from pagerless-session-key.
+	// Rotating the Secret invalidates all active cookies immediately.
+	SessionKey func() ([]byte, error)
+	// CookieName is the session cookie name. It defaults to DefaultCookieName.
+	CookieName string
+	// SessionTTL is the lifetime of a signed session cookie. It defaults to DefaultSessionTTL.
 	SessionTTL time.Duration
-	// SecureCookies marks the cookies Secure. It must be false only where the browser reaches the dashboard
-	// over plain HTTP, such as a local port-forward.
+	// BaseURL is the browser-facing base URL, used to derive the Secure attribute when CookieSecure is empty.
+	BaseURL string
+	// CookieSecure is "", "true", or "false". When empty, Secure is derived from BaseURL (true for https://).
+	CookieSecure string
+	// SecureCookies marks the cookie Secure when CookieSecure and BaseURL are both unset.
 	SecureCookies bool
-	// HTTPClient performs discovery and token requests. It defaults to http.DefaultClient.
-	HTTPClient *http.Client
+	// BearerToken enables Authorization: Bearer <admin-token> on /api/* requests.
+	BearerToken bool
+	// IdentityHeader is the trusted reverse-proxy header (such as X-Auth-Request-User)
+	// used to attribute actions when Mode is "disabled".
+	IdentityHeader string
+	// LoginMaxAttempts is the number of failed attempts per source address before lockout.
+	LoginMaxAttempts int
+	// LoginWindow is the time window over which failed attempts are counted.
+	LoginWindow time.Duration
+	// LoginLockout is the duration of the per-address lockout.
+	LoginLockout time.Duration
+	// LoginDelay is the fixed delay per login attempt. It defaults to DefaultLoginDelay.
+	LoginDelay time.Duration
+	// Revocations stores revoked session identifiers (jti). When nil, an in-memory fallback is used.
+	Revocations RevocationStore
 	// Now returns the current time. It defaults to time.Now.
 	Now func() time.Time
+	// Sleep pauses for the fixed login delay. It defaults to time.Sleep.
+	Sleep func(time.Duration)
+	// Logger logs lockout warnings. It defaults to slog.Default().
+	Logger *slog.Logger
 }
 
-// User is the signed-in dashboard user. It is derived from the verified ID token.
+// User is the authenticated Portal or API caller.
 type User struct {
-	// Subject is the stable Keycloak subject identifier.
-	Subject string `json:"subject"`
-	// Username is the Keycloak preferred username, which is recorded as the approver.
-	Username string `json:"username"`
-	// Groups are the realm groups that the token carries.
-	Groups []string `json:"groups"`
-	// Approver reports whether the user belongs to the approvers group.
-	Approver bool `json:"canApprove"`
-	// CSRF is the token that a state-changing request must repeat in the X-CSRF-Token header.
-	CSRF string `json:"csrfToken,omitempty"`
-	// ExpiresAt is when the session ends.
+	Subject   string    `json:"subject"`
+	Username  string    `json:"username"`
+	Groups    []string  `json:"groups,omitempty"`
+	Approver  bool      `json:"canApprove"`
+	CSRF      string    `json:"csrfToken"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	Mode      string    `json:"mode"`
+	JTI       string    `json:"-"`
+	Bearer    bool      `json:"-"`
 }
 
-// Auth performs the Keycloak flow and resolves session cookies.
+// signedClaims is the JSON payload inside the signed session cookie.
+type signedClaims struct {
+	Version   int    `json:"v"`
+	Subject   string `json:"sub"`
+	JTI       string `json:"jti"`
+	IssuedAt  int64  `json:"iat"`
+	ExpiresAt int64  `json:"exp"`
+	CSRF      string `json:"csrf"`
+}
+
+// Auth authenticates HTTP requests and serves login/logout handlers.
 type Auth struct {
-	issuer       string
-	issuerBase   string
-	realmPath    string
-	clientID     string
-	clientSecret func() (string, error)
-	redirectURL  string
-	browserBase  string
-	group        string
-	sessionTTL   time.Duration
-	secure       bool
-	client       *http.Client
-	now          func() time.Time
+	mode           string
+	adminToken     func() (string, error)
+	sessionKey     func() ([]byte, error)
+	cookieName     string
+	sessionTTL     time.Duration
+	secure         bool
+	bearerToken    bool
+	identityHeader string
+	maxAttempts    int
+	loginWindow    time.Duration
+	loginLockout   time.Duration
+	loginDelay     time.Duration
+	revocations    RevocationStore
+	now            func() time.Time
+	sleep          func(time.Duration)
+	logger         *slog.Logger
 
 	mu       sync.Mutex
-	provider *oidc.Provider
-	verifier *oidc.IDTokenVerifier
-
-	sessions sessionStore
+	attempts map[string]*ipAttempts
 }
 
-// New returns an Auth. It performs no network request: the realm is discovered
-// on the first sign-in, so the server can start before Keycloak is reachable.
+type ipAttempts struct {
+	failures    []time.Time
+	lockedUntil time.Time
+}
+
+// New validates cfg and returns an Auth instance.
 func New(cfg Config) (*Auth, error) {
-	switch {
-	case cfg.Issuer == "":
-		return nil, errors.New("an OIDC issuer is required")
-	case cfg.ClientID == "":
-		return nil, errors.New("an OIDC client ID is required")
-	case cfg.ClientSecret == nil:
-		return nil, errors.New("an OIDC client secret source is required")
-	case cfg.RedirectURL == "":
-		return nil, errors.New("an OIDC redirect URL is required")
+	mode := strings.TrimSpace(cfg.Mode)
+	if mode == "" {
+		mode = ModeToken
 	}
-	issuerURL, err := url.Parse(cfg.Issuer)
-	if err != nil || issuerURL.Scheme == "" || issuerURL.Host == "" {
-		return nil, fmt.Errorf("the OIDC issuer URL is invalid: %w", err)
+	if mode != ModeToken && mode != ModeDisabled {
+		return nil, fmt.Errorf("invalid auth.mode %q: must be %q or %q", cfg.Mode, ModeToken, ModeDisabled)
 	}
-	redirectURL, err := url.Parse(cfg.RedirectURL)
-	if err != nil || redirectURL.Scheme == "" || redirectURL.Host == "" {
-		return nil, fmt.Errorf("the OIDC redirect URL is invalid: %w", err)
+
+	secure, err := resolveSecureCookie(cfg.CookieSecure, cfg.BaseURL, cfg.SecureCookies)
+	if err != nil {
+		return nil, err
 	}
-	group := cfg.ApproversGroup
-	if group == "" {
-		group = "pagerless-approvers"
+
+	if mode == ModeToken {
+		if cfg.AdminToken == nil {
+			return nil, errors.New("no admin token source configured: provide AdminToken or set auth.mode=disabled")
+		}
+		tok, err := cfg.AdminToken()
+		if err != nil || strings.TrimSpace(tok) == "" {
+			return nil, fmt.Errorf("no admin token: create Secret pagerless-admin-secret or set auth.mode=disabled")
+		}
+		if cfg.SessionKey == nil {
+			return nil, errors.New("no session key source configured: create Secret pagerless-session-key")
+		}
+		key, err := cfg.SessionKey()
+		if err != nil {
+			return nil, fmt.Errorf("read session signing key: %w", err)
+		}
+		if len(bytesTrimmed(key)) < MinSessionKeyBytes {
+			return nil, fmt.Errorf("session signing key must be at least %d bytes", MinSessionKeyBytes)
+		}
+	}
+
+	cookieName := strings.TrimSpace(cfg.CookieName)
+	if cookieName == "" {
+		cookieName = DefaultCookieName
 	}
 	ttl := cfg.SessionTTL
-	if ttl == 0 {
+	if ttl <= 0 {
 		ttl = DefaultSessionTTL
 	}
-	client := cfg.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
+	maxAttempts := cfg.LoginMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultLoginMaxAttempts
+	}
+	window := cfg.LoginWindow
+	if window <= 0 {
+		window = DefaultLoginWindow
+	}
+	lockout := cfg.LoginLockout
+	if lockout <= 0 {
+		lockout = DefaultLoginLockout
+	}
+	delay := cfg.LoginDelay
+	if delay <= 0 {
+		delay = DefaultLoginDelay
 	}
 	now := cfg.Now
 	if now == nil {
 		now = time.Now
 	}
+	sleep := cfg.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	revocations := cfg.Revocations
+	if revocations == nil {
+		revocations = newMemoryRevocationStore()
+	}
+
 	return &Auth{
-		issuer:       cfg.Issuer,
-		issuerBase:   issuerURL.Scheme + "://" + issuerURL.Host,
-		realmPath:    strings.TrimSuffix(issuerURL.Path, "/"),
-		clientID:     cfg.ClientID,
-		clientSecret: cfg.ClientSecret,
-		redirectURL:  cfg.RedirectURL,
-		browserBase:  redirectURL.Scheme + "://" + redirectURL.Host,
-		group:        group,
-		sessionTTL:   ttl,
-		secure:       cfg.SecureCookies,
-		client:       client,
-		now:          now,
-		sessions:     newSessionStore(now),
+		mode:           mode,
+		adminToken:     cfg.AdminToken,
+		sessionKey:     cfg.SessionKey,
+		cookieName:     cookieName,
+		sessionTTL:     ttl,
+		secure:         secure,
+		bearerToken:    cfg.BearerToken,
+		identityHeader: strings.TrimSpace(cfg.IdentityHeader),
+		maxAttempts:    maxAttempts,
+		loginWindow:    window,
+		loginLockout:   lockout,
+		loginDelay:     delay,
+		revocations:    revocations,
+		now:            now,
+		sleep:          sleep,
+		logger:         logger,
+		attempts:       make(map[string]*ipAttempts),
 	}, nil
 }
 
-// Group returns the group whose members may approve.
-func (a *Auth) Group() string {
-	return a.group
+// resolveSecureCookie determines whether session cookies carry the Secure flag.
+func resolveSecureCookie(explicit, baseURL string, fallback bool) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(explicit)) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	case "":
+		trimmed := strings.ToLower(strings.TrimSpace(baseURL))
+		if trimmed != "" {
+			return strings.HasPrefix(trimmed, "https://"), nil
+		}
+		return fallback, nil
+	default:
+		return false, fmt.Errorf("auth.session.secure must be \"\", \"true\", or \"false\", got %q", explicit)
+	}
 }
 
-// User returns the signed-in user of the request, or nil when the request
-// carries no live session.
+// Mode returns the configured authentication mode ("token" or "disabled").
+func (a *Auth) Mode() string {
+	return a.mode
+}
+
+// CookieName returns the configured session cookie name.
+func (a *Auth) CookieName() string {
+	return a.cookieName
+}
+
+// User resolves the authenticated caller from r, or returns nil when unauthenticated.
 func (a *Auth) User(r *http.Request) *User {
-	cookie, err := r.Cookie(sessionCookieName)
+	now := a.now()
+	if a.mode == ModeDisabled {
+		username := "anonymous"
+		if a.identityHeader != "" {
+			if forwarded := strings.TrimSpace(r.Header.Get(a.identityHeader)); forwarded != "" {
+				username = forwarded
+			}
+		}
+		return &User{
+			Subject:   username,
+			Username:  username,
+			Groups:    []string{approversGroupName},
+			Approver:  true,
+			CSRF:      "",
+			ExpiresAt: now.Add(a.sessionTTL),
+			Mode:      ModeDisabled,
+		}
+	}
+
+	// If an Authorization header is present, evaluate Bearer token authentication exclusively
+	// and never fall back to a session cookie on failure.
+	if authHeader := strings.TrimSpace(r.Header.Get("Authorization")); authHeader != "" {
+		if !a.bearerToken {
+			return nil
+		}
+		const prefix = "bearer "
+		if len(authHeader) <= len(prefix) || !strings.EqualFold(authHeader[:len(prefix)], prefix) {
+			return nil
+		}
+		supplied := strings.TrimSpace(authHeader[len(prefix):])
+		expected, err := a.readAdminToken()
+		if err != nil || !constantTimeTokenEqual(supplied, expected) {
+			return nil
+		}
+		return &User{
+			Subject:   adminSubject,
+			Username:  adminSubject,
+			Groups:    []string{approversGroupName},
+			Approver:  true,
+			CSRF:      "",
+			ExpiresAt: now.Add(a.sessionTTL),
+			Mode:      ModeToken,
+			Bearer:    true,
+		}
+	}
+
+	cookie, err := r.Cookie(a.cookieName)
 	if err != nil || cookie.Value == "" {
 		return nil
 	}
-	session, ok := a.sessions.get(cookie.Value)
+	claims, ok := a.verifyCookie(r.Context(), cookie.Value, now)
 	if !ok {
 		return nil
 	}
 	return &User{
-		Subject:   session.subject,
-		Username:  session.username,
-		Groups:    append([]string(nil), session.groups...),
-		Approver:  contains(session.groups, a.group),
-		CSRF:      session.csrf,
-		ExpiresAt: session.expiresAt,
+		Subject:   claims.Subject,
+		Username:  claims.Subject,
+		Groups:    []string{approversGroupName},
+		Approver:  true,
+		CSRF:      claims.CSRF,
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+		Mode:      ModeToken,
+		JTI:       claims.JTI,
 	}
 }
 
-// SignIn starts the authorization-code flow and redirects the browser to Keycloak.
-func (a *Auth) SignIn() http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		state, err := randomToken()
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		nonce, err := randomToken()
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		verifier := oauth2.GenerateVerifier()
-		a.setFlowCookie(w, flow{State: state, Nonce: nonce, Verifier: verifier})
-		oauth, err := a.oauth(r.Context())
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		target := oauth.AuthCodeURL(
-			state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier))
-		http.Redirect(w, r, a.browserAuthURL(target), http.StatusFound)
-	})
+// ValidateCSRF checks whether the state-changing request r is authorized for user.
+// CSRF is skipped when auth.mode is disabled or when the request authenticated
+// via a valid Bearer token.
+func (a *Auth) ValidateCSRF(r *http.Request, user *User) bool {
+	if user == nil {
+		return false
+	}
+	if a.mode == ModeDisabled || user.Bearer {
+		return true
+	}
+	supplied := r.Header.Get("X-CSRF-Token")
+	if supplied == "" || user.CSRF == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(supplied), []byte(user.CSRF)) == 1
 }
 
-// Callback completes the flow: it checks the state, exchanges the code, and
-// verifies the ID token's signature, issuer, audience, expiry, and nonce before
-// it records a session.
-func (a *Auth) Callback() http.Handler {
+// Login handles POST /api/auth/login.
+func (a *Auth) Login() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
-		pending, ok := a.flowCookie(r)
-		a.clearFlowCookie(w)
-		if !ok {
-			a.fail(w, r, errors.New("the sign-in attempt cookie is missing or unreadable"))
+		w.Header().Set("Cache-Control", "no-store")
+
+		if a.mode == ModeDisabled {
+			writeAuthError(w, http.StatusForbidden, "login_disabled", "token sign-in is disabled when auth.mode is disabled")
 			return
 		}
-		query := r.URL.Query()
-		if query.Get("error") != "" {
-			a.fail(w, r, errors.New("keycloak refused the sign-in"))
+
+		now := a.now()
+		ip := a.clientIP(r)
+		if locked, retryAfter := a.isLockedOut(ip, now); locked {
+			a.sleep(a.loginDelay)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			a.warnLockout(r.Context(), ip, retryAfter)
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"error": map[string]string{
+					"code":    "too_many_attempts",
+					"message": "too many failed sign-in attempts; wait before retrying",
+				},
+				"retryAfter": retryAfter,
+			})
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(pending.State)) != 1 {
-			a.fail(w, r, errors.New("the sign-in state does not match"))
+
+		var body struct {
+			Token string `json:"token"`
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBodyBytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&body); err != nil {
+			writeAuthError(w, http.StatusBadRequest, "bad_request", "malformed JSON login request")
 			return
 		}
-		ctx := oidc.ClientContext(r.Context(), a.client)
-		oauth, err := a.oauth(ctx)
+
+		submitted := strings.TrimSpace(body.Token)
+		expected, tokenErr := a.readAdminToken()
+		matched := constantTimeTokenEqual(submitted, expected) && tokenErr == nil
+		a.sleep(a.loginDelay)
+
+		if !matched {
+			if lockedNow, retryAfter := a.recordFailure(ip, now); lockedNow {
+				a.warnLockout(r.Context(), ip, retryAfter)
+			}
+			writeAuthError(w, http.StatusUnauthorized, "invalid_token", "the bootstrap token was not accepted")
+			return
+		}
+
+		a.clearFailures(ip)
+
+		jti, err := randomBase64URL(claimEntropyBytes)
 		if err != nil {
-			a.fail(w, r, err)
+			writeAuthError(w, http.StatusInternalServerError, "internal_error", "mint session identifier")
 			return
 		}
-		token, err := oauth.Exchange(ctx, query.Get("code"), oauth2.VerifierOption(pending.Verifier))
+		csrf, err := randomBase64URL(claimEntropyBytes)
 		if err != nil {
-			a.fail(w, r, fmt.Errorf("exchange the authorization code: %w", err))
+			writeAuthError(w, http.StatusInternalServerError, "internal_error", "mint CSRF token")
 			return
 		}
-		rawIDToken, ok := token.Extra("id_token").(string)
-		if !ok || rawIDToken == "" {
-			a.fail(w, r, errors.New("the token response carries no ID token"))
-			return
+		expiresAt := now.Add(a.sessionTTL).UTC()
+		claims := signedClaims{
+			Version:   CookieVersion,
+			Subject:   adminSubject,
+			JTI:       jti,
+			IssuedAt:  now.Unix(),
+			ExpiresAt: expiresAt.Unix(),
+			CSRF:      csrf,
 		}
-		verifier, err := a.idTokenVerifier(ctx)
+		signedValue, err := a.signClaims(claims)
 		if err != nil {
-			a.fail(w, r, err)
+			writeAuthError(w, http.StatusInternalServerError, "internal_error", "sign session cookie")
 			return
 		}
-		idToken, err := verifier.Verify(ctx, rawIDToken)
-		if err != nil {
-			a.fail(w, r, fmt.Errorf("verify the ID token: %w", err))
-			return
-		}
-		if subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(pending.Nonce)) != 1 {
-			a.fail(w, r, errors.New("the ID token nonce does not match"))
-			return
-		}
-		var claims struct {
-			PreferredUsername string   `json:"preferred_username"`
-			Email             string   `json:"email"`
-			Groups            []string `json:"groups"`
-		}
-		if err := idToken.Claims(&claims); err != nil {
-			a.fail(w, r, fmt.Errorf("read the ID token claims: %w", err))
-			return
-		}
-		username := claims.PreferredUsername
-		if username == "" {
-			username = claims.Email
-		}
-		if username == "" {
-			username = idToken.Subject
-		}
-		sessionID, err := randomToken()
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		csrf, err := randomToken()
-		if err != nil {
-			a.fail(w, r, err)
-			return
-		}
-		a.sessions.create(session{
-			id:        sessionID,
-			subject:   idToken.Subject,
-			username:  username,
-			groups:    claims.Groups,
-			csrf:      csrf,
-			expiresAt: a.now().Add(a.sessionTTL),
-		})
+
 		http.SetCookie(w, &http.Cookie{
-			Name:     sessionCookieName,
-			Value:    sessionID,
+			Name:     a.cookieName,
+			Value:    signedValue,
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   a.secure,
 			SameSite: http.SameSiteLaxMode,
 			MaxAge:   int(a.sessionTTL.Seconds()),
 		})
-		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"expiresAt": expiresAt.Format(time.RFC3339),
+		})
 	})
 }
 
-// SignOut ends the session. It requires the CSRF token, because it changes
-// state, and it redirects to a page that starts no new sign-in.
-func (a *Auth) SignOut() http.Handler {
+// Logout handles POST /api/auth/logout.
+func (a *Auth) Logout() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			writeAuthError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 			return
 		}
+		w.Header().Set("Cache-Control", "no-store")
+
+		if a.mode == ModeDisabled {
+			a.clearSessionCookie(w)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
 		user := a.User(r)
 		if user == nil {
 			a.clearSessionCookie(w)
-			http.Redirect(w, r, "/signed-out", http.StatusSeeOther)
+			writeAuthError(w, http.StatusUnauthorized, "unauthenticated", "sign in to use the dashboard")
 			return
 		}
-		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(user.CSRF)) != 1 {
-			http.Error(w, "the CSRF token is missing or wrong", http.StatusForbidden)
+		if !a.ValidateCSRF(r, user) {
+			writeAuthError(w, http.StatusForbidden, "csrf", "the CSRF token is missing or wrong")
 			return
 		}
-		if cookie, err := r.Cookie(sessionCookieName); err == nil {
-			a.sessions.delete(cookie.Value)
+		if user.JTI != "" {
+			if err := a.revocations.RevokeSession(r.Context(), user.JTI, a.now(), user.ExpiresAt); err != nil {
+				logf.FromContext(r.Context()).Error(err, "revoke session in SQLite")
+				writeAuthError(w, http.StatusInternalServerError, "internal_error", "could not revoke session")
+				return
+			}
 		}
 		a.clearSessionCookie(w)
+		w.WriteHeader(http.StatusNoContent)
+	})
+}
+
+// SignIn handles GET /login for browser navigation. In disabled mode it redirects
+// to /; in token mode it serves a minimal HTML sign-in fallback when the SPA
+// does not intercept /login.
+func (a *Auth) SignIn() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a.mode == ModeDisabled {
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, "/signed-out", http.StatusSeeOther)
+		_, _ = io.WriteString(w, `<!doctype html><html lang="en"><head><meta charset="utf-8">`+
+			`<title>Pagerless Sign In</title></head><body><div id="root">Sign in to Pagerless</div></body></html>`)
 	})
 }
 
-// oauth returns the OAuth client configuration for the realm.
-func (a *Auth) oauth(ctx context.Context) (*oauth2.Config, error) {
-	provider, err := a.realm(ctx)
+// signClaims serializes and HMAC-SHA256 signs the session claims.
+func (a *Auth) signClaims(claims signedClaims) (string, error) {
+	key, err := a.readSessionKey()
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	secret, err := a.clientSecret()
+	rawPayload, err := json.Marshal(claims)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	return &oauth2.Config{
-		ClientID:     a.clientID,
-		ClientSecret: secret,
-		RedirectURL:  a.redirectURL,
-		Endpoint:     provider.Endpoint(),
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
-	}, nil
+	encodedPayload := base64.RawURLEncoding.EncodeToString(rawPayload)
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(encodedPayload))
+	encodedMAC := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return encodedPayload + "." + encodedMAC, nil
 }
 
-// realm discovers the issuer once and remembers the provider.
-func (a *Auth) realm(ctx context.Context) (*oidc.Provider, error) {
+// verifyCookie verifies the HMAC-SHA256 signature BEFORE parsing the payload,
+// checks claim validity and expiry, and consults the revocation store.
+func (a *Auth) verifyCookie(ctx context.Context, raw string, now time.Time) (signedClaims, bool) {
+	encodedPayload, encodedMAC, ok := strings.Cut(raw, ".")
+	if !ok || encodedPayload == "" || encodedMAC == "" || strings.Contains(encodedMAC, ".") {
+		return signedClaims{}, false
+	}
+	suppliedMAC, err := base64.RawURLEncoding.DecodeString(encodedMAC)
+	if err != nil || len(suppliedMAC) != sha256.Size {
+		return signedClaims{}, false
+	}
+	key, err := a.readSessionKey()
+	if err != nil {
+		return signedClaims{}, false
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(encodedPayload))
+	expectedMAC := mac.Sum(nil)
+
+	// Verify the signature in constant time before decoding or parsing the payload.
+	if !hmac.Equal(suppliedMAC, expectedMAC) {
+		return signedClaims{}, false
+	}
+
+	rawPayload, err := base64.RawURLEncoding.DecodeString(encodedPayload)
+	if err != nil {
+		return signedClaims{}, false
+	}
+	var claims signedClaims
+	if err := json.Unmarshal(rawPayload, &claims); err != nil {
+		return signedClaims{}, false
+	}
+	if claims.Version != CookieVersion || claims.Subject == "" || claims.JTI == "" || claims.CSRF == "" {
+		return signedClaims{}, false
+	}
+	if claims.IssuedAt <= 0 || now.Unix() >= claims.ExpiresAt {
+		return signedClaims{}, false
+	}
+	if a.revocations != nil {
+		revoked, err := a.revocations.IsSessionRevoked(ctx, claims.JTI, now)
+		if err != nil || revoked {
+			return signedClaims{}, false
+		}
+	}
+	return claims, true
+}
+
+func (a *Auth) readAdminToken() (string, error) {
+	if a.adminToken == nil {
+		return "", errors.New("no admin token source")
+	}
+	raw, err := a.adminToken()
+	if err != nil {
+		return "", err
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("admin token is empty")
+	}
+	return trimmed, nil
+}
+
+func (a *Auth) readSessionKey() ([]byte, error) {
+	if a.sessionKey == nil {
+		return nil, errors.New("no session key source")
+	}
+	raw, err := a.sessionKey()
+	if err != nil {
+		return nil, err
+	}
+	trimmed := bytesTrimmed(raw)
+	if len(trimmed) < MinSessionKeyBytes {
+		return nil, errors.New("session key is shorter than 32 bytes")
+	}
+	return trimmed, nil
+}
+
+func bytesTrimmed(raw []byte) []byte {
+	return []byte(strings.TrimSpace(string(raw)))
+}
+
+// constantTimeTokenEqual compares two tokens in constant time without leaking
+// either token's length or prefix match.
+func constantTimeTokenEqual(supplied, expected string) bool {
+	suppliedHash := sha256.Sum256([]byte(supplied))
+	expectedHash := sha256.Sum256([]byte(expected))
+	hashMatch := subtle.ConstantTimeCompare(suppliedHash[:], expectedHash[:])
+	lenMatch := subtle.ConstantTimeEq(int32(len(supplied)), int32(len(expected)))
+	nonEmpty := 0
+	if len(expected) > 0 {
+		nonEmpty = 1
+	}
+	return (hashMatch & lenMatch & nonEmpty) == 1
+}
+
+func (a *Auth) clientIP(r *http.Request) string {
+	if a.identityHeader != "" {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			first, _, _ := strings.Cut(xff, ",")
+			if ip := strings.TrimSpace(first); ip != "" {
+				return ip
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err == nil && host != "" {
+		return host
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "unknown"
+}
+
+func (a *Auth) isLockedOut(ip string, now time.Time) (bool, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.provider != nil {
-		return a.provider, nil
+	entry, ok := a.attempts[ip]
+	if !ok {
+		return false, 0
 	}
-	ctx = oidc.ClientContext(ctx, a.client)
-	provider, err := oidc.NewProvider(ctx, a.issuer)
-	if err != nil {
-		return nil, fmt.Errorf("discover the OIDC issuer %s: %w", a.issuer, err)
+	if now.Before(entry.lockedUntil) {
+		seconds := max(1, int(math.Ceil(entry.lockedUntil.Sub(now).Seconds())))
+		return true, seconds
 	}
-	a.provider = provider
-	a.verifier = provider.Verifier(&oidc.Config{ClientID: a.clientID})
-	return provider, nil
+	return false, 0
 }
 
-// idTokenVerifier returns the realm's ID token verifier.
-func (a *Auth) idTokenVerifier(ctx context.Context) (*oidc.IDTokenVerifier, error) {
-	if _, err := a.realm(ctx); err != nil {
-		return nil, err
-	}
+func (a *Auth) recordFailure(ip string, now time.Time) (bool, int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.verifier, nil
+	entry, ok := a.attempts[ip]
+	if !ok {
+		entry = &ipAttempts{}
+		a.attempts[ip] = entry
+	}
+	cutoff := now.Add(-a.loginWindow)
+	kept := entry.failures[:0]
+	for _, ts := range entry.failures {
+		if !ts.Before(cutoff) {
+			kept = append(kept, ts)
+		}
+	}
+	entry.failures = append(kept, now)
+	if len(entry.failures) >= a.maxAttempts {
+		entry.lockedUntil = now.Add(a.loginLockout)
+		entry.failures = nil
+		seconds := max(1, int(math.Ceil(a.loginLockout.Seconds())))
+		return true, seconds
+	}
+	return false, 0
 }
 
-// flow is one pending sign-in attempt. The fields are exported so that the
-// cookie payload encodes; they are opaque to the browser.
-type flow struct {
-	State    string `json:"state"`
-	Nonce    string `json:"nonce"`
-	Verifier string `json:"verifier"`
+func (a *Auth) clearFailures(ip string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.attempts, ip)
 }
 
-// setFlowCookie records the pending attempt in a short-lived, HTTP-only cookie.
-// The values are opaque and checked against the callback, so the cookie needs
-// no signature: a tampered cookie cannot produce a valid ID token for the
-// server's client.
-func (a *Auth) setFlowCookie(w http.ResponseWriter, pending flow) {
-	payload, err := json.Marshal(pending)
-	if err != nil {
-		return
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     flowCookieName,
-		Value:    base64.RawURLEncoding.EncodeToString(payload),
-		Path:     "/auth",
-		HttpOnly: true,
-		Secure:   a.secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(flowLifetime.Seconds()),
-	})
-}
-
-func (a *Auth) flowCookie(r *http.Request) (flow, bool) {
-	cookie, err := r.Cookie(flowCookieName)
-	if err != nil || cookie.Value == "" {
-		return flow{}, false
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(cookie.Value)
-	if err != nil {
-		return flow{}, false
-	}
-	var pending flow
-	if err := json.Unmarshal(raw, &pending); err != nil {
-		return flow{}, false
-	}
-	if pending.State == "" || pending.Nonce == "" || pending.Verifier == "" {
-		return flow{}, false
-	}
-	return pending, true
-}
-
-func (a *Auth) clearFlowCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name: flowCookieName, Value: "", Path: "/auth", HttpOnly: true,
-		Secure: a.secure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
-	})
+func (a *Auth) warnLockout(ctx context.Context, ip string, retryAfter int) {
+	a.logger.WarnContext(ctx, "login rate limit exceeded; source address locked out",
+		"remoteAddr", ip, "retryAfterSeconds", retryAfter)
+	logf.FromContext(ctx).Info("WARN: login rate limit exceeded; source address locked out",
+		"remoteAddr", ip, "retryAfterSeconds", retryAfter)
 }
 
 func (a *Auth) clearSessionCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookieName, Value: "", Path: "/", HttpOnly: true,
-		Secure: a.secure, SameSite: http.SameSiteLaxMode, MaxAge: -1,
+		Name:     a.cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   a.secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
 	})
 }
 
-// fail answers a sign-in that cannot complete. The browser is told nothing
-// beyond that it is not signed in, while the operator gets the reason. Keycloak
-// error bodies can name users, so only the wrapped error is logged.
-func (a *Auth) fail(w http.ResponseWriter, r *http.Request, err error) {
-	if r.Context().Err() != nil {
-		return
-	}
-	logf.FromContext(r.Context()).Error(err, "dashboard sign-in failed")
-	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/signed-out?failed=1", http.StatusSeeOther)
-}
-
-// session is one signed-in browser.
-type session struct {
-	id        string
-	subject   string
-	username  string
-	groups    []string
-	csrf      string
-	expiresAt time.Time
-}
-
-// sessionStore holds sessions in memory. pagerless-server runs one replica
-// (ADR-0001), and a restart ends every session, which is acceptable for an
-// eight-hour human session.
-type sessionStore struct {
-	mu       sync.Mutex
-	sessions map[string]session
-	now      func() time.Time
-}
-
-func newSessionStore(now func() time.Time) sessionStore {
-	return sessionStore{sessions: make(map[string]session), now: now}
-}
-
-func (s *sessionStore) create(value session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := s.now()
-	for id, existing := range s.sessions {
-		if !now.Before(existing.expiresAt) {
-			delete(s.sessions, id)
-		}
-	}
-	s.sessions[value.id] = value
-}
-
-func (s *sessionStore) get(id string) (session, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	value, ok := s.sessions[id]
-	if !ok {
-		return session{}, false
-	}
-	if !s.now().Before(value.expiresAt) {
-		delete(s.sessions, id)
-		return session{}, false
-	}
-	return value, true
-}
-
-func (s *sessionStore) delete(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.sessions, id)
-}
-
-// randomToken returns a URL-safe random token.
-func randomToken() (string, error) {
-	raw := make([]byte, tokenBytes)
+func randomBase64URL(numBytes int) (string, error) {
+	raw := make([]byte, numBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// contains reports whether the list holds the value, comparing case-sensitively as Keycloak group names are.
-func contains(values []string, want string) bool {
-	return slices.Contains(values, want)
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeAuthError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{
+		"error": map[string]string{
+			"code":    code,
+			"message": message,
+		},
+	})
+}
+
+// memoryRevocationStore is the in-memory fallback when no SQLite store is passed.
+type memoryRevocationStore struct {
+	mu      sync.Mutex
+	revoked map[string]int64
+}
+
+func newMemoryRevocationStore() *memoryRevocationStore {
+	return &memoryRevocationStore{revoked: make(map[string]int64)}
+}
+
+func (m *memoryRevocationStore) RevokeSession(_ context.Context, jti string, now, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	nowUnix := now.Unix()
+	for k, exp := range m.revoked {
+		if exp <= nowUnix {
+			delete(m.revoked, k)
+		}
+	}
+	m.revoked[jti] = expiresAt.Unix()
+	return nil
+}
+
+func (m *memoryRevocationStore) IsSessionRevoked(_ context.Context, jti string, now time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	exp, ok := m.revoked[jti]
+	if !ok {
+		return false, nil
+	}
+	if exp <= now.Unix() {
+		delete(m.revoked, jti)
+		return false, nil
+	}
+	return true, nil
 }

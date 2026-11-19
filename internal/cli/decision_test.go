@@ -319,7 +319,7 @@ func TestDismissRecordsTheReasonAndEndsThePage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dismiss: %v\n%s", err, out)
 	}
-	if want := "dismissed by " + decisionUser; !strings.Contains(out, want) {
+	if want := "rejected by " + decisionUser; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want it to contain %q", out, want)
 	}
 	page := c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseRejected)

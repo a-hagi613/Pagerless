@@ -49,6 +49,43 @@ rbac:
 approvers:
   subjects: []
 
+# --- Portal authentication --------------------------------------------------
+# Authentication has no external prerequisite (ADR-0032). In token mode the
+# chart generates a bootstrap token and a session signing key; in disabled mode
+# every request is anonymous, or attributed by an authenticating proxy.
+
+auth:
+  # token (the default) or disabled. Nothing else is accepted.
+  mode: token
+  # The bootstrap token Secret. `helm install` prints the command that decodes it.
+  adminSecret:
+    # Render the Secret. Set false to supply it out of band in GitOps; name must
+    # then refer to an existing Secret and a sync never rotates the token.
+    create: true
+    name: pagerless-admin-secret
+    key: token
+    # Length of the generated alphanumeric token.
+    length: 48
+    # Keep the Secret across `helm uninstall`, so reinstalling does not rotate it.
+    keep: true
+  # The HMAC-SHA256 key that signs session cookies. Rotating it signs every
+  # session out.
+  session:
+    secretName: pagerless-session-key
+    key: key
+    # Lifetime of a signed session cookie.
+    ttl: 8h
+    # Secure attribute of the cookie: "" derives it from dashboard.baseUrl,
+    # which marks it Secure whenever the URL is https.
+    secure: ""
+  # Accept Authorization: Bearer <bootstrap token> on /api/* for scripted calls.
+  bearerToken: false
+  # The authenticating reverse proxy used with mode: disabled.
+  proxy:
+    # Trusted header that names the operator, such as X-Auth-Request-User. It
+    # attributes the action and never authorizes it.
+    identityHeader: ""
+
 # --- Credentials ------------------------------------------------------------
 
 credentials:
@@ -83,13 +120,26 @@ persistence:
 
 service:
   type: ClusterIP
-  # Port of the agent report API and, when it is served, the Portal.
+  # Port of the Portal.
   port: 8080
+  # Port of the agent report API. It is separate from the Portal so that an
+  # agent Job never depends on the browser-facing surface.
+  reportPort: 8082
 
 dashboard:
-  # Browser-facing base URL of the Portal. Used for cookie scope and absolute
-  # links once the Portal is served; the v2.0 chart shell does not enable it.
+  # Browser-facing base URL of the Portal. It scopes the session cookie, marks
+  # it Secure when the URL is https, and is used for absolute links.
   baseUrl: http://localhost:8080
+
+# Optional Ingress in front of the Portal. Combining it with auth.mode=disabled
+# and no auth.proxy.identityHeader fails at render time, because that
+# configuration would expose an anonymous approval surface.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
 
 # --- Scheduling -------------------------------------------------------------
 

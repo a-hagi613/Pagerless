@@ -255,3 +255,58 @@ func tableExists(t *testing.T, db *sql.DB, name string) bool {
 	}
 	return count == 1
 }
+
+// TestRevokedSessionsAreRecordedAndPrunedOnExpiry proves that logout revokes a
+// jti for the cookie's remaining lifetime and that an expired row is pruned.
+func TestRevokedSessionsAreRecordedAndPrunedOnExpiry(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "history.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close the history: %v", err)
+		}
+	})
+
+	ctx := context.Background()
+	revoked, err := store.IsSessionRevoked(ctx, "jti-1", startTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked {
+		t.Fatal("jti-1 reported as revoked before RevokeSession")
+	}
+
+	if err := store.RevokeSession(ctx, "jti-1", startTime, startTime.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err = store.IsSessionRevoked(ctx, "jti-1", startTime.Add(30*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !revoked {
+		t.Fatal("jti-1 not reported as revoked inside its expiry window")
+	}
+
+	// Once the session's expiry passes, IsSessionRevoked returns false and a subsequent write prunes the row.
+	revoked, err = store.IsSessionRevoked(ctx, "jti-1", startTime.Add(2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked {
+		t.Fatal("jti-1 still reported as revoked after its expiry")
+	}
+	if err := store.RevokeSession(ctx, "jti-2", startTime.Add(2*time.Hour), startTime.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM revoked_sessions").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("revoked_sessions row count = %d, want 1 after pruning expired rows", count)
+	}
+}

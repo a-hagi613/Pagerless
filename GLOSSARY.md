@@ -178,3 +178,15 @@ The `kubectl page` plugin, distributed as `kubectl-page` through Krew and
 Homebrew. It reads and patches Pages through the Kubernetes API with the
 operator's kubeconfig and never calls `pagerless-server`.
 _Avoid_: tool, client, kubectl-triage
+
+**Bootstrap Token**:
+The generated credential in `pagerless-admin-secret` that the Operator exchanges
+once for an HMAC-signed session cookie when `auth.mode` is `token`.
+_Avoid_: admin password, master key
+
+**Credentials Secret**:
+The single Kubernetes Secret (`pagerless-credentials`, or the Secret named by
+`credentials.existingSecret`) that holds the AI endpoint, Target Repository, and
+Connector credentials written equally by the Portal and `kubectl page config`.
+_Avoid_: config secret, env secret
+

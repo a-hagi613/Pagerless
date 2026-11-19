@@ -20,6 +20,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/a-hagi613/pagerless/internal/credentials"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/history"
 )
@@ -50,6 +51,9 @@ type Config struct {
 	TargetNamespaces []string
 	// Auth authenticates dashboard requests and serves the sign-in routes. It is required.
 	Auth Auth
+	// Credentials reads and writes the credentials Secret for the settings route. It is
+	// required; an installation without it cannot run onboarding.
+	Credentials *credentials.Store
 	// History is the append-only record that supplies Pages whose resource is gone, and their steps.
 	History *history.Store
 	// Broker carries live steps and Phase changes to open streams.
@@ -60,23 +64,27 @@ type Config struct {
 	Grafana GrafanaConfig
 	// Assets holds the built dashboard, with the Vite output in its dist directory.
 	Assets fs.FS
+	// Version is the release version that the Portal reports. It defaults to "dev".
+	Version string
 }
 
-// Auth authenticates dashboard requests and serves the sign-in routes. Its
-// implementation performs the Keycloak flow; the API only sees the verified
-// user and the opaque session cookie.
+// Auth authenticates Portal and API requests and serves the token sign-in. Its
+// implementation is dashboardauth; the API only sees the verified user, the
+// CSRF decision, and the login and logout handlers (ADR-0032).
 type Auth interface {
 	// User returns the signed-in user of the request, or nil.
 	User(r *http.Request) *User
-	// SignIn starts the sign-in flow.
+	// ValidateCSRF reports whether a state-changing request carries that
+	// session's CSRF token. It is true in disabled mode and for a Bearer request.
+	ValidateCSRF(r *http.Request, user *User) bool
+	// SignIn serves the browser sign-in route.
 	SignIn() http.Handler
-	// Callback completes the sign-in flow.
-	Callback() http.Handler
-	// SignOut ends the session.
-	SignOut() http.Handler
-	// RealmProxy forwards browser requests for the Keycloak realm when the
-	// realm issuer is not directly reachable from the browser, or returns nil.
-	RealmProxy() http.Handler
+	// Login exchanges the bootstrap token for a signed session cookie.
+	Login() http.Handler
+	// Logout revokes the session and clears the cookie.
+	Logout() http.Handler
+	// Mode reports "token" or "disabled".
+	Mode() string
 }
 
 // User is the signed-in dashboard user, as dashboardauth reports it.
@@ -84,32 +92,39 @@ type User = dashboardauth.User
 
 // Handler serves the dashboard API and the single-page application.
 type Handler struct {
-	namespace  string
-	reader     client.Reader
-	writer     client.Client
-	targets    client.Reader
-	namespaces []string
-	auth       Auth
-	history    *history.Store
-	broker     *Broker
-	clock      clock.PassiveClock
-	grafana    GrafanaConfig
-	mux        *http.ServeMux
+	namespace   string
+	reader      client.Reader
+	writer      client.Client
+	targets     client.Reader
+	namespaces  []string
+	auth        Auth
+	credentials *credentials.Store
+	history     *history.Store
+	broker      *Broker
+	clock       clock.PassiveClock
+	grafana     GrafanaConfig
+	release     string
+	mux         *http.ServeMux
 }
 
 // New returns a Handler. The caller registers it on the dashboard listener.
 func New(cfg Config) *Handler {
 	h := &Handler{
-		namespace:  cfg.Namespace,
-		reader:     cfg.Reader,
-		writer:     cfg.Writer,
-		targets:    cfg.Targets,
-		namespaces: cfg.TargetNamespaces,
-		auth:       cfg.Auth,
-		history:    cfg.History,
-		broker:     cfg.Broker,
-		clock:      cfg.Clock,
-		grafana:    cfg.Grafana,
+		namespace:   cfg.Namespace,
+		reader:      cfg.Reader,
+		writer:      cfg.Writer,
+		targets:     cfg.Targets,
+		namespaces:  cfg.TargetNamespaces,
+		auth:        cfg.Auth,
+		credentials: cfg.Credentials,
+		history:     cfg.History,
+		broker:      cfg.Broker,
+		clock:       cfg.Clock,
+		grafana:     cfg.Grafana,
+	}
+	h.release = cfg.Version
+	if h.release == "" {
+		h.release = "dev"
 	}
 	if h.targets == nil {
 		h.targets = cfg.Reader
@@ -119,20 +134,22 @@ func New(cfg Config) *Handler {
 	}
 	h.mux = http.NewServeMux()
 	h.mux.Handle("GET /login", h.auth.SignIn())
-	h.mux.Handle("GET /auth/callback", h.auth.Callback())
-	h.mux.Handle("POST /logout", h.auth.SignOut())
-	if proxy := h.auth.RealmProxy(); proxy != nil {
-		h.mux.Handle("/realms/", proxy)
-		h.mux.Handle("/resources/", proxy)
-	}
-	h.mux.HandleFunc("GET /signed-out", h.signedOut)
+	h.mux.Handle("POST /api/auth/login", h.auth.Login())
+	h.mux.Handle("POST /api/auth/logout", h.auth.Logout())
+	h.mux.Handle("POST /logout", h.auth.Logout())
+	h.mux.HandleFunc("GET /api/auth/session", h.session)
 	h.mux.HandleFunc("GET /api/session", h.session)
 	h.mux.HandleFunc("GET /api/pages", h.list)
 	h.mux.HandleFunc("GET /api/pages/{name}", h.detail)
 	h.mux.HandleFunc("GET /api/pages/{name}/events", h.events)
+	h.mux.HandleFunc("GET /api/pages/{name}/trace", h.events)
 	h.mux.HandleFunc("POST /api/pages", h.start)
 	h.mux.HandleFunc("POST /api/pages/{name}/decision", h.decide)
 	h.mux.HandleFunc("GET /api/targets", h.targetList)
+	h.mux.HandleFunc("GET /api/settings", h.settings)
+	h.mux.HandleFunc("PATCH /api/settings", h.updateSettings)
+	h.mux.HandleFunc("DELETE /api/settings/{key}", h.unsetSetting)
+	h.mux.HandleFunc("GET /api/version", h.version)
 	h.mux.Handle("/api/", http.NotFoundHandler())
 	h.mux.Handle("/", NewSPA(cfg.Assets))
 	return h
@@ -163,17 +180,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // publicPath reports whether the request may proceed without a session. The
 // built assets are public because the browser fetches them before rendering
-// anything, and they contain no data; proxied Keycloak realm routes are public
-// so the browser can complete the sign-in flow on the dashboard port.
+// anything, and they contain no data; the sign-in and token exchange routes are
+// public so a browser can establish a session.
 func (h *Handler) publicPath(r *http.Request) bool {
 	switch r.URL.Path {
-	case "/login", "/auth/callback", "/signed-out":
+	case "/login", "/api/auth/login", "/api/version":
 		return true
-	}
-	if h.auth != nil && h.auth.RealmProxy() != nil {
-		if strings.HasPrefix(r.URL.Path, "/realms/") || strings.HasPrefix(r.URL.Path, "/resources/") {
-			return true
-		}
 	}
 	return strings.HasPrefix(r.URL.Path, "/assets/")
 }

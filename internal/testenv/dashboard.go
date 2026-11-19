@@ -25,7 +25,7 @@ type DashboardSession struct {
 	CSRF   string
 }
 
-// fakeAuth is a stand-in for the Keycloak sign-in. It issues sessions without a
+// fakeAuth is a stand-in for the bootstrap-token sign-in. It issues sessions without a
 // browser, so a test drives the authenticated API directly; the real flow is
 // covered by internal/dashboardauth's tests.
 type fakeAuth struct {
@@ -87,23 +87,31 @@ func (a *fakeAuth) SignIn() http.Handler {
 	})
 }
 
-// Callback implements dashboardapi.Auth.
-func (a *fakeAuth) Callback() http.Handler {
+// ValidateCSRF implements dashboardapi.Auth. The harness signs a user in
+// without a browser, so it compares the CSRF token directly.
+func (a *fakeAuth) ValidateCSRF(r *http.Request, user *dashboardapi.User) bool {
+	supplied := r.Header.Get("X-CSRF-Token")
+	return supplied != "" && supplied == user.CSRF
+}
+
+// Login implements dashboardapi.Auth. The harness signs in by issuing a
+// DashboardSession directly, so the route only redirects.
+func (a *fakeAuth) Login() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 	})
 }
 
-// SignOut implements dashboardapi.Auth.
-func (a *fakeAuth) SignOut() http.Handler {
+// Logout implements dashboardapi.Auth.
+func (a *fakeAuth) Logout() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/signed-out", http.StatusSeeOther)
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
-// RealmProxy implements dashboardapi.Auth.
-func (a *fakeAuth) RealmProxy() http.Handler {
-	return nil
+// Mode implements dashboardapi.Auth.
+func (a *fakeAuth) Mode() string {
+	return dashboardauth.ModeToken
 }
 
 // WithDashboardUser sets the username and approver status of the session that

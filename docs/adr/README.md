@@ -14,7 +14,7 @@ replaced the rest.
 | [0004](0004-approval-is-a-separate-resource.md) | Approval is a separate resource with webhook-stamped identity — Superseded by [0031](0031-approval-is-a-decision-on-the-page.md) |
 | [0005](0005-two-go-binaries.md) | Two Go binaries, pagerless-server and pagerless-executor — Superseded by [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md) |
 | [0006](0006-verification-is-decided-by-code.md) | Verification is decided by deterministic code |
-| [0007](0007-keycloak-scope.md) | Keycloak issues dashboard and agent tokens only |
+| [0007](0007-keycloak-scope.md) | Keycloak issues dashboard and agent tokens only — Superseded by [0032](0032-single-operator-local-authentication.md) |
 | [0008](0008-server-renders-the-change.md) | pagerless-server renders the change; the Executor only applies it |
 | [0009](0009-eks-network-without-nat-or-load-balancers.md) | EKS without NAT gateways or load balancers |
 | [0010](0010-cost-model.md) | Near-zero operating cost; its Bedrock model choice is amended by [0023](0023-bedrock-uses-amazon-nova-2-lite.md) |
@@ -27,7 +27,7 @@ replaced the rest.
 | [0017](0017-credential-free-sandbox-integration-adapter.md) | A local adapter tests Sandbox integration without GitHub credentials |
 | [0018](0018-deterministic-decisions-and-canonical-triages.md) | Deterministic decisions and canonical Active Pages (amended by [0028](0028-pages-replace-triages.md) and [0031](0031-approval-is-a-decision-on-the-page.md)) |
 | [0019](0019-opentelemetry-demo-as-rendered-manifests.md) | The OpenTelemetry Demo is committed to the Sandbox as rendered manifests |
-| [0020](0020-dashboard-approvals-assert-the-approver.md) | Dashboard Approvals assert the approver rather than impersonate — Superseded by [0031](0031-approval-is-a-decision-on-the-page.md) |
+| [0020](0020-dashboard-approvals-assert-the-approver.md) | Dashboard Approvals assert the approver rather than impersonate — Superseded by [0031](0031-approval-is-a-decision-on-the-page.md) and [0032](0032-single-operator-local-authentication.md) |
 | [0021](0021-rollback-may-revert-declared-dependency-paths.md) | Rollback may revert commits on a Workload's declared dependency paths |
 | [0022](0022-agentgateway-is-the-only-mcp-caller.md) | agentgateway is the only caller of the MCP servers |
 | [0023](0023-bedrock-uses-amazon-nova-2-lite.md) | Bedrock uses Amazon Nova 2 Lite through Converse |
@@ -38,6 +38,8 @@ replaced the rest.
 | [0028](0028-pages-replace-triages.md) | Pages replace Triages as the unit of investigation |
 | [0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md) | One Go binary with an ephemeral zero-RBAC agent Job |
 | [0031](0031-approval-is-a-decision-on-the-page.md) | An approval is a decision recorded on the Page |
+| [0032](0032-single-operator-local-authentication.md) | A single operator authenticates locally with a bootstrap token and signed session cookies |
+| [0033](0033-one-credentials-secret.md) | One credentials Secret is the only credential store |
 | [0037](0037-read-only-cluster-identity.md) | The cluster identity is strictly read-only |
 | [0038](0038-one-watch-mode-or-an-explicit-namespace-allowlist.md) | One watch mode or an explicit namespace allowlist |
 | [0039](0039-one-tag-publishes-every-artifact.md) | One tag publishes every artifact, and the published copy is verified |

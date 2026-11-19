@@ -20,7 +20,6 @@ import (
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
-	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -29,7 +28,9 @@ import (
 	webassets "github.com/a-hagi613/pagerless/dashboard"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
+	"github.com/a-hagi613/pagerless/internal/credentials"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
+	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/github"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
@@ -84,6 +85,10 @@ type Config struct {
 	// DashboardAuth authenticates dashboard users and serves the sign-in routes. When
 	// it is nil the dashboard is not served.
 	DashboardAuth dashboardapi.Auth
+	// DashboardAuthConfig builds DashboardAuth inside the manager, so that session
+	// revocation is recorded in the Page history's SQLite file. It is used only when
+	// DashboardAuth is nil.
+	DashboardAuthConfig *dashboardauth.Config
 	// TargetNamespaces are the namespaces whose Targets the dashboard's Start request offers.
 	TargetNamespaces []string
 	// GrafanaURL is the Grafana base URL that the browser can reach, for example http://localhost:3000 while the
@@ -168,6 +173,18 @@ type Config struct {
 	// Page controller, which is what the unit suites want; pagerless-server always
 	// configures it.
 	Watcher *watcher.Config
+	// CredentialsSecretName is the credentials Secret the settings route reads and writes.
+	// It defaults to pagerless-credentials.
+	CredentialsSecretName string
+	// CredentialsExternalManager is the secret manager that owns the credentials Secret.
+	// Empty means Pagerless owns it and may write; otherwise the Portal and the CLI
+	// report the settings as read-only.
+	CredentialsExternalManager string
+	// CredentialsMountPath is where the credentials Secret is mounted, used to read
+	// an externally managed Secret without Secret RBAC.
+	CredentialsMountPath string
+	// Version is the release version that the Portal reports. It defaults to "dev".
+	Version string
 }
 
 // Scheme returns the scheme that pagerless-server uses.
@@ -200,7 +217,7 @@ func (c Config) validate() error {
 	case c.MetricsListener == nil:
 		return errors.New("a metrics listener is required")
 	}
-	if c.DashboardListener != nil && c.DashboardAuth == nil {
+	if c.DashboardListener != nil && c.DashboardAuth == nil && c.DashboardAuthConfig == nil {
 		return errors.New("dashboard authentication is required when a dashboard listener is given")
 	}
 	if c.ArgoCDURL != "" && c.ArgoCDToken == nil {
@@ -270,6 +287,12 @@ func (c Config) withDefaults() Config {
 	if c.GrafanaLogsDashboardUID == "" {
 		c.GrafanaLogsDashboardUID = dashboardapi.DefaultLogsDashboardUID
 	}
+	if c.CredentialsSecretName == "" {
+		c.CredentialsSecretName = "pagerless-credentials"
+	}
+	if c.Version == "" {
+		c.Version = "dev"
+	}
 	return c
 }
 
@@ -286,11 +309,23 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
-		HealthProbeBindAddress: cfg.HealthProbeAddress,
+		HealthProbeBindAddress: "",
 		Cache:                  cacheOptions(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create manager: %w", err)
+	}
+
+	credentialsStore, err := credentials.New(credentials.Config{
+		Client:          mgr.GetClient(),
+		Reader:          mgr.GetAPIReader(),
+		Namespace:       cfg.Namespace,
+		SecretName:      cfg.CredentialsSecretName,
+		ExternalManager: cfg.CredentialsExternalManager,
+		MountPath:       cfg.CredentialsMountPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("configure the credentials store: %w", err)
 	}
 
 	historyStore, err := history.Open(cfg.HistoryPath)
@@ -300,6 +335,16 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err := mgr.Add(closeHistory(historyStore)); err != nil {
 		_ = historyStore.Close()
 		return nil, fmt.Errorf("add the Page history: %w", err)
+	}
+	dashboardAuth := cfg.DashboardAuth
+	if dashboardAuth == nil && cfg.DashboardAuthConfig != nil {
+		authConfig := *cfg.DashboardAuthConfig
+		authConfig.Revocations = historyStore
+		dashboardAuth, err = dashboardauth.New(authConfig)
+		if err != nil {
+			_ = historyStore.Close()
+			return nil, fmt.Errorf("configure Portal authentication: %w", err)
+		}
 	}
 	metricsAPI := metrics.New(mgr.GetClient())
 	broker := dashboardapi.NewBroker()
@@ -465,7 +510,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 			Writer:           mgr.GetClient(),
 			Targets:          mgr.GetAPIReader(),
 			TargetNamespaces: cfg.TargetNamespaces,
-			Auth:             cfg.DashboardAuth,
+			Auth:             dashboardAuth,
 			History:          historyStore,
 			Broker:           broker,
 			Clock:            cfg.Clock,
@@ -474,7 +519,9 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 				MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
 				LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
 			},
-			Assets: webassets.Assets(),
+			Credentials: credentialsStore,
+			Assets:      webassets.Assets(),
+			Version:     cfg.Version,
 		})
 		if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
 			return nil, fmt.Errorf("add the dashboard: %w", err)
@@ -482,11 +529,13 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 
 	if cfg.HealthProbeAddress != "" {
-		if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-			return nil, fmt.Errorf("add health check: %w", err)
+		healthListener, err := net.Listen("tcp", cfg.HealthProbeAddress)
+		if err != nil {
+			return nil, fmt.Errorf("listen for health probes: %w", err)
 		}
-		if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-			return nil, fmt.Errorf("add readiness check: %w", err)
+		probes := readiness{Credentials: credentialsStore}
+		if err := mgr.Add(serveHealth(healthListener, probes.handler())); err != nil {
+			return nil, fmt.Errorf("add the health probes: %w", err)
 		}
 	}
 	return mgr, nil

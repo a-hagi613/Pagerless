@@ -1,7 +1,9 @@
 # ADR-0007: Keycloak issues dashboard and agent tokens only
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0032](0032-single-operator-local-authentication.md)
 - **Date:** 2026-11-16
+
+> Superseded in v2.0: Keycloak is removed. The operator signs in with a bootstrap token from `pagerless-admin-secret` exchanged for an HMAC-SHA256 signed session cookie, and agent Jobs authenticate to `pagerless-server` with a projected Kubernetes service account token ([ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md), [ADR-0032](0032-single-operator-local-authentication.md)).
 
 ## Context
 

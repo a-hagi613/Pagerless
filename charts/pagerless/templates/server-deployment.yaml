@@ -53,8 +53,8 @@ spec:
           args:
             - --namespace=$(POD_NAMESPACE)
             - --agent-image={{ include "pagerless.image" (dict "context" $ "image" .Values.images.agent) }}
-            - --report-url=http://pagerless-server.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
-            - --report-bind-address=:{{ .Values.service.port }}
+            - --report-url=http://pagerless-server.{{ .Release.Namespace }}.svc:{{ .Values.service.reportPort }}
+            - --report-bind-address=:{{ .Values.service.reportPort }}
             - --metrics-bind-address=:9090
             - --health-probe-bind-address=:8081
             - --history-path=/var/lib/pagerless/history.db
@@ -72,9 +72,20 @@ spec:
             - --sandbox-url=
             - --argocd-url=
             - --alertmanager-url=
-            # The Portal and its sign-in are delivered with the auth and Portal
-            # slices; this chart shell serves the report and metrics APIs only.
-            - --dashboard-bind-address=
+            - --dashboard-bind-address=:{{ .Values.service.port }}
+            - --dashboard-base-url={{ .Values.dashboard.baseUrl }}
+            - --dashboard-cookie-secure={{ .Values.auth.session.secure }}
+            - --auth-mode={{ .Values.auth.mode }}
+            - --auth-bearer-token={{ .Values.auth.bearerToken }}
+            - --auth-identity-header={{ .Values.auth.proxy.identityHeader }}
+            - --auth-session-ttl={{ .Values.auth.session.ttl }}
+            {{- if eq .Values.auth.mode "token" }}
+            - --auth-admin-token-file=/var/run/pagerless/auth/admin/token
+            - --auth-session-key-file=/var/run/pagerless/auth/session/session-key
+            {{- end }}
+            - --credentials-secret={{ .Values.credentials.secretName }}
+            - --credentials-external-manager={{ .Values.credentials.existingSecret }}
+            - --credentials-mount-path={{ .Values.credentials.mountPath }}
           envFrom:
             - configMapRef:
                 name: pagerless-config
@@ -86,6 +97,8 @@ spec:
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
+            - name: report
+              containerPort: {{ .Values.service.reportPort }}
             - name: health
               containerPort: 8081
             - name: metrics
@@ -106,6 +119,14 @@ spec:
             - name: credentials
               mountPath: {{ .Values.credentials.mountPath }}
               readOnly: true
+            {{- if eq .Values.auth.mode "token" }}
+            - name: admin-token
+              mountPath: /var/run/pagerless/auth/admin
+              readOnly: true
+            - name: session-key
+              mountPath: /var/run/pagerless/auth/session
+              readOnly: true
+            {{- end }}
             - name: data
               mountPath: /var/lib/pagerless
             - name: temporary
@@ -114,6 +135,20 @@ spec:
         - name: credentials
           secret:
             secretName: {{ include "pagerless.credentialsSecret" . }}
+        {{- if eq .Values.auth.mode "token" }}
+        - name: admin-token
+          secret:
+            secretName: {{ .Values.auth.adminSecret.name }}
+            items:
+              - key: {{ .Values.auth.adminSecret.key }}
+                path: token
+        - name: session-key
+          secret:
+            secretName: {{ .Values.auth.session.secretName }}
+            items:
+              - key: {{ .Values.auth.session.key }}
+                path: session-key
+        {{- end }}
         - name: data
           persistentVolumeClaim:
             claimName: pagerless-data

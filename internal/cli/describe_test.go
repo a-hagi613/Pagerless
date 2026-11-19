@@ -79,7 +79,7 @@ func TestDescribeWritesEverySection(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := describe(&out, tr); err != nil {
+	if err := describe(&out, recordFromPage(tr)); err != nil {
 		t.Fatalf("describe: %v", err)
 	}
 	text := out.String()
@@ -126,7 +126,7 @@ func TestDescribeMarksSectionsThatHaveNoContentAsNone(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := describe(&out, tr); err != nil {
+	if err := describe(&out, recordFromPage(tr)); err != nil {
 		t.Fatalf("describe: %v", err)
 	}
 	text := out.String()

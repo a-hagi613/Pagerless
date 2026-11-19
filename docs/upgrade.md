@@ -64,7 +64,7 @@ file before you install; passing them is silently ignored, which is worse.
 | `agent.replayFile`, `agent.narrativeReplayFile` | Replay recordings are an evaluation fixture, not a chart value. |
 | `mcp.gatewayUrl`, `mcp.servers`, `mcp.bundled.enabled`, `mcp.githubHost`, `mcp.backendTokensSecretName`, `mcp.clientTokensSecretName` | No MCP server and no gateway is installed; the agent reads through the server's tool broker. |
 | `oidc.issuer`, `oidc.tokenUrl`, `oidc.keycloakBaseUrl`, `oidc.dashboardClientId`, `oidc.serverClientId`, `oidc.agentClientId`, `oidc.secretName` | Keycloak is not installed, and the agent no longer receives a cluster identity. |
-| `dashboard.cookieSecure`, `dashboard.approversGroup` | Portal sign-in is not enabled by the chart; its flags belong to the Portal slice. `dashboard.baseUrl` remains. |
+| `dashboard.cookieSecure`, `dashboard.approversGroup` | Portal sign-in is enabled by the chart. Use `auth.session.secure`; the portal has one operator account, so there is no approvers group. `dashboard.baseUrl` remains. |
 | `argocd.application`, `argocd.url`, `argocd.secretName` | Argo CD is a verification Connector, configured out of band, not a chart prerequisite. |
 | `alertmanager.url`, `alertmanager.secretName` | Alertmanager is a Connector, configured out of band (ADR-0037). |
 | `grafana.browserUrl`, `grafana.mcpUrl`, `grafana.workloadDashboardUid`, `grafana.logsDashboardUid` | The Portal is the product's surface; no Grafana instance is embedded. |
@@ -97,7 +97,7 @@ file before you install; passing them is silently ignored, which is worse.
 3. `kubectl delete crd triages.pagerless.dev triageapprovals.pagerless.dev`
 4. Install v2 into a fresh namespace, following
    [`docs/install.md`](install.md).
-5. Fill `pagerless-credentials`, following [`docs/onboarding.md`](onboarding.md).
+5. Sign in with the bootstrap token from the release notes, then finish onboarding at `/settings`; [`docs/onboarding.md`](onboarding.md) covers the alternatives.
 6. Replace `kubectl triage <verb>` with `kubectl page <verb>` in scripts and
    runbooks; [`docs/cli.md`](cli.md) documents the verbs and exit codes.
 

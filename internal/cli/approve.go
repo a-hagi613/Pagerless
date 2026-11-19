@@ -20,51 +20,57 @@ var errNotConfirmed = errors.New("not approved: the change was not confirmed")
 
 // approveOptions holds what the approve command needs from the command line.
 type approveOptions struct {
-	conn   *connection
+	opts   *options
 	yes    bool
 	reason string
 	by     string
 }
 
-func newApproveCommand(conn *connection) *cobra.Command {
-	o := &approveOptions{conn: conn}
+// newApproveCommand returns the command that approves one Proposal.
+func newApproveCommand(opts *options) *cobra.Command {
+	o := &approveOptions{opts: opts}
 	cmd := &cobra.Command{
 		Use:   "approve <page>",
-		Short: "Approve the Proposal of a Page",
+		Short: "Approve the Proposal of a Page, binding the decision to its hash",
 		Long: `Show the rendered change of a Page's Proposal and, after confirmation, approve
-exactly that Proposal by creating a PageApproval bound to its hash.
+exactly that Proposal.
 
-If the Proposal changes before the approval is admitted, the approval is
-refused and nothing is approved. Approving a NoAction Proposal acknowledges the
-Diagnosis.`,
-		Args: cobra.ExactArgs(1),
+The decision records the Proposal hash that was displayed. If the Proposal
+changes before the decision is recorded, the decision is refused with exit code
+4 and nothing is approved. Approving a Proposal that changes no file
+acknowledges the Diagnosis.`,
+		Args: exactlyOneArg,
 		RunE: o.run,
 	}
 	cmd.Flags().BoolVarP(&o.yes, "yes", "y", false, "approve without asking for confirmation")
 	cmd.Flags().StringVar(&o.reason, "reason", "", "optional reason to record with the approval")
-	cmd.Flags().StringVar(&o.by, "by", "", "identity to record as the approver (default: the kubeconfig user)")
+	cmd.Flags().StringVar(&o.by, "by", "",
+		"identity to record in kubeconfig mode (default: the kubeconfig user; server mode records the session user)")
 	return cmd
 }
 
 func (o *approveOptions) run(cmd *cobra.Command, args []string) error {
 	if len(o.reason) > v1alpha1.MaxReasonLength {
-		return fmt.Errorf("the reason is %d characters long; at most %d are allowed", len(o.reason), v1alpha1.MaxReasonLength)
+		return usagef("the reason is %d characters long; at most %d are allowed", len(o.reason), v1alpha1.MaxReasonLength)
 	}
-	cl, err := o.conn.connect()
+	s, err := openSession(cmd, o.opts)
 	if err != nil {
 		return err
 	}
-	ctx := cmd.Context()
-	page, err := loadProposedPage(ctx, cl.client, args[0])
+	rec, err := s.page(cmd.Context(), args[0])
 	if err != nil {
 		return err
+	}
+	if rec.Phase != v1alpha1.PhaseProposed || rec.Proposal == nil {
+		return fmt.Errorf("page %s is in phase %s; only a Proposed Page accepts a decision",
+			rec.Name, phaseLabel(rec.Phase))
 	}
 	out := cmd.OutOrStdout()
-	if err := renderProposal(out, page); err != nil {
+	if err := renderProposal(out, rec); err != nil {
 		return err
 	}
 	if !o.yes {
-		confirmed, err := confirm(out, cmd.InOrStdin(), approvalPrompt(page.Status.Proposal))
+		confirmed, err := confirm(out, cmd.InOrStdin(), approvalPrompt(rec.Proposal))
 		if err != nil {
 			return err
 		}
@@ -73,16 +79,31 @@ func (o *approveOptions) run(cmd *cobra.Command, args []string) error {
 		}
 	}
 	decidedBy := o.by
-	if decidedBy == "" {
-		decidedBy = authenticatedUser(ctx, cl.client)
+	if s.api != nil && decidedBy != "" {
+		return usagef("--by is a kubeconfig-mode flag; server mode records the signed-in user")
 	}
-	if err := submitDecision(ctx, cl.client, page, v1alpha1.DecisionApproved, o.reason, decidedBy); err != nil {
+	decidedBy, err = s.decide(cmd.Context(), rec, v1alpha1.DecisionApproved, o.reason, decidedBy)
+	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "%s approved by %s\n", pageRef(page.Name), decidedBy)
+	if decidedBy == "" {
+		_, err = fmt.Fprintf(out, "%s approved\n", pageRef(rec.Name))
+		return err
+	}
+	_, err = fmt.Fprintf(out, "%s approved by %s\n", pageRef(rec.Name), decidedBy)
 	return err
 }
 
+// proposalTargetLabel names a Target as "Kind namespace/name", or "Kind name"
+// for the cluster-scoped Node.
+func proposalTargetLabel(ref v1alpha1.TargetReference) string {
+	if ref.Namespace == "" {
+		return string(ref.Kind) + " " + ref.Name
+	}
+	return string(ref.Kind) + " " + ref.Namespace + "/" + ref.Name
+}
+
+// approvalPrompt asks the question that matches the Proposal's kind.
 func approvalPrompt(p *v1alpha1.Proposal) string {
 	if p.Action == v1alpha1.ActionNoAction {
 		return "Acknowledge this Diagnosis? [y/N]: "
@@ -112,35 +133,36 @@ func confirm(out io.Writer, in io.Reader, question string) (bool, error) {
 
 // renderProposal shows what an approver decides on: the Diagnosis, the
 // Proposal, and the exact rendered change with the base it applies to.
-func renderProposal(w io.Writer, tr *v1alpha1.Page) error {
-	p := tr.Status.Proposal
+func renderProposal(w io.Writer, rec *record) error {
+	proposal := rec.Proposal
 	var b strings.Builder
 	field := func(label, value string) { fmt.Fprintf(&b, "%-10s %s\n", label+":", value) }
-	field("Page", tr.Name)
-	field("Target", fmt.Sprintf("%s %s/%s", tr.Spec.Target.Kind, tr.Spec.Target.Namespace, tr.Spec.Target.Name))
-	field("Diagnosis", tr.Status.Diagnosis)
-	field("Action", string(p.Action))
-	if summary := parametersSummary(p.Parameters); summary != "" {
+	field("Page", rec.Name)
+	field("Target", proposalTargetLabel(rec.Target))
+	field("Diagnosis", rec.Diagnosis)
+	field("Action", string(proposal.Action))
+	if summary := parametersSummary(proposal.Parameters); summary != "" {
 		field("Parameters", summary)
 	}
 	switch {
-	case p.RenderedChange != nil && p.RenderedChange.Patch != "":
-		field("File", p.RenderedChange.Path)
-		if p.Base != nil {
-			field("Base", fmt.Sprintf("Sandbox commit %s, Target generation %d", p.Base.Commit, p.Base.TargetGeneration))
+	case proposal.RenderedChange != nil && proposal.RenderedChange.Patch != "":
+		field("File", proposal.RenderedChange.Path)
+		if proposal.Base != nil {
+			field("Base", fmt.Sprintf("Sandbox commit %s, Target generation %d",
+				proposal.Base.Commit, proposal.Base.TargetGeneration))
 		}
 		b.WriteString("\nChange:\n")
-		for line := range strings.SplitSeq(strings.TrimRight(p.RenderedChange.Patch, "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(proposal.RenderedChange.Patch, "\n"), "\n") {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
 		b.WriteString("\n")
-	case p.Action == v1alpha1.ActionNoAction:
+	case proposal.Action == v1alpha1.ActionNoAction:
 		b.WriteString("\nThis Proposal makes no change. Approving it acknowledges the Diagnosis.\n\n")
 	default:
 		b.WriteString("\nThis Proposal has no rendered change.\n\n")
 	}
-	field("Hash", p.Hash)
-	field("Expires", p.ExpiresAt.UTC().Format(time.RFC3339))
+	field("Hash", proposal.Hash)
+	field("Expires", proposal.ExpiresAt.UTC().Format(time.RFC3339))
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -170,6 +192,7 @@ func parametersSummary(params *v1alpha1.ActionParameters) string {
 	}
 }
 
+// quantitiesSummary formats a resource list in name order.
 func quantitiesSummary(list corev1.ResourceList) string {
 	names := make([]string, 0, len(list))
 	for name := range list {
