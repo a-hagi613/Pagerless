@@ -8,8 +8,11 @@ import type { Session } from "./types";
 // and the application shows the sign-in route. auth.mode=disabled arrives as an authenticated session,
 // so the Portal opens with no token at all.
 export function SessionProvider({ children }: { children: ReactNode }) {
+  // The sign-in route has no cookie to ask about, so it starts settled: probing /api/session would only
+  // log a 401 in the browser console.
+  const onLoginRoute = window.location.pathname === "/login";
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!onLoginRoute);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -35,8 +38,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // cookie to ask about, and probing /api/session would only log a 401 in the browser console, so the
   // route renders the form directly.
   useEffect(() => {
-    if (window.location.pathname === "/login") {
-      setLoading(false);
+    if (onLoginRoute) {
       return;
     }
     let active = true;
@@ -64,7 +66,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [onLoginRoute]);
 
   const value = useMemo(() => ({ session, loading, error, refresh }), [session, loading, error, refresh]);
 

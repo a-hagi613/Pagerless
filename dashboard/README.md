@@ -1,9 +1,8 @@
 # Pagerless Portal
 
-The Portal is **Variant C: Cluster Health Matrix and Guided Inbox**, rebuilt from the ticket-83 prototype
-on the official `shadcn/ui` primitives in `src/components/ui`. It is a static build embedded in
-`pagerless-server`; it has no fixture store, no variant switcher, and no prototype tree. Every value it
-shows comes from the server.
+The Portal is **Variant C: Cluster Health Matrix and Guided Inbox**, built on the official `shadcn/ui`
+primitives in `src/components/ui`. It is a static build embedded in `pagerless-server`; it has no fixture
+store, no variant switcher, and no prototype tree. Every value it shows comes from the server.
 
 ```
 src/
@@ -15,6 +14,7 @@ src/
   lib/api.ts                   the only network boundary
   lib/theme*.ts                Light / Dark / System, persisted and applied before first paint
   lib/filters.ts               namespace / node / severity filtering, severity ordering
+  lib/matrix.ts                namespace and node tiles derived from the live Pages
   lib/cli-parity.ts            the Portal-to-CLI parity manifest
   lib/diff.ts                  the unified-diff reader
 ```
@@ -38,21 +38,22 @@ shareable link.
 
 | Method and path | Use |
 | --- | --- |
-| `GET /api/auth/session` | Session, `csrfToken`, `mode`, `canApprove`. `401` means signed out. |
+| `GET /api/session` | Session, `csrfToken`, `mode`, `canApprove`. `401` means signed out. |
 | `POST /api/auth/login` | `{token}` → signed cookie. |
 | `POST /api/auth/logout` | Revokes the session; requires `X-CSRF-Token`. |
-| `GET /api/pages` | `{pages: PageSummary[], matrix: ClusterMatrix}`. |
+| `GET /api/pages` | `{pages: PageSummary[]}`; each row carries `severity`, `proposalHash`, and `pullRequest`. |
 | `GET /api/pages/{name}` | `PageDetail`; authoritative for the Proposal and Findings. |
-| `GET /api/pages/{name}/trace` | `text/event-stream`: `step`, `phase`, `done`; the Portal re-reads the detail on `phase`. |
-| `POST /api/pages/{name}/decision` | `{decision, proposalHash, reason}`; `409` when the hash is stale. |
-| `POST /api/pages` | Opens a Page (`kubectl page <TARGET>`). |
-| `GET`/`PATCH /api/settings` | The masked settings view and the write path. `409 credential_writes_disabled` when an external Secret owns the credentials. |
-| `POST /api/settings/test` | `{target}` → `{ok, detail}`. |
+| `GET /api/pages/{name}/trace` | `text/event-stream`: `snapshot`, `step`, `phase`, `end`; the Portal re-reads the detail on `phase`. |
+| `POST /api/pages/{name}/decision` | `{decision, proposalHash, reason}`; `409` when the hash is stale or the Phase moved. |
+| `POST /api/pages` | Opens a Page for `{kind, namespace, name, hint}`. |
+| `GET /api/targets` | The Deployments and StatefulSets the server can offer. |
+| `GET`/`PATCH /api/settings` | The masked settings view and the write path. `409 settings_externally_managed` when an external Secret owns the credentials. |
+| `DELETE /api/settings/{key}` | Clears one credential key. |
+| `POST /api/settings/test` | `{target}` → `{ok, detail}`; the same probe `kubectl page config test` runs. |
+| `GET /api/version` | The server version and authentication mode. |
 
-Two names differ from the wayfinder contract in `wayfinder/80-onboarding-cli-auth.md` §6.4: this build
-uses `/api/pages/{name}/trace` for the SSE stream and `/api/pages/{name}/decision` for the decision, per the
-ticket. The backend slices (`#91`, `#92`) own the Go handlers and must serve these paths, or the Portal and
-the server change together in one commit.
+`/api/pages/{name}/trace` is the server's alias of `/api/pages/{name}/events`; the Portal uses `/trace` and
+the two routes are served by the same handler.
 
 ## Theme and accessibility
 
@@ -70,10 +71,15 @@ the server change together in one commit.
 
 ## CLI parity
 
-`lib/cli-parity.ts` enumerates the 11 `kubectl page` verbs and the 11 Portal paths that perform them, and
-`parityReport()` fails when a verb has no Portal path, a Portal path has no verb, or two paths claim one
-verb. `lib/cli-parity.test.ts` asserts the bijection. The drawer renders that same manifest, with a "This
-Page" tab (`show`, `diff`, `approve --create-pr`, `dismiss`) bound to the expanded Page.
+`lib/cli-parity.ts` enumerates the twelve `kubectl page` verbs `cmd/kubectl-page` registers and the twelve
+Portal paths that perform them, and `parityReport()` fails when a verb has no Portal path, a Portal path
+has no verb, or two paths claim one verb. `lib/cli-parity.test.ts` asserts the bijection. The drawer
+renders that same manifest, with a "This Page" tab (`get`, `diff`, `approve`, `dismiss`) bound to the
+expanded Page.
+
+The verbs are the shipped ones. The ticket's earlier wording (`approve --create-pr`, `decline`) predates
+the CLI: approval opens the draft pull request through the Page controller, and `dismiss` is the accepted
+synonym of `reject`, so the drawer shows the commands that exist rather than inventing flags.
 
 ## Commands
 
@@ -81,13 +87,14 @@ Page" tab (`show`, `diff`, `approve --create-pr`, `dismiss`) bound to the expand
 npm ci
 npm run typecheck
 npm run lint
-npm run test          # vitest: filters, diff parsing, CLI parity
+npm run test          # vitest: filters, matrix, diff parsing, CLI parity
 npm run build         # also typechecks; writes dist/ for the Go embed
-npm run test:e2e      # Playwright against dist via vite preview and the offline mock
+npm run test:e2e      # Playwright against a running harness (see e2e/README.md)
 ```
 
-`npm run dev` proxies `/api` to `PAGERLESS_API_TARGET` (default `http://127.0.0.1:8082`). The Playwright
-harness sets it to the mock on `:8092`; see `e2e/README.md`.
+`make portal-e2e` from the repository root builds the dashboard and runs the Playwright suite against a
+real `pagerless-server` on envtest, including its bootstrap-token sign-in. `npm run dev` proxies `/api` to
+`PAGERLESS_API_TARGET` (default `http://127.0.0.1:8082`).
 
 ## Brand assets
 
