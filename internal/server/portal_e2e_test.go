@@ -97,10 +97,14 @@ func TestPortalServesForInspection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PAGERLESS_PORTAL_INSPECT = %q: %v", raw, err)
 	}
-	// The detector loads the page without a browser session, so this harness runs the fenced disabled
-	// mode; the design tokens, components, and both palettes are the same.
-	startPortalServer(t, dashboardauth.ModeDisabled)
-	t.Logf("serving the Portal at http://%s", portalE2EAddress)
+	// The detector loads the page without a browser session, so this harness defaults to the fenced
+	// disabled mode. A screenshot pass may ask for the real sign-in instead.
+	mode := os.Getenv("PAGERLESS_PORTAL_INSPECT_MODE")
+	if mode != dashboardauth.ModeToken {
+		mode = dashboardauth.ModeDisabled
+	}
+	startPortalServer(t, mode)
+	t.Logf("serving the Portal at http://%s in %s mode", portalE2EAddress, mode)
 	time.Sleep(hold)
 }
 
