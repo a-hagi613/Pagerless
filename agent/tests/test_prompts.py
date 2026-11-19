@@ -21,7 +21,6 @@ def test_system_prompt_matches_flat_parameters_and_preserves_security_anchors() 
     assert "You are the investigation agent of Pagerless" in prompt
     assert UNTRUSTED_DATA_RULE in prompt
     assert "Use only pod names, commit SHAs, and values that you read in the Context Bundle" in prompt
-    assert "RestartWorkload: no parameters." in prompt
     assert "Scale: parameters.replicas, the desired replica count (1 to 10)." in prompt
     assert "Rollback: parameters.commit" in prompt
     assert "NoAction: no parameters." in prompt

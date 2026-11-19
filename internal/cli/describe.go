@@ -16,26 +16,23 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// describe writes the presentation of a Triage: its header, its Diagnosis and
+// describe writes the presentation of a Page: its header, its Diagnosis and
 // Findings, its Proposal with the rendered change, the human decision, the
 // execution result, the Verification checks, and the Narrative.
-func describe(w io.Writer, tr *v1alpha1.Triage) error {
+func describe(w io.Writer, tr *v1alpha1.Page) error {
 	p := &printer{w: w}
 	status := &tr.Status
 	p.field("Name", tr.Name)
 	p.field("Phase", phaseLabel(status.Phase))
-	p.field("Workload", workloadLabel(tr.Spec.Workload))
+	p.field("Target", targetLabel(tr.Spec.Target))
 	p.field("Trigger", triggerLabel(tr.Spec.Trigger))
 	p.field("Triggers", strconv.Itoa(int(status.TriggerCount)))
 	p.field("Created", tr.CreationTimestamp.Format(time.RFC3339))
 	if tr.Spec.Hint != "" {
 		p.field("Hint", tr.Spec.Hint)
 	}
-	if tr.Spec.FollowsTriage != "" {
-		p.field("Follows", tr.Spec.FollowsTriage)
-	}
-	if status.FollowUpTriage != "" {
-		p.field("Follow-up", status.FollowUpTriage)
+	if tr.Spec.PreviousPage != "" {
+		p.field("Previous", tr.Spec.PreviousPage)
 	}
 	if failure := failureLabel(tr); failure != "" {
 		p.field("Failure", failure)
@@ -53,8 +50,8 @@ func describe(w io.Writer, tr *v1alpha1.Triage) error {
 	p.section("Decision")
 	writeDecision(p, status.Decision)
 
-	p.section("Execution")
-	writeExecution(p, status.Execution)
+	p.section("Pull request")
+	writePullRequest(p, status.PullRequest)
 
 	p.section("Verification")
 	writeVerification(p, status.VerificationChecks)
@@ -64,7 +61,7 @@ func describe(w io.Writer, tr *v1alpha1.Triage) error {
 	return p.err
 }
 
-// triggerLabel describes what started a Triage, with the pod and alert that the Trigger names.
+// triggerLabel describes what started a Page, with the pod and alert that the Trigger names.
 func triggerLabel(trigger v1alpha1.Trigger) string {
 	var details []string
 	if trigger.Pod != "" {
@@ -80,7 +77,7 @@ func triggerLabel(trigger v1alpha1.Trigger) string {
 }
 
 // failureLabel describes the reason and message of the Failed condition, or returns an empty string.
-func failureLabel(tr *v1alpha1.Triage) string {
+func failureLabel(tr *v1alpha1.Page) string {
 	condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionFailed)
 	if condition == nil || condition.Status != metav1.ConditionTrue {
 		return ""
@@ -119,8 +116,8 @@ func writeProposal(p *printer, proposal *v1alpha1.Proposal) {
 		if base.Commit != "" {
 			parts = append(parts, "commit "+base.Commit)
 		}
-		if base.WorkloadGeneration != 0 {
-			parts = append(parts, "Workload generation "+strconv.FormatInt(base.WorkloadGeneration, 10))
+		if base.TargetGeneration != 0 {
+			parts = append(parts, "Target generation "+strconv.FormatInt(base.TargetGeneration, 10))
 		}
 		p.printf("  Base:       %s\n", orNone(strings.Join(parts, ", ")))
 	}
@@ -176,28 +173,27 @@ func writeDecision(p *printer, decision *v1alpha1.Decision) {
 		p.block("  ", "")
 		return
 	}
-	p.printf("  Outcome:  %s\n", decision.Outcome)
-	p.printf("  Approver: %s\n", decision.Approver)
-	p.printf("  Decided:  %s\n", decision.DecidedAt.Format(time.RFC3339))
+	p.printf("  Outcome:    %s\n", decision.Outcome)
+	p.printf("  Proposal:   %s\n", decision.ProposalHash)
+	p.printf("  Decided by: %s\n", decision.DecidedBy)
+	p.printf("  Decided:    %s\n", decision.DecidedAt.Format(time.RFC3339))
 	if decision.Reason != "" {
-		p.printf("  Reason:   %s\n", decision.Reason)
+		p.printf("  Reason:     %s\n", decision.Reason)
 	}
 }
 
-// writeExecution writes the result of executing the Proposal.
-func writeExecution(p *printer, execution *v1alpha1.Execution) {
-	if execution == nil {
+// writePullRequest writes the pull request that carries the approved Proposal.
+func writePullRequest(p *printer, pullRequest *v1alpha1.PullRequest) {
+	if pullRequest == nil {
 		p.block("  ", "")
 		return
 	}
-	executedAt := placeholder
-	if execution.ExecutedAt != nil {
-		executedAt = execution.ExecutedAt.Format(time.RFC3339)
-	}
-	p.printf("  Pull request:   %s\n", orNone(execution.PullRequestURL))
-	p.printf("  Merge commit:   %s\n", orNone(execution.MergeCommit))
-	p.printf("  Restarted pods: %s\n", orNone(strings.Join(execution.RestartedPods, ", ")))
-	p.printf("  Executed at:    %s\n", executedAt)
+	p.printf("  Provider:     %s\n", orNone(pullRequest.Provider))
+	p.printf("  Number:       %d\n", pullRequest.Number)
+	p.printf("  URL:          %s\n", orNone(pullRequest.URL))
+	p.printf("  State:        %s\n", orNone(string(pullRequest.State)))
+	p.printf("  Checks:       %s\n", orNone(string(pullRequest.Checks)))
+	p.printf("  Merge commit: %s\n", orNone(pullRequest.MergeCommit))
 }
 
 // writeVerification writes the result of each Verification check.

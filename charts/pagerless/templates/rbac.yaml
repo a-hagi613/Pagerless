@@ -1,9 +1,78 @@
 {{- /*
-RBAC for the release namespace, the cluster, and every Workload namespace.
-The grants are least-privilege: the server reads Workloads, updates them only
-through a server-side dry run, and publishes pull requests with a token it
-mounts from a Secret.
+The cluster identity is strictly read-only (ADR-0037). It reads the cluster to
+diagnose failures and writes only its own Pages, the agent Jobs that investigate
+them, and the two Secrets the operator owns. Remediation is a pull request, so
+no write verb on a workload, Event, or Node is ever rendered.
+
+The same namespaced rules are rendered twice: once inside one cluster-wide read
+ClusterRole (Mode A), and once as a read Role per allowlisted namespace (Mode B),
+without the cluster-scoped rules. The two modes are mutually exclusive and are
+validated before anything renders.
 */ -}}
+{{- include "pagerless.validateWatch" . }}
+{{- if .Values.rbac.create }}
+{{- if .Values.rbac.watchAllNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-pagerless-read
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+rules:
+  {{- include "pagerless.namespacedReadRules" . | nindent 2 }}
+  {{- include "pagerless.clusterReadRules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-pagerless-read
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-pagerless-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- range $namespace := .Values.rbac.watchNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $.Release.Name }}-pagerless-read
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+rules:
+  {{- include "pagerless.namespacedReadRules" $ | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Release.Name }}-pagerless-read
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $.Release.Name }}-pagerless-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.serviceAccount.name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+---
+{{- /*
+The release-namespace Role. Pages and their status are the product's own objects,
+the agent Jobs are the investigations, and the two named Secrets are the only
+Secrets the server may touch. `pods` is read again here so that Mode B can still
+read the agent pod that presents a token.
+*/}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -12,33 +81,35 @@ metadata:
   labels:
     {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
 rules:
-  # Creates a Triage for each opted-in alert (internal/alerts), and deletes a terminal Triage after its
-  # seven-day retention period (internal/controller.RetentionReconciler).
+  # `patch` lets the Portal record a decision as annotations on the Page under
+  # the server's identity. `spec` is immutable and `status` is a separate
+  # subresource, so a patch cannot change the investigation (ADR-0031).
   - apiGroups: [pagerless.dev]
-    resources: [triages]
-    verbs: [create, delete, get, list, watch]
+    resources: [pages]
+    verbs: [create, get, list, watch, patch, delete]
   - apiGroups: [pagerless.dev]
-    resources: [triages/status]
+    resources: [pages/status]
     verbs: [get, update, patch]
-  # Reads each TriageApproval and applies its decision to the Triage. It also creates the TriageApproval for a
-  # dashboard decision under its own identity, asserting the user it verified through OIDC (ADR-0020).
+  # Setting blockOwnerDeletion on the agent Job's owner reference.
   - apiGroups: [pagerless.dev]
-    resources: [triageapprovals]
-    verbs: [get, list, watch]
-  - apiGroups: [pagerless.dev]
-    resources: [triageapprovals]
-    verbs: [create]
-  # Needed to set blockOwnerDeletion on the agent Job's owner reference.
-  - apiGroups: [pagerless.dev]
-    resources: [triages/finalizers]
+    resources: [pages/finalizers]
     verbs: [update]
   - apiGroups: [batch]
     resources: [jobs]
-    verbs: [create, delete, get, list, watch]
-  # Reads the pod that a presented agent token is bound to.
+    verbs: [create, get, list, watch, delete]
   - apiGroups: [""]
     resources: [pods]
+    verbs: [get, list, watch]
+  # Two Secrets by name, never a list or a watch: `resourceNames` cannot
+  # constrain them, so those verbs are never granted.
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [pagerless-credentials, pagerless-admin-secret]
     verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [pagerless-credentials]
+    verbs: [update, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -53,48 +124,15 @@ roleRef:
   name: pagerless-server
 subjects:
   - kind: ServiceAccount
-    name: pagerless-server
+    name: {{ .Values.serviceAccount.name }}
     namespace: {{ .Release.Namespace }}
 ---
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: pagerless-server
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-rules:
-  - apiGroups: [authentication.k8s.io]
-    resources: [tokenreviews]
-    verbs: [create]
-  # Publishes the generated certificate authority in its own webhook configuration.
-  - apiGroups: [admissionregistration.k8s.io]
-    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
-    resourceNames: [pagerless-server]
-    verbs: [get, patch]
-  # Reads each node's allocatable resources for the Unschedulable bound of PatchResources Validation.
-  - apiGroups: [""]
-    resources: [nodes]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: pagerless-server
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: pagerless-server
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-server
-    namespace: {{ .Release.Namespace }}
----
-# Bind this Role to the people who may approve or reject a Proposal. Creating a
-# TriageApproval is the only act that moves a Proposed Triage forward, so
-# Kubernetes RBAC decides who may approve (ADR-0004). It grants no write access
-# to Triages or their status.
+{{- /*
+The approver Role. A decision is an annotation patch on the Page, so `patch` on
+`pages` is the only write an approver holds; `spec` is immutable and `status` is
+a separate subresource, so the decision cannot change the investigation
+(ADR-0031).
+*/}}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -104,11 +142,11 @@ metadata:
     {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-approver") | nindent 4 }}
 rules:
   - apiGroups: [pagerless.dev]
-    resources: [triages, triageapprovals]
+    resources: [pages]
     verbs: [get, list, watch]
   - apiGroups: [pagerless.dev]
-    resources: [triageapprovals]
-    verbs: [create]
+    resources: [pages]
+    verbs: [patch]
 {{- with .Values.approvers.subjects }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -125,42 +163,4 @@ roleRef:
 subjects:
   {{- toYaml . | nindent 2 }}
 {{- end }}
-{{- range $namespace := .Values.workloadNamespaces | uniq }}
----
-# Admission independently rejects every live write, even when the server can
-# authorize an update for a server-side dry run.
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-server-validation
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-rules:
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [get, update]
-  # Start Triage offers the Workloads of this namespace.
-  - apiGroups: [apps]
-    resources: [deployments, statefulsets]
-    verbs: [list]
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-server-validation
-  namespace: {{ $namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-server-validation
-subjects:
-  - kind: ServiceAccount
-    name: pagerless-server
-    namespace: {{ $.Release.Namespace }}
 {{- end }}

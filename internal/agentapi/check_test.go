@@ -11,7 +11,7 @@ import (
 // rollbackReport is a report whose Proposal reverts a Sandbox commit.
 func rollbackReport(commit string) Report {
 	return Report{
-		Diagnosis: "The commit that published a nonexistent image tag broke the Workload.",
+		Diagnosis: "The commit that published a nonexistent image tag broke the Target.",
 		Findings: []v1alpha1.Finding{{
 			Kind:    v1alpha1.FindingKindCommit,
 			Source:  "github: list recent Sandbox commits",

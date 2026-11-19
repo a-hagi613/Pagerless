@@ -27,8 +27,8 @@ spec:
           image: registry.invalid/checkout:1.0
 `
 
-var checkout = v1alpha1.WorkloadReference{
-	Kind: v1alpha1.WorkloadKindDeployment, Namespace: "sandbox", Name: "checkout",
+var checkout = v1alpha1.TargetReference{
+	Kind: v1alpha1.TargetKindDeployment, Namespace: "sandbox", Name: "checkout",
 }
 
 func TestRenderChangesOnlyTheReplicaCount(t *testing.T) {
@@ -64,8 +64,8 @@ metadata:
 spec:
   serviceName: cart
 `
-	rendered, err := render([]byte(src), v1alpha1.WorkloadReference{
-		Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: "sandbox", Name: "cart",
+	rendered, err := render([]byte(src), v1alpha1.TargetReference{
+		Kind: v1alpha1.TargetKindStatefulSet, Namespace: "sandbox", Name: "cart",
 	}, 4)
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +92,7 @@ func TestRenderRefusesFilesItCannotEditSafely(t *testing.T) {
 		want string
 	}{
 		{"carriage returns", strings.ReplaceAll(deployment, "\n", "\r\n"), "carriage returns"},
-		{"another Workload", strings.ReplaceAll(deployment, "name: checkout", "name: cart"), "does not define"},
+		{"another Target", strings.ReplaceAll(deployment, "name: checkout", "name: cart"), "does not define"},
 		{"no spec", "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: checkout\n", "no spec mapping"},
 		{"replicas is a mapping", strings.Replace(deployment, "  replicas: 1\n",
 			"  replicas:\n    count: 1\n", 1), "not a plain scalar"},

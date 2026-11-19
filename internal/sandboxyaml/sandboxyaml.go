@@ -1,6 +1,6 @@
 // Package sandboxyaml reads and edits the YAML manifests in the Sandbox without
 // reformatting them (ADR-0008). It parses a multi-document file into nodes,
-// locates the Workload document, and reports the source line of every mapping
+// locates the Target document, and reports the source line of every mapping
 // entry, so that a renderer can change only the lines of its change.
 package sandboxyaml
 
@@ -35,11 +35,11 @@ func ParseDocuments(src []byte) ([]*yaml.Node, error) {
 	}
 }
 
-// ErrAmbiguous means that the file defines the Workload more than once.
-var ErrAmbiguous = errors.New("the file defines the Workload more than once")
+// ErrAmbiguous means that the file defines the Target more than once.
+var ErrAmbiguous = errors.New("the file defines the Target more than once")
 
-// FindWorkload returns the index of the one document that defines the Workload.
-func FindWorkload(docs []*yaml.Node, w v1alpha1.WorkloadReference) (int, error) {
+// FindTarget returns the index of the one document that defines the Target.
+func FindTarget(docs []*yaml.Node, w v1alpha1.TargetReference) (int, error) {
 	found := -1
 	for i, doc := range docs {
 		if doc.Kind != yaml.MappingNode {

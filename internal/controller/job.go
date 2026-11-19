@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	// TriageLabel labels every object created for a Triage with the Triage's name.
-	TriageLabel = "pagerless.dev/triage"
+	// PageLabel labels every object created for a Page with the Page's name.
+	PageLabel = "pagerless.dev/page"
 	// agentContainerName is the name of the Job's only container.
 	agentContainerName = "agent"
 	// tokenVolumeName and tokenMountPath locate the projected service account token.
@@ -35,22 +35,22 @@ const (
 	maxJobNameLength = 52
 )
 
-// AgentJobName returns the name of the agent Job for a Triage.
-func AgentJobName(triageName string) string {
-	return jobName(triageName, "-agent")
+// AgentJobName returns the name of the agent Job for a Page.
+func AgentJobName(pageName string) string {
+	return jobName(pageName, "-agent")
 }
 
-// narrativeJobName returns the name of the Narrative Job for a Triage. It is
+// narrativeJobName returns the name of the Narrative Job for a Page. It is
 // deterministic, so that a repeated reconcile creates no second Job.
-func narrativeJobName(triageName string) string {
-	return jobName(triageName, "-narrative")
+func narrativeJobName(pageName string) string {
+	return jobName(pageName, "-narrative")
 }
 
-// jobName names a Job for a Triage, shortened to a valid DNS label when the Triage's name is long.
-func jobName(triageName, suffix string) string {
-	name := triageName + suffix
+// jobName names a Job for a Page, shortened to a valid DNS label when the Page's name is long.
+func jobName(pageName, suffix string) string {
+	name := pageName + suffix
 	if len(name) > maxJobNameLength {
-		name = strings.TrimRight(triageName[:maxJobNameLength-len(suffix)], "-.") + suffix
+		name = strings.TrimRight(pageName[:maxJobNameLength-len(suffix)], "-.") + suffix
 	}
 	return name
 }
@@ -84,22 +84,25 @@ type jobSpec struct {
 	keycloakToken bool
 }
 
-// buildAgentJob returns the Job that runs the investigation for a Triage. The
-// agent has no write permissions, so the Job mounts no default service account
-// token and projects two tokens: one whose audience is the server's, and one
-// whose audience is the Keycloak realm issuer that the agent exchanges for an
-// access token on the MCP gateway.
-func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
-	spec := triage.Spec
+// buildAgentJob returns the Job that runs the investigation for a Page. The
+// agent holds no Kubernetes RBAC, so the Job mounts no automatic service account
+// token and projects one token whose audience is the server's. A deployment
+// that still configures an identity provider for its tool gateway also projects
+// the realm-audience token; the standalone chart configures neither.
+func buildAgentJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
+	spec := page.Spec
 	env := []corev1.EnvVar{
 		{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
 		{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
-		{Name: agentapi.EnvKeycloakTokenFile, Value: keycloakTokenMountPath + "/" + tokenFileName},
-		{Name: agentapi.EnvTriage, Value: triage.Name},
+		{Name: agentapi.EnvPage, Value: page.Name},
 		{Name: agentapi.EnvTask, Value: agentapi.TaskInvestigate},
-		{Name: agentapi.EnvWorkloadKind, Value: string(spec.Workload.Kind)},
-		{Name: agentapi.EnvWorkloadNamespace, Value: spec.Workload.Namespace},
-		{Name: agentapi.EnvWorkloadName, Value: spec.Workload.Name},
+		{Name: agentapi.EnvTargetKind, Value: string(spec.Target.Kind)},
+		{Name: agentapi.EnvTargetNamespace, Value: spec.Target.Namespace},
+		{Name: agentapi.EnvTargetName, Value: spec.Target.Name},
+	}
+	if cfg.Runtime.KeycloakIssuer != "" {
+		env = append(env, corev1.EnvVar{Name: agentapi.EnvKeycloakTokenFile,
+			Value: keycloakTokenMountPath + "/" + tokenFileName})
 	}
 	if spec.Trigger.Pod != "" {
 		env = append(env, corev1.EnvVar{Name: agentapi.EnvTriggeringPod, Value: spec.Trigger.Pod})
@@ -108,49 +111,49 @@ func buildAgentJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
 		env = append(env, corev1.EnvVar{Name: agentapi.EnvHint, Value: spec.Hint})
 	}
 	env = append(env, cfg.Runtime.environment()...)
-	return buildJob(triage, cfg, jobSpec{
-		name:          AgentJobName(triage.Name),
+	return buildJob(page, cfg, jobSpec{
+		name:          AgentJobName(page.Name),
 		deadline:      cfg.Deadline,
 		env:           env,
 		recordingPVC:  cfg.Runtime.RecordingPVC,
-		keycloakToken: true,
+		keycloakToken: cfg.Runtime.KeycloakIssuer != "",
 	})
 }
 
-// buildNarrativeJob returns the Job that writes the Narrative of a Triage whose
-// Verification has ended. It makes one model call and needs no Workload access,
-// so it receives neither the Workload's identity nor any MCP endpoint.
-func buildNarrativeJob(triage *v1alpha1.Triage, cfg AgentJobConfig) *batchv1.Job {
+// buildNarrativeJob returns the Job that writes the Narrative of a Page whose
+// Verification has ended. It makes one model call and needs no Target access,
+// so it receives neither the Target's identity nor any MCP endpoint.
+func buildNarrativeJob(page *v1alpha1.Page, cfg AgentJobConfig) *batchv1.Job {
 	runtimeEnv := cfg.Runtime.narrativeEnvironment()
 	env := make([]corev1.EnvVar, 0, 4+len(runtimeEnv))
 	env = append(env,
 		corev1.EnvVar{Name: agentapi.EnvServerURL, Value: cfg.ServerURL},
 		corev1.EnvVar{Name: agentapi.EnvTokenFile, Value: tokenMountPath + "/" + tokenFileName},
-		corev1.EnvVar{Name: agentapi.EnvTriage, Value: triage.Name},
+		corev1.EnvVar{Name: agentapi.EnvPage, Value: page.Name},
 		corev1.EnvVar{Name: agentapi.EnvTask, Value: agentapi.TaskNarrative},
 	)
 	env = append(env, runtimeEnv...)
 	spec := jobSpec{
-		name:     narrativeJobName(triage.Name),
+		name:     narrativeJobName(page.Name),
 		deadline: cfg.Deadline,
 		env:      env,
 	}
 	if cfg.Runtime.NarrativeRecordingFile != "" {
 		spec.recordingPVC = cfg.Runtime.RecordingPVC
 	}
-	return buildJob(triage, cfg, spec)
+	return buildJob(page, cfg, spec)
 }
 
 // buildJob returns a Job that runs one short-lived agent process under the
 // restricted security context that agent Job admission permits.
-func buildJob(triage *v1alpha1.Triage, cfg AgentJobConfig, spec jobSpec) *batchv1.Job {
+func buildJob(page *v1alpha1.Page, cfg AgentJobConfig, spec jobSpec) *batchv1.Job {
 	labels := map[string]string{
 		"app.kubernetes.io/name": "pagerless-agent",
-		TriageLabel:              triage.Name,
+		PageLabel:                page.Name,
 	}
 	job := &batchv1.Job{
 		Name:      spec.name,
-		Namespace: triage.Namespace,
+		Namespace: page.Namespace,
 		Labels:    labels,
 		Spec: batchv1.JobSpec{
 			ActiveDeadlineSeconds: new(spec.deadline),

@@ -27,7 +27,7 @@ _TIMEOUT_SECONDS = 15.0
 class ServerRefusedError(Exception):
     """The server will not take this agent's requests, so the investigation must stop.
 
-    The cause is the token (401, 403) or the Triage, which is no longer
+    The cause is the token (401, 403) or the Page, which is no longer
     Investigating (409), for example after its Job's deadline passed.
     """
 
@@ -55,14 +55,14 @@ class ServerClient:
     def __init__(
         self,
         base_url: str,
-        triage: str,
+        page: str,
         token_file: Path,
         *,
         http: httpx.AsyncClient | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._base = base_url.rstrip("/")
-        self._triage = quote(triage, safe="")
+        self._page = quote(page, safe="")
         self._token_file = token_file
         self._http = http or httpx.AsyncClient(timeout=_TIMEOUT_SECONDS)
         self._sleep = sleep
@@ -98,7 +98,7 @@ class ServerClient:
             raise ServerRefusedError(response.status_code, _message(response))
 
     async def narrative_record(self) -> NarrativeRecord:
-        """Read the Triage record that the Narrative describes."""
+        """Read the Page record that the Narrative describes."""
         response = await self._request("GET", "narrative")
         if response.status_code == 200:
             try:
@@ -111,7 +111,7 @@ class ServerClient:
         )
 
     async def post_narrative(self, narrative: str) -> None:
-        """Post the Narrative, which the server stores in the Triage's status."""
+        """Post the Narrative, which the server stores in the Page's status."""
         response = await self._request("POST", "narrative", encode(NarrativeReport(narrative=narrative)))
         if response.status_code == 202:
             return
@@ -126,7 +126,7 @@ class ServerClient:
     async def _request(
         self, method: str, endpoint: str, body: dict[str, Any] | None = None
     ) -> httpx.Response:
-        url = f"{self._base}/v1/triages/{self._triage}/{endpoint}"
+        url = f"{self._base}/v1/pages/{self._page}/{endpoint}"
         last: str = ""
         for attempt in range(1, _ATTEMPTS + 1):
             # The kubelet refreshes the projected token before it expires, so read it for every request.

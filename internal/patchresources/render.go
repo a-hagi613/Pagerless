@@ -19,7 +19,7 @@ import (
 // indentStep is the indentation of each nested level in rendered YAML.
 const indentStep = 2
 
-// containersPath locates a Workload's containers within its manifest.
+// containersPath locates a Target's containers within its manifest.
 var containersPath = []string{"spec", "template", "spec", "containers"}
 
 // errUnsupported marks manifests that the renderer declines to edit, rather than risk a wrong patch.
@@ -55,7 +55,7 @@ func mergeLists(current, changes corev1.ResourceList) corev1.ResourceList {
 // render edits one container's resources in the Sandbox file and returns the
 // new file content, changing only the lines of the resources block. It
 // returns the merged resources that the file now holds.
-func render(src []byte, workload v1alpha1.WorkloadReference, container string, requests, limits corev1.ResourceList,
+func render(src []byte, target v1alpha1.TargetReference, container string, requests, limits corev1.ResourceList,
 ) ([]byte, corev1.ResourceRequirements, error) {
 	var none corev1.ResourceRequirements
 	if bytes.Contains(src, []byte("\r")) {
@@ -65,7 +65,7 @@ func render(src []byte, workload v1alpha1.WorkloadReference, container string, r
 	if err != nil {
 		return nil, none, err
 	}
-	index, err := sandboxyaml.FindWorkload(docs, workload)
+	index, err := sandboxyaml.FindTarget(docs, target)
 	if err != nil {
 		if errors.Is(err, sandboxyaml.ErrAmbiguous) {
 			return nil, none, unsupported("%v", err)

@@ -2,7 +2,7 @@
 # Manages a live single-port Pagerless dashboard preview on the devbox:
 # starts a local Keycloak container on 127.0.0.1:18180, provisions the
 # pagerless realm and approver user, and runs pagerless-server on 0.0.0.0:8080
-# with its single-port Keycloak realm proxy and seeded sample Triages.
+# with its single-port Keycloak realm proxy and seeded sample Pages.
 # All runtime state and credentials live under /tmp/pagerless-dashboard-preview
 # with mode 0700/0600; no secret is ever printed or written to the repository.
 set -euo pipefail
@@ -161,7 +161,7 @@ PY
 	done
 
 	if [ ! -f "$ready_file" ]; then
-		echo "Timed out waiting for the dashboard preview to seed sample Triages." >&2
+		echo "Timed out waiting for the dashboard preview to seed sample Pages." >&2
 		sed -n '1,120p' "$server_log" >&2 || true
 		stop_preview
 		exit 1

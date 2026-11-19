@@ -10,7 +10,7 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// Limits that the server enforces on agent input, matching the Triage CRD schema.
+// Limits that the server enforces on agent input, matching the Page CRD schema.
 const (
 	MaxDiagnosisLength   = 4000
 	MaxFindingSourceLen  = 500
@@ -35,7 +35,7 @@ var (
 		v1alpha1.StepKindToolCall, v1alpha1.StepKindFinding, v1alpha1.StepKindProgress,
 	}
 	actions = []v1alpha1.Action{
-		v1alpha1.ActionRestartWorkload, v1alpha1.ActionScale, v1alpha1.ActionPatchResources,
+		v1alpha1.ActionScale, v1alpha1.ActionPatchResources,
 		v1alpha1.ActionRollback, v1alpha1.ActionNoAction,
 	}
 )
@@ -128,7 +128,7 @@ func checkUsage(path string, usage *v1alpha1.Usage) []ValidationError {
 }
 
 // Check returns the structural errors in a Narrative: it must be non-blank and
-// within the length the Triage stores.
+// within the length the Page stores.
 func (n NarrativeReport) Check() []ValidationError {
 	if strings.TrimSpace(n.Narrative) == "" {
 		return []ValidationError{{Field: "narrative", Message: "narrative is required"}}

@@ -1,9 +1,9 @@
 apiVersion: v2
 name: pagerless
-description: Human-gated Kubernetes Triage operator, LangGraph investigation agent, and web dashboard.
+description: Standalone, read-only Kubernetes remediation operator that proposes every change as a GitHub pull request.
 type: application
-version: 1.0.0
-appVersion: "1.0.0"
+version: 2.0.0
+appVersion: "2.0.0"
 icon: https://raw.githubusercontent.com/a-hagi613/pagerless/main/docs/assets/pagerless-icon.png
 home: https://github.com/a-hagi613/pagerless
 sources:

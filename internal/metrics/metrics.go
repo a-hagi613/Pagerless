@@ -1,8 +1,8 @@
-// Package metrics exports Pagerless's own behaviour to Prometheus: Triages by Phase, Proposals by Action,
-// decisions, Verification outcomes, time to Recovered, and the tokens and cost of each Triage.
+// Package metrics exports Pagerless's own behaviour to Prometheus: Pages by Phase, Proposals by Action,
+// decisions, Verification outcomes, time to Recovered, and the tokens and cost of each Page.
 //
-// The counters are incremented as pagerless-server writes status. The gauges are collected from the Triage cache at
-// scrape time, so they survive a restart and drop a Triage when retention deletes it.
+// The counters are incremented as pagerless-server writes status. The gauges are collected from the Page cache at
+// scrape time, so they survive a restart and drop a Page when retention deletes it.
 package metrics
 
 import (
@@ -19,32 +19,32 @@ import (
 
 // Metric names. The dashboard and the tests refer to these names.
 const (
-	// MetricTriages is the number of Triages in each Phase.
-	MetricTriages = "pagerless_triages"
+	// MetricPages is the number of Pages in each Phase.
+	MetricPages = "pagerless_pages"
 	// MetricProposals counts validated Proposals by Action.
 	MetricProposals = "pagerless_proposals_total"
 	// MetricDecisions counts human decisions by outcome.
 	MetricDecisions = "pagerless_decisions_total"
 	// MetricVerifications counts Verification outcomes.
 	MetricVerifications = "pagerless_verifications_total"
-	// MetricTimeToRecovered is the time from the Triage's start to Recovered.
+	// MetricTimeToRecovered is the time from the Page's start to Recovered.
 	MetricTimeToRecovered = "pagerless_time_to_recovered_seconds"
-	// MetricInputTokens is the input tokens one Triage's investigation read.
-	MetricInputTokens = "pagerless_triage_input_tokens"
-	// MetricOutputTokens is the output tokens one Triage's investigation wrote.
-	MetricOutputTokens = "pagerless_triage_output_tokens"
-	// MetricCostUSD is the estimated model cost of one Triage in United States dollars.
-	MetricCostUSD = "pagerless_triage_cost_usd"
+	// MetricInputTokens is the input tokens one Page's investigation read.
+	MetricInputTokens = "pagerless_page_input_tokens"
+	// MetricOutputTokens is the output tokens one Page's investigation wrote.
+	MetricOutputTokens = "pagerless_page_output_tokens"
+	// MetricCostUSD is the estimated model cost of one Page in United States dollars.
+	MetricCostUSD = "pagerless_page_cost_usd"
 )
 
-// labelTriage is the label that names one Triage on the per-Triage usage gauges.
-const labelTriage = "triage"
+// labelPage is the label that names one Page on the per-Page usage gauges.
+const labelPage = "page"
 
-// phases are the labels of the Triages gauge. An empty phase is reported as Pending, because a Triage that the
+// phases are the labels of the Pages gauge. An empty phase is reported as Pending, because a Page that the
 // server has not yet initialized is active and is about to be investigated.
 var phases = []v1alpha1.Phase{
 	v1alpha1.PhasePending, v1alpha1.PhaseInvestigating, v1alpha1.PhaseProposed, v1alpha1.PhaseApproved,
-	v1alpha1.PhaseExecuting, v1alpha1.PhaseVerifying, v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered,
+	v1alpha1.PhasePullRequestOpen, v1alpha1.PhaseVerifying, v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered,
 	v1alpha1.PhaseDiagnosed, v1alpha1.PhaseRejected, v1alpha1.PhaseExpired, v1alpha1.PhaseInvalid,
 	v1alpha1.PhaseFailed,
 }
@@ -59,7 +59,7 @@ type Metrics struct {
 	timeToRecovered prometheus.Histogram
 }
 
-// New builds the collectors and registers them. The reader is the Triage cache that the gauges are collected from.
+// New builds the collectors and registers them. The reader is the Page cache that the gauges are collected from.
 func New(reader client.Reader) *Metrics {
 	m := &Metrics{
 		registry: prometheus.NewRegistry(),
@@ -77,14 +77,14 @@ func New(reader client.Reader) *Metrics {
 		}, []string{"outcome"}),
 		timeToRecovered: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name: MetricTimeToRecovered,
-			Help: "Seconds from the Triage start to the Recovered phase.",
-			// A Triage is bounded by the five-minute agent budget and the five-minute Verification window, but a
+			Help: "Seconds from the Page start to the Recovered phase.",
+			// A Page is bounded by the five-minute agent budget and the five-minute Verification window, but a
 			// pull request may wait for a human to merge it, so the buckets reach one hour.
 			Buckets: []float64{30, 60, 120, 300, 600, 900, 1800, 3600},
 		}),
 	}
 	m.registry.MustRegister(
-		m.proposals, m.decisions, m.verifications, m.timeToRecovered, newTriageCollector(reader),
+		m.proposals, m.decisions, m.verifications, m.timeToRecovered, newPageCollector(reader),
 	)
 	return m
 }
@@ -96,7 +96,7 @@ func (m *Metrics) Handler() http.Handler {
 
 // ObservePhaseChange records the counters that a status write implies. It is called after the status is written,
 // with the status before the write, the status after it, and the time of the write.
-func (m *Metrics) ObservePhaseChange(before, after *v1alpha1.Triage, now time.Time) {
+func (m *Metrics) ObservePhaseChange(before, after *v1alpha1.Page, now time.Time) {
 	if proposal := after.Status.Proposal; proposal != nil &&
 		(before.Status.Proposal == nil || before.Status.Proposal.Hash != proposal.Hash) {
 		m.proposals.WithLabelValues(string(proposal.Action)).Inc()
@@ -120,43 +120,43 @@ func (m *Metrics) ObservePhaseChange(before, after *v1alpha1.Triage, now time.Ti
 	}
 }
 
-// triageCollector reports the current Triages by Phase and the usage each Triage recorded.
-type triageCollector struct {
+// pageCollector reports the current Pages by Phase and the usage each Page recorded.
+type pageCollector struct {
 	reader       client.Reader
-	triages      *prometheus.Desc
+	pages        *prometheus.Desc
 	inputTokens  *prometheus.Desc
 	outputTokens *prometheus.Desc
 	costUSD      *prometheus.Desc
 }
 
-// newTriageCollector builds the descriptors once, before the registry can call Collect concurrently.
-func newTriageCollector(reader client.Reader) *triageCollector {
-	return &triageCollector{
-		reader:  reader,
-		triages: prometheus.NewDesc(MetricTriages, "Triages by Phase.", []string{"phase"}, nil),
+// newPageCollector builds the descriptors once, before the registry can call Collect concurrently.
+func newPageCollector(reader client.Reader) *pageCollector {
+	return &pageCollector{
+		reader: reader,
+		pages:  prometheus.NewDesc(MetricPages, "Pages by Phase.", []string{"phase"}, nil),
 		inputTokens: prometheus.NewDesc(
-			MetricInputTokens, "Input tokens one Triage's investigation read.", []string{labelTriage}, nil,
+			MetricInputTokens, "Input tokens one Page's investigation read.", []string{labelPage}, nil,
 		),
 		outputTokens: prometheus.NewDesc(
-			MetricOutputTokens, "Output tokens one Triage's investigation wrote.", []string{labelTriage}, nil,
+			MetricOutputTokens, "Output tokens one Page's investigation wrote.", []string{labelPage}, nil,
 		),
 		costUSD: prometheus.NewDesc(
-			MetricCostUSD, "Estimated model cost of one Triage in United States dollars.", []string{labelTriage}, nil,
+			MetricCostUSD, "Estimated model cost of one Page in United States dollars.", []string{labelPage}, nil,
 		),
 	}
 }
 
 // Describe sends the descriptors of the collector.
-func (c *triageCollector) Describe(ch chan<- *prometheus.Desc) {
-	ch <- c.triages
+func (c *pageCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.pages
 	ch <- c.inputTokens
 	ch <- c.outputTokens
 	ch <- c.costUSD
 }
 
-// Collect lists the Triages and emits one gauge per Phase and one gauge per Triage that recorded usage.
-func (c *triageCollector) Collect(ch chan<- prometheus.Metric) {
-	var list v1alpha1.TriageList
+// Collect lists the Pages and emits one gauge per Phase and one gauge per Page that recorded usage.
+func (c *pageCollector) Collect(ch chan<- prometheus.Metric) {
+	var list v1alpha1.PageList
 	// Prometheus calls Collect without a context. The cached read is bounded by the informer, not by a request.
 	if err := c.reader.List(context.Background(), &list); err != nil {
 		return
@@ -176,6 +176,6 @@ func (c *triageCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 	for _, phase := range phases {
-		ch <- prometheus.MustNewConstMetric(c.triages, prometheus.GaugeValue, float64(counts[phase]), string(phase))
+		ch <- prometheus.MustNewConstMetric(c.pages, prometheus.GaugeValue, float64(counts[phase]), string(phase))
 	}
 }

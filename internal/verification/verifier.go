@@ -16,7 +16,7 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// DefaultWindow is how long the Workload is observed for new restarts and OOMKills (ADR-0006).
+// DefaultWindow is how long the Target is observed for new restarts and OOMKills (ADR-0006).
 const DefaultWindow = 5 * time.Minute
 
 // WindowEnvironment names the variable that may shorten the observation window.
@@ -42,7 +42,7 @@ func WindowFromEnvironment(getenv func(string) string) (time.Duration, error) {
 	return window, nil
 }
 
-// DefaultApplication is the Argo CD application that deploys the Sandbox.
+// DefaultApplication is the Argo CD application that deploys the Target Repository.
 const DefaultApplication = "sandbox"
 
 // maxMessage bounds the message of a check.
@@ -67,18 +67,25 @@ type Alerts interface {
 // Argo CD, and Alertmanager report, and none involves the model (ADR-0006). A check that cannot read what it
 // needs returns an error and no result, so that Verification retries rather than guessing.
 type Verifier struct {
-	// Reader reads Workloads and their pods directly from the API server.
+	// Reader reads Targets and their pods directly from the API server.
 	Reader client.Reader
 	// Applications reads Argo CD.
 	Applications Applications
 	// Alerts reads Alertmanager.
 	Alerts Alerts
-	// Application is the name of the Argo CD application that deploys the Sandbox. It defaults to DefaultApplication.
+	// Application is the name of the Argo CD application that deploys the Target
+	// Repository. It defaults to DefaultApplication.
 	Application string
 }
 
-// Synced checks that Argo CD reports the application Synced and Healthy at the merge commit.
+// Synced checks that the GitOps controller reports the application Synced and
+// Healthy at the merge commit. A deployment that configures no GitOps
+// controller passes the check with a message saying so: Verification then
+// rests on the rollout, restart, and alert checks, which read the cluster.
 func (v *Verifier) Synced(ctx context.Context, mergeCommit string) (v1alpha1.VerificationCheck, error) {
+	if v.Applications == nil {
+		return passed(v1alpha1.CheckArgoCDSynced, "skipped: no GitOps controller is configured"), nil
+	}
 	name := v.application()
 	app, err := v.Applications.Application(ctx, name)
 	if err != nil {
@@ -90,19 +97,7 @@ func (v *Verifier) Synced(ctx context.Context, mergeCommit string) (v1alpha1.Ver
 	return syncCheck(name, app, mergeCommit), nil
 }
 
-// LiveSynced checks that Argo CD reports the application Synced and Healthy. A
-// live Action changes no Sandbox commit, so there is no revision to compare;
-// Synced still proves that Argo CD sees no drift from the live change.
-func (v *Verifier) LiveSynced(ctx context.Context) (v1alpha1.VerificationCheck, error) {
-	name := v.application()
-	app, err := v.Applications.Application(ctx, name)
-	if err != nil {
-		return v1alpha1.VerificationCheck{}, err
-	}
-	return syncCheck(name, app, ""), nil
-}
-
-// application returns the name of the Argo CD application that deploys the Sandbox.
+// application returns the name of the Argo CD application that deploys the Target Repository.
 func (v *Verifier) application() string {
 	if v.Application == "" {
 		return DefaultApplication
@@ -127,25 +122,25 @@ func syncCheck(name string, app *Application, mergeCommit string) v1alpha1.Verif
 	}
 }
 
-// Rollout checks that the Workload's rollout is complete and available: the controller has observed the latest
+// Rollout checks that the Target's rollout is complete and available: the controller has observed the latest
 // generation, and every replica is updated and available.
-func (v *Verifier) Rollout(ctx context.Context, ref v1alpha1.WorkloadReference) (v1alpha1.VerificationCheck, error) {
+func (v *Verifier) Rollout(ctx context.Context, ref v1alpha1.TargetReference) (v1alpha1.VerificationCheck, error) {
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
 	switch ref.Kind {
-	case v1alpha1.WorkloadKindDeployment:
+	case v1alpha1.TargetKindDeployment:
 		var d appsv1.Deployment
 		if err := v.Reader.Get(ctx, key, &d); err != nil {
 			return missing(v1alpha1.CheckRolloutAvailable, ref, err)
 		}
 		return deploymentRollout(&d), nil
-	case v1alpha1.WorkloadKindStatefulSet:
+	case v1alpha1.TargetKindStatefulSet:
 		var s appsv1.StatefulSet
 		if err := v.Reader.Get(ctx, key, &s); err != nil {
 			return missing(v1alpha1.CheckRolloutAvailable, ref, err)
 		}
 		return statefulSetRollout(&s), nil
 	default:
-		return v1alpha1.VerificationCheck{}, fmt.Errorf("unsupported Workload kind %q", ref.Kind)
+		return v1alpha1.VerificationCheck{}, fmt.Errorf("unsupported Target kind %q", ref.Kind)
 	}
 }
 
@@ -194,11 +189,11 @@ func statefulSetRollout(s *appsv1.StatefulSet) v1alpha1.VerificationCheck {
 	return passed(v1alpha1.CheckRolloutAvailable, "%d of %d replicas are updated and ready", want, want)
 }
 
-// Restarts checks that no container of the Workload's pods was terminated, restarted or OOMKilled, after the
+// Restarts checks that no container of the Target's pods was terminated, restarted or OOMKilled, after the
 // time. The kubelet records a container's last termination in the pod's status, so a restart during the
 // observation remains visible after the container comes back, unless its pod was deleted in between.
 func (v *Verifier) Restarts(
-	ctx context.Context, ref v1alpha1.WorkloadReference, since time.Time,
+	ctx context.Context, ref v1alpha1.TargetReference, since time.Time,
 ) (v1alpha1.VerificationCheck, error) {
 	selector, err := v.selector(ctx, ref)
 	if err != nil {
@@ -252,32 +247,32 @@ func terminationsSince(pod *corev1.Pod, since time.Time) []string {
 	return found
 }
 
-// selector returns the label selector of the Workload's pods.
-func (v *Verifier) selector(ctx context.Context, ref v1alpha1.WorkloadReference) (labels.Selector, error) {
+// selector returns the label selector of the Target's pods.
+func (v *Verifier) selector(ctx context.Context, ref v1alpha1.TargetReference) (labels.Selector, error) {
 	return PodSelector(ctx, v.Reader, ref)
 }
 
-// PodSelector returns the label selector of the Workload's pods.
+// PodSelector returns the label selector of the Target's pods.
 func PodSelector(
-	ctx context.Context, reader client.Reader, ref v1alpha1.WorkloadReference,
+	ctx context.Context, reader client.Reader, ref v1alpha1.TargetReference,
 ) (labels.Selector, error) {
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
 	var raw *metav1.LabelSelector
 	switch ref.Kind {
-	case v1alpha1.WorkloadKindDeployment:
+	case v1alpha1.TargetKindDeployment:
 		var d appsv1.Deployment
 		if err := reader.Get(ctx, key, &d); err != nil {
 			return nil, err
 		}
 		raw = d.Spec.Selector
-	case v1alpha1.WorkloadKindStatefulSet:
+	case v1alpha1.TargetKindStatefulSet:
 		var s appsv1.StatefulSet
 		if err := reader.Get(ctx, key, &s); err != nil {
 			return nil, err
 		}
 		raw = s.Spec.Selector
 	default:
-		return nil, fmt.Errorf("unsupported Workload kind %q", ref.Kind)
+		return nil, fmt.Errorf("unsupported Target kind %q", ref.Kind)
 	}
 	if raw == nil || (len(raw.MatchLabels) == 0 && len(raw.MatchExpressions) == 0) {
 		// An empty selector would match every pod in the namespace.
@@ -292,7 +287,7 @@ func PodSelector(
 
 // AlertRequired reports whether Verification must check that the triggering alert resolved. A Trigger from
 // Alertmanager always requires it, and so does any other Trigger that carries an alert's fingerprint, such as a
-// Follow-up Triage of an alert's Triage. Human Triggers have no alert to check.
+// Follow-up Page of an alert's Page. Human Triggers have no alert to check.
 func AlertRequired(trigger v1alpha1.Trigger) bool {
 	return trigger.Source == v1alpha1.TriggerSourceAlertmanager || trigger.AlertFingerprint != ""
 }
@@ -303,6 +298,9 @@ func AlertRequired(trigger v1alpha1.Trigger) bool {
 func (v *Verifier) Alert(ctx context.Context, trigger v1alpha1.Trigger) (v1alpha1.VerificationCheck, error) {
 	if !AlertRequired(trigger) {
 		return passed(v1alpha1.CheckAlertResolved, "skipped: the Trigger is a human request, not an alert"), nil
+	}
+	if v.Alerts == nil {
+		return passed(v1alpha1.CheckAlertResolved, "skipped: no Alertmanager is configured"), nil
 	}
 	if trigger.AlertFingerprint == "" {
 		return failed(v1alpha1.CheckAlertResolved,
@@ -318,8 +316,8 @@ func (v *Verifier) Alert(ctx context.Context, trigger v1alpha1.Trigger) (v1alpha
 	return passed(v1alpha1.CheckAlertResolved, "alert %s has resolved in Alertmanager", trigger.AlertFingerprint), nil
 }
 
-// missing turns a missing Workload into a failed check, and any other error into an error.
-func missing(name string, ref v1alpha1.WorkloadReference, err error) (v1alpha1.VerificationCheck, error) {
+// missing turns a missing Target into a failed check, and any other error into an error.
+func missing(name string, ref v1alpha1.TargetReference, err error) (v1alpha1.VerificationCheck, error) {
 	if apierrors.IsNotFound(err) {
 		return failed(name, "%s %s/%s no longer exists", ref.Kind, ref.Namespace, ref.Name), nil
 	}

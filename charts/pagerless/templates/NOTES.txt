@@ -1,25 +1,41 @@
 Pagerless {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
 
-Mode:      {{ if .Values.sandbox.url }}GitOps (pull-request remediation with {{ .Values.sandbox.url }}){{ else }}live-only (RestartWorkload and NoAction; no Sandbox URL){{ end }}
-Provider:  {{ .Values.agent.provider }}
-Workloads: {{ include "pagerless.workloadNamespaces" . }}
-MCP:       {{ include "pagerless.mcpServers" . }} through {{ .Values.mcp.gatewayUrl }}
+The cluster identity is read-only. Pagerless reads failures and proposes every
+remediation as a pull request; it never writes to a workload, Event, or Node.
 
-Prerequisites this chart does not install:
-  - Keycloak, whose realm and client secrets are configured by oidc.*.
-  - An MCP gateway (agentgateway) at mcp.gatewayUrl, when the agent needs tools.
-  - Secret {{ .Values.oidc.secretName }} with the dashboard and server client secrets.
-  - Secret {{ .Values.alertmanager.secretName }} with the Alertmanager webhook token.
-  - Secret pagerless-agent-credentials with the model provider's credentials, or
-    an EKS Pod Identity or IRSA association on the pagerless-agent ServiceAccount.
+{{- if .Values.rbac.watchAllNamespaces }}
 
-Open the dashboard:
-  kubectl --namespace {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:8082
-  Then open {{ .Values.dashboard.baseUrl }}.
+Watching: every namespace through ClusterRole {{ .Release.Name }}-pagerless-read.
+{{- else }}
 
-Start a Triage:
-  kubectl triage --namespace {{ (first .Values.workloadNamespaces) }} deploy/<workload-name>
+Watching: {{ join ", " .Values.rbac.watchNamespaces }} through a read Role per namespace.
+{{- end }}
 
-Approve Proposals by creating a TriageApproval through the dashboard or the CLI.
-Role pagerless-approver in this namespace grants exactly that permission; bind it
-to the people who may approve.
+{{- if .Values.credentials.existingSecret }}
+
+Credentials are managed externally by Secret {{ .Values.credentials.existingSecret }}.
+Required keys:
+
+  AI_BASE_URL, AI_API_KEY, AI_MODEL
+  GITHUB_TOKEN, GITHUB_REPO
+  CONNECTOR_<NAME>_TOKEN              (one per configured connector)
+{{- else }}
+
+Credentials live in Secret {{ .Values.credentials.secretName }}, with every key
+present and empty. Fill it before the first Page can be investigated:
+
+  kubectl -n {{ .Release.Namespace }} edit secret {{ .Values.credentials.secretName }}
+{{- end }}
+
+The Portal and its sign-in are delivered with the authentication and Portal
+slices. This release serves the agent report API and the metrics API:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:{{ .Values.service.port }}
+
+Record a decision on a Page by patching its annotations, or with the CLI:
+
+  kubectl page approve <page>
+  kubectl page dismiss <page> --reason "<why>"
+
+Role pagerless-approver in this namespace grants exactly that permission. Bind
+it to the people who may record decisions.

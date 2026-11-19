@@ -1,15 +1,15 @@
 // Package history is the append-only SQLite record of what Pagerless observed. It is written by
 // pagerless-server on every Phase change and for every step event, and is never read to decide anything about an
-// Active Triage: the Triage resource remains the source of truth (ADR-0001).
+// Active Page: the Page resource remains the source of truth (ADR-0001).
 //
 // Schema version 2 has two tables, each with a trigger that refuses UPDATE and a trigger that refuses DELETE:
 //
-//	triage_snapshots(id, triage_uid, namespace, name, phase, observed_at, created_at, spec, status)
-//	triage_steps(id, triage_uid, namespace, name, recorded_at, kind, tool, summary, finding)
+//	page_snapshots(id, page_uid, namespace, name, phase, observed_at, created_at, spec, status)
+//	page_steps(id, page_uid, namespace, name, recorded_at, kind, tool, summary, finding)
 //
-// A snapshot stores the whole Triage status and spec as JSON next to the phase, the time the Triage was created,
-// and the time the status was observed. The spec is recorded so the dashboard can still show the Workload and the
-// Trigger after retention has deleted the Triage resource. A step stores the bounded step the server accepted,
+// A snapshot stores the whole Page status and spec as JSON next to the phase, the time the Page was created,
+// and the time the status was observed. The spec is recorded so the dashboard can still show the Target and the
+// Trigger after retention has deleted the Page resource. A step stores the bounded step the server accepted,
 // with its Finding as JSON when the step carried one. History therefore cannot be rewritten by the application.
 //
 // Version 2 added the created_at and spec columns; a version 1 database is upgraded in place.
@@ -36,16 +36,16 @@ const SchemaVersion = 2
 
 const (
 	// snapshotsTable holds one row per Phase change.
-	snapshotsTable = "triage_snapshots"
+	snapshotsTable = "page_snapshots"
 	// stepsTable holds one row per step event.
-	stepsTable = "triage_steps"
+	stepsTable = "page_steps"
 )
 
 // schema is applied to a new database. It is idempotent so that a restart reopens the same file.
 var schema = []string{
 	`CREATE TABLE IF NOT EXISTS ` + snapshotsTable + ` (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		triage_uid TEXT NOT NULL,
+		page_uid TEXT NOT NULL,
 		namespace TEXT NOT NULL,
 		name TEXT NOT NULL,
 		phase TEXT NOT NULL,
@@ -54,7 +54,7 @@ var schema = []string{
 		spec TEXT,
 		status TEXT NOT NULL
 	)`,
-	`CREATE INDEX IF NOT EXISTS ` + snapshotsTable + `_by_triage ON ` + snapshotsTable + ` (namespace, name, id)`,
+	`CREATE INDEX IF NOT EXISTS ` + snapshotsTable + `_by_page ON ` + snapshotsTable + ` (namespace, name, id)`,
 	`CREATE TRIGGER IF NOT EXISTS ` + snapshotsTable + `_no_update
 		BEFORE UPDATE ON ` + snapshotsTable + `
 		BEGIN SELECT RAISE(ABORT, '` + snapshotsTable + ` is append-only'); END`,
@@ -63,7 +63,7 @@ var schema = []string{
 		BEGIN SELECT RAISE(ABORT, '` + snapshotsTable + ` is append-only'); END`,
 	`CREATE TABLE IF NOT EXISTS ` + stepsTable + ` (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		triage_uid TEXT NOT NULL,
+		page_uid TEXT NOT NULL,
 		namespace TEXT NOT NULL,
 		name TEXT NOT NULL,
 		recorded_at TEXT NOT NULL,
@@ -72,7 +72,7 @@ var schema = []string{
 		summary TEXT NOT NULL,
 		finding TEXT
 	)`,
-	`CREATE INDEX IF NOT EXISTS ` + stepsTable + `_by_triage ON ` + stepsTable + ` (namespace, name, id)`,
+	`CREATE INDEX IF NOT EXISTS ` + stepsTable + `_by_page ON ` + stepsTable + ` (namespace, name, id)`,
 	`CREATE TRIGGER IF NOT EXISTS ` + stepsTable + `_no_update
 		BEFORE UPDATE ON ` + stepsTable + `
 		BEGIN SELECT RAISE(ABORT, '` + stepsTable + ` is append-only'); END`,
@@ -86,34 +86,34 @@ type Store struct {
 	db *sql.DB
 }
 
-// Snapshot is one recorded Triage status.
+// Snapshot is one recorded Page status.
 type Snapshot struct {
-	// Triage is the name of the Triage.
-	Triage string
-	// UID is the UID of the Triage, so a recreated Triage with the same name stays distinguishable.
+	// Page is the name of the Page.
+	Page string
+	// UID is the UID of the Page, so a recreated Page with the same name stays distinguishable.
 	UID string
-	// Namespace is the namespace of the Triage.
+	// Namespace is the namespace of the Page.
 	Namespace string
 	// Phase is the phase recorded in the snapshot.
 	Phase v1alpha1.Phase
 	// ObservedAt is when the server wrote the status.
 	ObservedAt time.Time
-	// CreatedAt is when the Triage was created. It is zero for a snapshot written by schema version 1.
+	// CreatedAt is when the Page was created. It is zero for a snapshot written by schema version 1.
 	CreatedAt time.Time
-	// Spec is the Triage's immutable spec, recorded so the dashboard can show the Workload and the Trigger after
-	// retention has deleted the Triage resource. It is zero for a snapshot written by schema version 1.
-	Spec v1alpha1.TriageSpec
-	// Status is the complete Triage status at that moment.
-	Status v1alpha1.TriageStatus
+	// Spec is the Page's immutable spec, recorded so the dashboard can show the Target and the Trigger after
+	// retention has deleted the Page resource. It is zero for a snapshot written by schema version 1.
+	Spec v1alpha1.PageSpec
+	// Status is the complete Page status at that moment.
+	Status v1alpha1.PageStatus
 }
 
 // Step is one recorded step event.
 type Step struct {
-	// Triage is the name of the Triage.
-	Triage string
-	// UID is the UID of the Triage.
+	// Page is the name of the Page.
+	Page string
+	// UID is the UID of the Page.
 	UID string
-	// Namespace is the namespace of the Triage.
+	// Namespace is the namespace of the Page.
 	Namespace string
 	// RecordedAt is when the server accepted the step.
 	RecordedAt time.Time
@@ -270,85 +270,85 @@ func (s *Store) hasColumn(ctx context.Context, table, column string) (bool, erro
 	return false, nil
 }
 
-// AppendSnapshot records a Triage status at the moment the server wrote it. It appends; it never replaces an
+// AppendSnapshot records a Page status at the moment the server wrote it. It appends; it never replaces an
 // earlier snapshot.
-func (s *Store) AppendSnapshot(ctx context.Context, tr *v1alpha1.Triage, at time.Time) error {
+func (s *Store) AppendSnapshot(ctx context.Context, tr *v1alpha1.Page, at time.Time) error {
 	status, err := json.Marshal(tr.Status)
 	if err != nil {
-		return fmt.Errorf("encode the status of Triage %s: %w", tr.Name, err)
+		return fmt.Errorf("encode the status of Page %s: %w", tr.Name, err)
 	}
 	spec, err := json.Marshal(tr.Spec)
 	if err != nil {
-		return fmt.Errorf("encode the spec of Triage %s: %w", tr.Name, err)
+		return fmt.Errorf("encode the spec of Page %s: %w", tr.Name, err)
 	}
 	var createdAt any
 	if !tr.CreationTimestamp.IsZero() {
 		createdAt = formatTime(tr.CreationTimestamp.Time)
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO `+snapshotsTable+` (triage_uid, namespace, name, phase, observed_at, created_at, spec, status)
+		`INSERT INTO `+snapshotsTable+` (page_uid, namespace, name, phase, observed_at, created_at, spec, status)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(tr.UID), tr.Namespace, tr.Name, string(tr.Status.Phase), formatTime(at), createdAt,
 		string(spec), string(status),
 	)
 	if err != nil {
-		return fmt.Errorf("append a snapshot of Triage %s: %w", tr.Name, err)
+		return fmt.Errorf("append a snapshot of Page %s: %w", tr.Name, err)
 	}
 	return nil
 }
 
 // AppendStep records one step event. The Finding is stored as JSON when the step carried one.
 func (s *Store) AppendStep(
-	ctx context.Context, tr *v1alpha1.Triage, step v1alpha1.Step, finding *v1alpha1.Finding,
+	ctx context.Context, tr *v1alpha1.Page, step v1alpha1.Step, finding *v1alpha1.Finding,
 ) error {
 	var encoded any
 	if finding != nil {
 		raw, err := json.Marshal(finding)
 		if err != nil {
-			return fmt.Errorf("encode a finding of Triage %s: %w", tr.Name, err)
+			return fmt.Errorf("encode a finding of Page %s: %w", tr.Name, err)
 		}
 		encoded = string(raw)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO `+stepsTable+` (triage_uid, namespace, name, recorded_at, kind, tool, summary, finding)
+		`INSERT INTO `+stepsTable+` (page_uid, namespace, name, recorded_at, kind, tool, summary, finding)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(tr.UID), tr.Namespace, tr.Name, formatTime(step.Time.Time),
 		string(step.Kind), step.Tool, step.Summary, encoded,
 	)
 	if err != nil {
-		return fmt.Errorf("append a step of Triage %s: %w", tr.Name, err)
+		return fmt.Errorf("append a step of Page %s: %w", tr.Name, err)
 	}
 	return nil
 }
 
-// Snapshots returns the snapshots of a Triage in the order they were appended.
-func (s *Store) Snapshots(ctx context.Context, triage string) ([]Snapshot, error) {
+// Snapshots returns the snapshots of a Page in the order they were appended.
+func (s *Store) Snapshots(ctx context.Context, page string) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT triage_uid, namespace, name, phase, observed_at, created_at, spec, status
-		 FROM `+snapshotsTable+` WHERE name = ? ORDER BY id`, triage)
+		`SELECT page_uid, namespace, name, phase, observed_at, created_at, spec, status
+		 FROM `+snapshotsTable+` WHERE name = ? ORDER BY id`, page)
 	if err != nil {
-		return nil, fmt.Errorf("read the snapshots of Triage %s: %w", triage, err)
+		return nil, fmt.Errorf("read the snapshots of Page %s: %w", page, err)
 	}
 	defer func() { _ = rows.Close() }()
 	var snapshots []Snapshot
 	for rows.Next() {
 		snapshot, err := scanSnapshot(rows)
 		if err != nil {
-			return nil, fmt.Errorf("read a snapshot of Triage %s: %w", triage, err)
+			return nil, fmt.Errorf("read a snapshot of Page %s: %w", page, err)
 		}
 		snapshots = append(snapshots, *snapshot)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the snapshots of Triage %s: %w", triage, err)
+		return nil, fmt.Errorf("read the snapshots of Page %s: %w", page, err)
 	}
 	return snapshots, nil
 }
 
-// Latest returns the most recent snapshot of every Triage, most recently appended first. It is what the
-// dashboard's list starts from, so a Triage whose resource retention deleted still appears.
+// Latest returns the most recent snapshot of every Page, most recently appended first. It is what the
+// dashboard's list starts from, so a Page whose resource retention deleted still appears.
 func (s *Store) Latest(ctx context.Context) ([]Snapshot, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.triage_uid, s.namespace, s.name, s.phase, s.observed_at, s.created_at, s.spec, s.status
+		`SELECT s.page_uid, s.namespace, s.name, s.phase, s.observed_at, s.created_at, s.spec, s.status
 		 FROM `+snapshotsTable+` s
 		 JOIN (SELECT namespace, name, MAX(id) AS id FROM `+snapshotsTable+` GROUP BY namespace, name) latest
 		   ON s.id = latest.id
@@ -387,7 +387,7 @@ func scanSnapshot(row scanner) (*Snapshot, error) {
 		statusRaw string
 	)
 	if err := row.Scan(
-		&snapshot.UID, &snapshot.Namespace, &snapshot.Triage, &phase, &observed, &created, &specRaw, &statusRaw,
+		&snapshot.UID, &snapshot.Namespace, &snapshot.Page, &phase, &observed, &created, &specRaw, &statusRaw,
 	); err != nil {
 		return nil, err
 	}
@@ -412,13 +412,13 @@ func scanSnapshot(row scanner) (*Snapshot, error) {
 	return &snapshot, nil
 }
 
-// Steps returns the step events of a Triage in the order they were appended.
-func (s *Store) Steps(ctx context.Context, triage string) ([]Step, error) {
+// Steps returns the step events of a Page in the order they were appended.
+func (s *Store) Steps(ctx context.Context, page string) ([]Step, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT triage_uid, namespace, name, recorded_at, kind, tool, summary, finding
-		 FROM `+stepsTable+` WHERE name = ? ORDER BY id`, triage)
+		`SELECT page_uid, namespace, name, recorded_at, kind, tool, summary, finding
+		 FROM `+stepsTable+` WHERE name = ? ORDER BY id`, page)
 	if err != nil {
-		return nil, fmt.Errorf("read the steps of Triage %s: %w", triage, err)
+		return nil, fmt.Errorf("read the steps of Page %s: %w", page, err)
 	}
 	defer func() { _ = rows.Close() }()
 	var steps []Step
@@ -430,25 +430,25 @@ func (s *Store) Steps(ctx context.Context, triage string) ([]Step, error) {
 			finding  sql.NullString
 		)
 		if err := rows.Scan(
-			&step.UID, &step.Namespace, &step.Triage, &recorded, &kind, &step.Tool, &step.Summary, &finding,
+			&step.UID, &step.Namespace, &step.Page, &recorded, &kind, &step.Tool, &step.Summary, &finding,
 		); err != nil {
-			return nil, fmt.Errorf("read a step of Triage %s: %w", triage, err)
+			return nil, fmt.Errorf("read a step of Page %s: %w", page, err)
 		}
 		step.Kind = v1alpha1.StepKind(kind)
 		if step.RecordedAt, err = parseTime(recorded); err != nil {
-			return nil, fmt.Errorf("read the time of a step of Triage %s: %w", triage, err)
+			return nil, fmt.Errorf("read the time of a step of Page %s: %w", page, err)
 		}
 		if finding.Valid {
 			var recordedFinding v1alpha1.Finding
 			if err := json.Unmarshal([]byte(finding.String), &recordedFinding); err != nil {
-				return nil, fmt.Errorf("decode a finding of Triage %s: %w", triage, err)
+				return nil, fmt.Errorf("decode a finding of Page %s: %w", page, err)
 			}
 			step.Finding = &recordedFinding
 		}
 		steps = append(steps, step)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the steps of Triage %s: %w", triage, err)
+		return nil, fmt.Errorf("read the steps of Page %s: %w", page, err)
 	}
 	return steps, nil
 }

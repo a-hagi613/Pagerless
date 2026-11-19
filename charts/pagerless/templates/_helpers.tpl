@@ -1,7 +1,8 @@
 {{/*
-Chart-wide helpers. Every resource name is fixed because the software and its
-admission policies refer to each other by name; only the namespace is a release
-parameter.
+Chart-wide helpers. Every namespaced object uses a fixed name because the
+software, the CLI, and the documented RBAC checks refer to each other by name;
+only the namespace is a release parameter. Cluster-scoped objects carry the
+release name so two releases cannot fight over one ClusterRole.
 */}}
 
 {{/* Chart name and version, used in the standard labels. */}}
@@ -30,88 +31,89 @@ Call with a dict: include "pagerless.image" (dict "context" $ "image" .Values.im
 {{- printf "%s:%s" .image.repository (default .context.Chart.AppVersion .image.tag) -}}
 {{- end -}}
 
-{{/* Comma-separated Workload namespaces, as pagerless-server expects them. */}}
-{{- define "pagerless.workloadNamespaces" -}}
-{{- required "workloadNamespaces must contain at least one namespace" .Values.workloadNamespaces | join "," -}}
+{{/*
+The namespaced read rules, shared by the cluster-wide read ClusterRole and every
+allowlisted read Role. Call with the root context.
+*/}}
+{{- define "pagerless.namespacedReadRules" -}}
+- apiGroups: [""]
+  resources: [pods, services, endpoints, configmaps, persistentvolumeclaims]
+  verbs: [get, list, watch]
+# The log subresource is separate in RBAC; get alone tails a container log and
+# grants no exec, attach, or port-forward.
+- apiGroups: [""]
+  resources: [pods/log]
+  verbs: [get]
+# Both Event APIs are read: core/v1 producers are still common, and
+# events.k8s.io/v1 is the durable API.
+- apiGroups: [""]
+  resources: [events]
+  verbs: [get, list, watch]
+- apiGroups: [events.k8s.io]
+  resources: [events]
+  verbs: [get, list, watch]
+- apiGroups: [apps]
+  resources: [deployments, replicasets, statefulsets, daemonsets]
+  verbs: [get, list, watch]
+- apiGroups: [batch]
+  resources: [jobs, cronjobs]
+  verbs: [get, list, watch]
+- apiGroups: [discovery.k8s.io]
+  resources: [endpointslices]
+  verbs: [get, list, watch]
+- apiGroups: [networking.k8s.io]
+  resources: [ingresses]
+  verbs: [get, list, watch]
 {{- end -}}
 
 {{/*
-Comma-separated MCP servers the agent may call. k8s and grafana are always
-present; argocd and github follow the integrations that are configured. The
-explicit mcp.servers value overrides the derivation, as --mcp-servers does in
-hack/install.sh.
+The cluster-scoped read rules. They cannot be rendered as a namespaced Role, so
+allowlist mode drops them.
 */}}
-{{- define "pagerless.mcpServers" -}}
-{{- if .Values.mcp.servers -}}
-{{- .Values.mcp.servers -}}
-{{- else -}}
-{{- $servers := list "k8s" "grafana" -}}
-{{- if .Values.argocd.application -}}
-{{- $servers = append $servers "argocd" -}}
-{{- end -}}
-{{- if .Values.sandbox.url -}}
-{{- $servers = append $servers "github" -}}
-{{- end -}}
-{{- join "," $servers -}}
-{{- end -}}
+{{- define "pagerless.clusterReadRules" -}}
+- apiGroups: [""]
+  resources: [nodes, namespaces]
+  verbs: [get, list, watch]
+# Structural validation of a proposed manifest without a cluster write.
+- nonResourceURLs: ["/openapi/v3", "/openapi/v3/*"]
+  verbs: [get]
+# Authenticates the agent Job's projected token on every report and tool call.
+# It is an authentication request, not a write to any object.
+- apiGroups: [authentication.k8s.io]
+  resources: [tokenreviews]
+  verbs: [create]
 {{- end -}}
 
 {{/*
-Owner/name slug of sandbox.url, or an empty string when the URL is not a
-GitHub URL with exactly two path segments. A trailing slash and a .git suffix
-are tolerated, as in hack/install.sh.
+Refuses a watch configuration that cannot be honoured. Cluster-wide watching and
+an allowlist are mutually exclusive, and an allowlist with no entries would
+render no read permission at all.
 */}}
-{{- define "pagerless.sandboxSlug" -}}
-{{- $url := .Values.sandbox.url | trimSuffix "/" | trimSuffix ".git" -}}
-{{- if hasPrefix "https://github.com/" $url -}}
-{{- $slug := trimPrefix "https://github.com/" $url -}}
-{{- if regexMatch "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" $slug -}}
-{{- $slug -}}
+{{- define "pagerless.validateWatch" -}}
+{{- if .Values.rbac.watchAllNamespaces -}}
+{{- if gt (len .Values.rbac.watchNamespaces) 0 -}}
+{{- fail "rbac.watchAllNamespaces and rbac.watchNamespaces are mutually exclusive: set rbac.watchAllNamespaces=false to use an allowlist" -}}
 {{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/* Sandbox owner, explicitly configured or parsed from sandbox.url. */}}
-{{- define "pagerless.sandboxOwner" -}}
-{{- if .Values.sandbox.owner -}}
-{{- .Values.sandbox.owner -}}
-{{- else -}}
-{{- $parts := splitList "/" (include "pagerless.sandboxSlug" .) -}}
-{{- if eq (len $parts) 2 -}}
-{{- index $parts 0 -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/* Sandbox repository, explicitly configured or parsed from sandbox.url. */}}
-{{- define "pagerless.sandboxRepo" -}}
-{{- if .Values.sandbox.repo -}}
-{{- .Values.sandbox.repo -}}
-{{- else -}}
-{{- $parts := splitList "/" (include "pagerless.sandboxSlug" .) -}}
-{{- if eq (len $parts) 2 -}}
-{{- index $parts 1 -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Keycloak token endpoint. The agent runtime requires it to be exactly the
-issuer's token endpoint, so an explicit override must describe the same realm.
-*/}}
-{{- define "pagerless.oidcTokenUrl" -}}
-{{- if .Values.oidc.tokenUrl -}}
-{{- .Values.oidc.tokenUrl -}}
-{{- else -}}
-{{- printf "%s/protocol/openid-connect/token" .Values.oidc.issuer -}}
+{{- else if eq (len .Values.rbac.watchNamespaces) 0 -}}
+{{- fail "rbac.watchNamespaces must name at least one namespace when rbac.watchAllNamespaces is false" -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
-Admission policy identity of pagerless-server. The dry-run policy and the agent
-Job policy match this exact username, so a different release namespace changes
-both the ServiceAccount and the policy expression together.
+Comma-separated allowlist the server is given, or an empty string in
+cluster-wide mode. A `*` is deliberately not passed: the server rejects it as an
+invalid namespace name, and an empty list already means "no allowlist".
 */}}
-{{- define "pagerless.serverUsername" -}}
-{{- printf "system:serviceaccount:%s:pagerless-server" .Release.Namespace -}}
+{{- define "pagerless.allowlist" -}}
+{{- if not .Values.rbac.watchAllNamespaces -}}
+{{- join "," .Values.rbac.watchNamespaces -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The credentials Secret the Deployment mounts: an externally managed one, or the
+one the chart creates.
+*/}}
+{{- define "pagerless.credentialsSecret" -}}
+{{- default .Values.credentials.secretName .Values.credentials.existingSecret -}}
 {{- end -}}

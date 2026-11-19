@@ -1,8 +1,10 @@
 {{- /*
-pagerless-server is the single writer of Triage status (ADR-0001, ADR-0005),
-so it runs one replica and replaces it only after the old one has stopped. The
-container flags mirror deploy/pagerless-server: every integration is configured
-here, so no post-render patch is needed.
+pagerless-server is the only long-running process: the Page reconcilers, the
+agent report API, and the metrics API. It runs one replica with the Recreate
+strategy because it is the single writer of Page status (ADR-0001, ADR-0030).
+
+No admission webhook is served, so there is no serving certificate, no
+certificate bootstrap, and no webhook port (ADR-0037).
 */ -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -11,8 +13,15 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- with .Values.commonLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.commonAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   strategy:
     type: Recreate
   selector:
@@ -22,77 +31,57 @@ spec:
     metadata:
       labels:
         {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
     spec:
-      serviceAccountName: pagerless-server
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- with .Values.images.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        # Give the non-root server write access to the emptyDir volumes.
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: server
           image: {{ include "pagerless.image" (dict "context" $ "image" .Values.images.server) }}
           imagePullPolicy: {{ .Values.images.server.pullPolicy }}
           args:
+            - --namespace=$(POD_NAMESPACE)
             - --agent-image={{ include "pagerless.image" (dict "context" $ "image" .Values.images.agent) }}
-            - --report-url=http://pagerless-server.{{ .Release.Namespace }}.svc:8080
+            - --report-url=http://pagerless-server.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+            - --report-bind-address=:{{ .Values.service.port }}
             - --metrics-bind-address=:9090
-            - --dashboard-bind-address=:8082
-            # The browser reaches Grafana through its own port-forward, so the panel URLs use the reader's
-            # localhost. The dashboard UIDs default to the dashboards in deploy/observability/dashboards.
-            - --grafana-url={{ .Values.grafana.browserUrl }}
-            {{- with .Values.grafana.workloadDashboardUid }}
-            - --grafana-workload-dashboard-uid={{ . }}
-            {{- end }}
-            {{- with .Values.grafana.logsDashboardUid }}
-            - --grafana-logs-dashboard-uid={{ . }}
-            {{- end }}
-            # Sign-in runs against Keycloak. The browser reaches the dashboard on the configured base URL,
-            # which is also the redirect URI the realm allows. Set dashboard.cookieSecure behind TLS.
-            - --dashboard-base-url={{ .Values.dashboard.baseUrl }}
-            - --dashboard-cookie-secure={{ .Values.dashboard.cookieSecure }}
-            - --oidc-issuer={{ .Values.oidc.issuer }}
-            - --oidc-client-id={{ .Values.oidc.dashboardClientId }}
-            - --oidc-client-secret-file=/var/run/pagerless/keycloak/client-secret
-            - --keycloak-base-url={{ .Values.oidc.keycloakBaseUrl }}
-            - --keycloak-admin-client-id={{ .Values.oidc.serverClientId }}
-            - --keycloak-admin-client-secret-file=/var/run/pagerless/keycloak/server-client-secret
-            - --approvers-group={{ .Values.dashboard.approversGroup }}
-            - --workload-namespaces={{ include "pagerless.workloadNamespaces" . }}
-            - --alert-namespaces={{ include "pagerless.workloadNamespaces" . }}
-            - --patch-namespaces={{ include "pagerless.workloadNamespaces" . }}
-            - --argocd-application={{ .Values.argocd.application | default "sandbox" }}
-            - --sandbox-url={{ .Values.sandbox.url }}
-            - --sandbox-branch={{ .Values.sandbox.branch }}
+            - --health-probe-bind-address=:8081
             - --history-path=/var/lib/pagerless/history.db
-            - --argocd-url={{ .Values.argocd.url }}
-            - --alertmanager-url={{ .Values.alertmanager.url }}
-            - --alertmanager-token-file=/var/run/pagerless/alertmanager/token
-            - --sandbox-read-token-file=/var/run/pagerless/github-read/token
-            - --github-repository={{ include "pagerless.sandboxSlug" . }}
-            - --github-token-file=/var/run/pagerless/github-write/token
+            - --target-namespaces={{ include "pagerless.allowlist" . }}
+            - --patch-namespaces={{ include "pagerless.allowlist" . }}
+            - --alert-namespaces={{ include "pagerless.allowlist" . }}
+            - --sandbox-url=
+            - --argocd-url=
+            - --alertmanager-url=
+            # The Portal and its sign-in are delivered with the auth and Portal
+            # slices; this chart shell serves the report and metrics APIs only.
+            - --dashboard-bind-address=
           envFrom:
             - configMapRef:
-                name: pagerless-agent-config
+                name: pagerless-config
           env:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
           ports:
-            - name: report
-              containerPort: 8080
-            - name: webhook
-              containerPort: 9443
+            - name: http
+              containerPort: {{ .Values.service.port }}
             - name: health
               containerPort: 8081
             - name: metrics
               containerPort: 9090
-            - name: dashboard
-              containerPort: 8082
           livenessProbe:
             httpGet:
               path: /healthz
@@ -102,71 +91,37 @@ spec:
               path: /readyz
               port: health
           resources:
-            requests:
-              cpu: 50m
-              memory: 64Mi
-            limits:
-              memory: 256Mi
+            {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
+            {{- toYaml .Values.securityContext | nindent 12 }}
           volumeMounts:
-            - name: alertmanager-token
-              mountPath: /var/run/pagerless/alertmanager
+            - name: credentials
+              mountPath: {{ .Values.credentials.mountPath }}
               readOnly: true
-            - name: webhook-certs
-              mountPath: /var/run/pagerless/webhook-certs
-            - name: github-write
-              mountPath: /var/run/pagerless/github-write
-              readOnly: true
-            - name: argocd-token
-              mountPath: /var/run/secrets/pagerless/argocd
-              readOnly: true
+            - name: data
+              mountPath: /var/lib/pagerless
             - name: temporary
               mountPath: /tmp
-            - name: github-read
-              mountPath: /var/run/pagerless/github-read
-              readOnly: true
-            # The Keycloak identity: the dashboard client's secret completes the sign-in, and the server
-            # client's secret reads approver group membership (ADR-0020).
-            - name: keycloak
-              mountPath: /var/run/pagerless/keycloak
-              readOnly: true
-            # The append-only history survives a server restart, so a Triage's record is not lost with its pod.
-            - name: history
-              mountPath: /var/lib/pagerless
       volumes:
-        - name: alertmanager-token
+        - name: credentials
           secret:
-            secretName: {{ .Values.alertmanager.secretName }}
-        - name: github-read
-          secret:
-            secretName: {{ .Values.sandbox.readSecretName }}
-        - name: keycloak
-          secret:
-            secretName: {{ .Values.oidc.secretName }}
-        - name: argocd-token
-          secret:
-            secretName: {{ .Values.argocd.secretName }}
+            secretName: {{ include "pagerless.credentialsSecret" . }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: pagerless-data
         - name: temporary
           emptyDir:
             medium: Memory
-            sizeLimit: 128Mi
-        # The write-scoped token that publishes a pull request. It is mounted rather than set on the command
-        # line, and the server reads it for each publication so that a rotated Secret takes effect.
-        - name: github-write
-          secret:
-            secretName: {{ .Values.sandbox.writeSecretName }}
-        - name: webhook-certs
-          emptyDir:
-            medium: Memory
-        - name: history
-          {{- if .Values.persistence.enabled }}
-          persistentVolumeClaim:
-            claimName: pagerless-history
-          {{- else }}
-          emptyDir:
-            sizeLimit: {{ .Values.persistence.size }}
-          {{- end }}
+            sizeLimit: 64Mi
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

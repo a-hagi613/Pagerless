@@ -1,0 +1,773 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.23.0
+  name: pages.pagerless.dev
+spec:
+  group: pagerless.dev
+  names:
+    categories:
+    - pagerless
+    kind: Page
+    listKind: PageList
+    plural: pages
+    shortNames:
+    - pg
+    singular: page
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.target.name
+      name: Target
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .spec.trigger.source
+      name: Trigger
+      type: string
+    - jsonPath: .status.pullRequest.number
+      name: PR
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    - jsonPath: .spec.target.kind
+      name: Kind
+      priority: 1
+      type: string
+    - jsonPath: .spec.target.namespace
+      name: Namespace
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Page is one investigation of one failing Target, from Trigger
+          to verified outcome.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: PageSpec describes what to investigate. It is immutable after
+              creation.
+            properties:
+              fingerprint:
+                description: |-
+                  Fingerprint is the stable failure identity. It deliberately excludes
+                  messages, timestamps, and repetition counts, so that one crash loop is
+                  one failure rather than hundreds.
+                pattern: ^[0-9a-f]{64}$
+                type: string
+              hint:
+                description: Hint is optional guidance from the operator, passed to
+                  the agent as human input.
+                maxLength: 1000
+                type: string
+              previousPage:
+                description: PreviousPage links a Recurrence to the Page that recorded
+                  the previous outcome.
+                maxLength: 253
+                type: string
+              repository:
+                description: Repository is the declared Target Repository. Empty lets
+                  resolution decide.
+                properties:
+                  branch:
+                    description: Branch is the branch a Proposal targets. It defaults
+                      to main.
+                    maxLength: 253
+                    type: string
+                  path:
+                    description: Path is the Target's manifest path inside the repository,
+                      relative to its root.
+                    maxLength: 500
+                    type: string
+                  url:
+                    description: URL is the HTTPS Git URL, for example https://github.com/acme/gitops.
+                    maxLength: 500
+                    pattern: ^https://
+                    type: string
+                type: object
+              target:
+                description: Target is the failing object.
+                properties:
+                  apiVersion:
+                    description: APIVersion is the Target's API version, such as apps/v1.
+                    maxLength: 253
+                    type: string
+                  kind:
+                    description: Kind is the Target's kind.
+                    enum:
+                    - Deployment
+                    - StatefulSet
+                    - DaemonSet
+                    - Job
+                    - CronJob
+                    - Pod
+                    - PersistentVolumeClaim
+                    - Node
+                    type: string
+                  name:
+                    description: Name is the Target's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace is the Target's namespace. It is empty
+                      only for a Node.
+                    maxLength: 63
+                    type: string
+                  uid:
+                    description: |-
+                      UID is the Target's UID. It distinguishes a recreated object from the
+                      object it replaced.
+                    pattern: ^[0-9a-fA-F-]{36}$
+                    type: string
+                required:
+                - kind
+                - name
+                - namespace
+                type: object
+                x-kubernetes-validations:
+                - message: namespace must be set for a namespaced kind and empty for
+                    Node
+                  rule: 'self.kind == ''Node'' ? (!has(self.namespace) || size(self.namespace)
+                    == 0) : (has(self.namespace) && size(self.namespace) > 0)'
+              trigger:
+                description: Trigger is the observation that opened the Page.
+                properties:
+                  alertFingerprint:
+                    description: AlertFingerprint is the upstream alert fingerprint,
+                      when one exists.
+                    maxLength: 128
+                    type: string
+                  message:
+                    description: Message is the human-readable text at first observation.
+                    maxLength: 1024
+                    type: string
+                  pod:
+                    description: Pod is the pod that raised the Trigger. It is evidence,
+                      not the Target.
+                    maxLength: 253
+                    type: string
+                  reason:
+                    description: Reason is the machine-readable cause, such as CrashLoopBackOff.
+                    maxLength: 128
+                    type: string
+                  source:
+                    description: Source is what opened or joined the Page.
+                    enum:
+                    - Event
+                    - Condition
+                    - Alertmanager
+                    - Grafana
+                    - Datadog
+                    - SNS
+                    - CLI
+                    - Portal
+                    - API
+                    type: string
+                required:
+                - source
+                type: object
+            required:
+            - fingerprint
+            - target
+            - trigger
+            type: object
+            x-kubernetes-validations:
+            - message: spec is immutable
+              rule: self == oldSelf
+          status:
+            description: PageStatus is the observed state of a Page. Only pagerless-server
+              writes it (ADR-0001).
+            properties:
+              agentJobName:
+                description: AgentJobName is the name of the agent Job.
+                maxLength: 253
+                type: string
+              conditions:
+                description: Conditions describe the Page's state in machine-readable
+                  form.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              cooldown:
+                description: Cooldown records when the same Fingerprint may open a
+                  new Page.
+                properties:
+                  lastPagedAt:
+                    description: LastPagedAt is when this Page opened.
+                    format: date-time
+                    type: string
+                  nextEligibleAt:
+                    description: NextEligibleAt is when the same Fingerprint may open
+                      a new Page.
+                    format: date-time
+                    type: string
+                  recurrenceCount:
+                    description: RecurrenceCount is the number of Pages recorded for
+                      this Fingerprint, including this one.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
+              decision:
+                description: Decision is the human decision on the current Proposal.
+                properties:
+                  decidedAt:
+                    description: DecidedAt is when the decision was made.
+                    format: date-time
+                    type: string
+                  decidedBy:
+                    description: |-
+                      DecidedBy is the identity the caller declared. Its trust is the caller's
+                      RBAC on Pages, because the standalone chart installs no admission webhook
+                      to stamp an authentic identity.
+                    maxLength: 253
+                    type: string
+                  outcome:
+                    description: Outcome is the decision.
+                    enum:
+                    - Approved
+                    - Rejected
+                    type: string
+                  proposalHash:
+                    description: ProposalHash binds the decision to one Proposal.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  reason:
+                    description: Reason is the optional reason the human gave.
+                    maxLength: 1000
+                    type: string
+                required:
+                - decidedAt
+                - decidedBy
+                - outcome
+                - proposalHash
+                type: object
+              diagnosis:
+                description: Diagnosis is the agent's root-cause conclusion.
+                maxLength: 4000
+                type: string
+              findings:
+                description: Findings are the cited evidence the agent reported.
+                items:
+                  description: Finding is one cited piece of evidence that supports
+                    a Diagnosis.
+                  properties:
+                    kind:
+                      description: Kind classifies the evidence.
+                      enum:
+                      - Log
+                      - Metric
+                      - Trace
+                      - Event
+                      - Commit
+                      type: string
+                    source:
+                      description: Source cites where the evidence came from, such
+                        as a tool call and its query.
+                      maxLength: 500
+                      minLength: 1
+                      type: string
+                    summary:
+                      description: Summary states what the evidence shows.
+                      maxLength: 1000
+                      minLength: 1
+                      type: string
+                  required:
+                  - kind
+                  - source
+                  - summary
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              lastTriggerAt:
+                description: LastTriggerAt is when the most recent Trigger joined
+                  the Page.
+                format: date-time
+                type: string
+              narrative:
+                description: |-
+                  Narrative is the short, purely descriptive account of the Page written after Verification. It never
+                  affects the outcome.
+                maxLength: 4000
+                type: string
+              narrativeJobName:
+                description: NarrativeJobName is the name of the Job that writes the
+                  Narrative after Verification.
+                maxLength: 253
+                type: string
+              observedGeneration:
+                description: ObservedGeneration is the Page generation that this status
+                  reflects.
+                format: int64
+                type: integer
+              phase:
+                description: Phase is the stage the Page is in.
+                enum:
+                - Pending
+                - Investigating
+                - Proposed
+                - Approved
+                - PullRequestOpen
+                - Verifying
+                - Recovered
+                - NotRecovered
+                - Diagnosed
+                - Rejected
+                - Expired
+                - Invalid
+                - Superseded
+                - Failed
+                type: string
+              proposal:
+                description: Proposal is the current Proposal.
+                properties:
+                  action:
+                    description: Action is the remediation.
+                    enum:
+                    - Scale
+                    - PatchResources
+                    - Rollback
+                    - NoAction
+                    type: string
+                  attempt:
+                    description: Attempt is 1 for the first Proposal the agent submitted
+                      and 2 for its revision.
+                    format: int32
+                    maximum: 2
+                    minimum: 1
+                    type: integer
+                  base:
+                    description: Base is the state the change was rendered against.
+                    properties:
+                      commit:
+                        description: Commit is the Target Repository commit the patch
+                          applies to.
+                        maxLength: 64
+                        type: string
+                      targetGeneration:
+                        description: TargetGeneration is the Target's metadata.generation
+                          when the Proposal was rendered.
+                        format: int64
+                        type: integer
+                    type: object
+                  expiresAt:
+                    description: ExpiresAt is when an unapproved Proposal expires.
+                    format: date-time
+                    type: string
+                  hash:
+                    description: Hash binds an Approval to this exact Proposal. It
+                      is a lowercase hexadecimal SHA-256 digest.
+                    pattern: ^[0-9a-f]{64}$
+                    type: string
+                  parameters:
+                    description: Parameters are the typed parameters of the Action.
+                    maxProperties: 1
+                    properties:
+                      patchResources:
+                        description: PatchResources holds the parameters of the PatchResources
+                          Action.
+                        properties:
+                          container:
+                            description: Container names the container to patch.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                          limits:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: Limits are the desired resource limits.
+                            type: object
+                          requests:
+                            additionalProperties:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            description: Requests are the desired resource requests.
+                            type: object
+                        required:
+                        - container
+                        type: object
+                      rollback:
+                        description: Rollback holds the parameters of the Rollback
+                          Action.
+                        properties:
+                          commit:
+                            description: |-
+                              Commit is the Target Repository commit to revert. It must be among the last
+                              20 commits touching the Target's path or a declared dependency path.
+                            maxLength: 64
+                            minLength: 7
+                            pattern: ^[0-9a-f]+$
+                            type: string
+                        required:
+                        - commit
+                        type: object
+                      scale:
+                        description: Scale holds the parameters of the Scale Action.
+                        properties:
+                          replicas:
+                            description: Replicas is the desired replica count.
+                            format: int32
+                            minimum: 0
+                            type: integer
+                        required:
+                        - replicas
+                        type: object
+                    type: object
+                  renderedChange:
+                    description: RenderedChange is the exact change that Validation
+                      rendered.
+                    properties:
+                      patch:
+                        description: Patch is the git patch against the recorded base
+                          commit.
+                        maxLength: 32768
+                        type: string
+                      path:
+                        description: Path is the Target Repository path that the patch
+                          changes.
+                        maxLength: 500
+                        type: string
+                    type: object
+                required:
+                - action
+                - attempt
+                - expiresAt
+                - hash
+                type: object
+                x-kubernetes-validations:
+                - message: parameters.scale must be set exactly when the action is
+                    Scale
+                  rule: 'self.action == ''Scale'' ? (has(self.parameters) && has(self.parameters.scale))
+                    : (!has(self.parameters) || !has(self.parameters.scale))'
+                - message: parameters.patchResources must be set exactly when the
+                    action is PatchResources
+                  rule: 'self.action == ''PatchResources'' ? (has(self.parameters)
+                    && has(self.parameters.patchResources)) : (!has(self.parameters)
+                    || !has(self.parameters.patchResources))'
+                - message: parameters.rollback must be set exactly when the action
+                    is Rollback
+                  rule: 'self.action == ''Rollback'' ? (has(self.parameters) && has(self.parameters.rollback))
+                    : (!has(self.parameters) || !has(self.parameters.rollback))'
+              pullRequest:
+                description: PullRequest is the pull request that carries the approved
+                  Proposal.
+                properties:
+                  branch:
+                    description: Branch is the branch that carries the Proposal.
+                    maxLength: 253
+                    type: string
+                  checks:
+                    description: Checks is the aggregate state of the repository's
+                      CI.
+                    enum:
+                    - Pending
+                    - Passing
+                    - Failing
+                    - Unknown
+                    type: string
+                  headSHA:
+                    description: HeadSHA is the commit the branch points at.
+                    maxLength: 64
+                    type: string
+                  mergeCommit:
+                    description: MergeCommit is the commit the merge produced.
+                    maxLength: 64
+                    type: string
+                  mergedAt:
+                    description: MergedAt is when the pull request merged.
+                    format: date-time
+                    type: string
+                  number:
+                    description: Number is the pull request number.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  openedAt:
+                    description: OpenedAt is when the pull request was opened.
+                    format: date-time
+                    type: string
+                  provider:
+                    description: Provider is the code host. It is GitHub in v2.
+                    maxLength: 64
+                    type: string
+                  state:
+                    description: State is the provider's view of the pull request.
+                    enum:
+                    - Draft
+                    - Open
+                    - Merged
+                    - Closed
+                    type: string
+                  url:
+                    description: URL is the address of the pull request page.
+                    maxLength: 500
+                    type: string
+                type: object
+              repository:
+                description: Repository is the resolved Target Repository.
+                properties:
+                  baseCommit:
+                    description: BaseCommit is the commit a Proposal was rendered
+                      against.
+                    maxLength: 64
+                    type: string
+                  branch:
+                    description: Branch is the resolved branch.
+                    maxLength: 253
+                    type: string
+                  confidence:
+                    description: Confidence is exact for a provenance method and heuristic
+                      otherwise.
+                    enum:
+                    - Exact
+                    - Heuristic
+                    type: string
+                  method:
+                    description: Method names how the repository was found, such as
+                      TrackingID or NameMatch.
+                    maxLength: 64
+                    type: string
+                  path:
+                    description: Path is the Target's manifest path inside the repository.
+                    maxLength: 500
+                    type: string
+                  resolvedAt:
+                    description: ResolvedAt is when resolution ran.
+                    format: date-time
+                    type: string
+                  url:
+                    description: URL is the resolved repository URL.
+                    maxLength: 500
+                    type: string
+                type: object
+              severity:
+                description: Severity ranks how urgently the Page needs a human.
+                enum:
+                - info
+                - warning
+                - critical
+                type: string
+              startedAt:
+                description: |-
+                  StartedAt is when pagerless-server put the Page in the Pending phase. It is
+                  the start of the time to Recovered that Pagerless exports.
+                format: date-time
+                type: string
+              stepCount:
+                description: StepCount is the total number of steps the agent reported.
+                format: int32
+                type: integer
+              steps:
+                description: Steps is the bounded summary of the agent's most recent
+                  steps.
+                items:
+                  description: Step is one entry of the bounded step summary.
+                  properties:
+                    kind:
+                      description: Kind classifies the step.
+                      enum:
+                      - ToolCall
+                      - Finding
+                      - Progress
+                      type: string
+                    summary:
+                      description: Summary is a short description of the step.
+                      maxLength: 300
+                      type: string
+                    time:
+                      description: Time is when the server recorded the step.
+                      format: date-time
+                      type: string
+                    tool:
+                      description: Tool names the tool for a ToolCall step.
+                      maxLength: 128
+                      type: string
+                  required:
+                  - kind
+                  - summary
+                  - time
+                  type: object
+                maxItems: 50
+                type: array
+                x-kubernetes-list-type: atomic
+              suppressedCount:
+                description: |-
+                  SuppressedCount is the number of Triggers that did not open a Page because
+                  this Page already covered their Fingerprint.
+                format: int32
+                type: integer
+              terminalAt:
+                description: |-
+                  TerminalAt is when the Page reached its terminal phase. The retention
+                  controller deletes the Page after the configured retention period.
+                format: date-time
+                type: string
+              toolCallCount:
+                description: ToolCallCount is the number of tool calls the agent reported.
+                format: int32
+                type: integer
+              triggerCount:
+                description: TriggerCount is the number of Triggers that opened or
+                  joined the Page.
+                format: int32
+                type: integer
+              usage:
+                description: Usage is the model usage of the investigation, as the
+                  agent reported it in its accepted report.
+                properties:
+                  costUSD:
+                    description: CostUSD is the estimated cost of the model calls
+                      in United States dollars.
+                    maximum: 100
+                    minimum: 0
+                    type: number
+                  inputTokens:
+                    description: InputTokens counts every input token the investigation's
+                      model calls read, including cached tokens.
+                    format: int64
+                    maximum: 10000000
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: OutputTokens counts every output token the investigation's
+                      model calls wrote.
+                    format: int64
+                    maximum: 1000000
+                    minimum: 0
+                    type: integer
+                required:
+                - costUSD
+                - inputTokens
+                - outputTokens
+                type: object
+              validationAttempts:
+                description: ValidationAttempts is the number of Proposals from the
+                  agent that failed Validation.
+                format: int32
+                maximum: 2
+                minimum: 0
+                type: integer
+              verificationChecks:
+                description: VerificationChecks are the results of the deterministic
+                  Verification checks.
+                items:
+                  description: VerificationCheck is the result of one deterministic
+                    Verification check.
+                  properties:
+                    message:
+                      description: Message explains the result.
+                      maxLength: 500
+                      type: string
+                    name:
+                      description: Name identifies the check.
+                      maxLength: 128
+                      type: string
+                    passed:
+                      description: Passed reports whether the check passed.
+                      type: boolean
+                  required:
+                  - name
+                  - passed
+                  type: object
+                maxItems: 20
+                type: array
+                x-kubernetes-list-type: atomic
+              verificationStartedAt:
+                description: |-
+                  VerificationStartedAt is when the observation window began: the moment
+                  Pagerless saw the pull request merge.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

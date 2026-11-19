@@ -1,40 +1,28 @@
 {{- /*
-ConfigMaps read by pagerless-server and the agent Job. The
-values are the ones hack/install.sh and the local bootstrap also write, so both
-installation paths describe the same integrations.
+Two ConfigMaps, both non-secret. pagerless-config holds the small amount of
+server configuration that is worth naming separately from the Deployment's
+arguments, and pagerless-connectors persists the connector catalogue the
+operator seeds. Credentials never appear here; they live in the credentials
+Secret (ADR-0031).
 */ -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: pagerless-sandbox
+  name: pagerless-config
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-sandbox") | nindent 4 }}
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
 data:
-  # Empty selects live-only RestartWorkload and NoAction remediation.
-  url: {{ .Values.sandbox.url | quote }}
+  PAGERLESS_DASHBOARD_BASE_URL: {{ .Values.dashboard.baseUrl | quote }}
+  PAGERLESS_ALLOWED_NAMESPACES: {{ include "pagerless.allowlist" . | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: pagerless-agent-config
+  name: pagerless-connectors
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-agent") | nindent 4 }}
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
 data:
-  PAGERLESS_MODEL_PROVIDER: {{ .Values.agent.provider | quote }}
-  PAGERLESS_MCP_GATEWAY_URL: {{ .Values.mcp.gatewayUrl | quote }}
-  PAGERLESS_MCP_SERVERS: {{ include "pagerless.mcpServers" . | quote }}
-  PAGERLESS_KEYCLOAK_ISSUER: {{ .Values.oidc.issuer | quote }}
-  PAGERLESS_KEYCLOAK_TOKEN_URL: {{ include "pagerless.oidcTokenUrl" . | quote }}
-  PAGERLESS_KEYCLOAK_CLIENT_ID: {{ .Values.oidc.agentClientId | quote }}
-  PAGERLESS_REPLAY_FILE: {{ .Values.agent.replayFile | quote }}
-  PAGERLESS_NARRATIVE_REPLAY_FILE: {{ .Values.agent.narrativeReplayFile | quote }}
-  PAGERLESS_SANDBOX_OWNER: {{ include "pagerless.sandboxOwner" . | quote }}
-  PAGERLESS_SANDBOX_REPO: {{ include "pagerless.sandboxRepo" . | quote }}
-  PAGERLESS_ARGOCD_APPLICATION: {{ .Values.argocd.application | quote }}
-  PAGERLESS_ALLOWED_NAMESPACES: {{ include "pagerless.workloadNamespaces" . | quote }}
-  PAGERLESS_SANDBOX_URL: {{ .Values.sandbox.url | quote }}
-  {{- with .Values.agent.awsRegion }}
-  AWS_REGION: {{ . | quote }}
-  {{- end }}
+  connectors.yaml: |
+    {{- toYaml .Values.connectors.seed | nindent 4 }}

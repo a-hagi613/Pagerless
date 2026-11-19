@@ -26,9 +26,9 @@ var (
 	unschedulableLimits   = map[string]string{memoryResource: unschedulableMemory}
 )
 
-// inject commits the Workload as a Scenario left it and moves the live
-// Workload to match, as Argo CD's sync of the injected commit would.
-func inject(t *testing.T, env *testenv.Env, w workload) string {
+// inject commits the Target as a Scenario left it and moves the live
+// Target to match, as Argo CD's sync of the injected commit would.
+func inject(t *testing.T, env *testenv.Env, w target) string {
 	t.Helper()
 	commit := env.Sandbox.Commit(w.sourcePath(), w.manifest(), "Inject "+w.name)
 	var manifest appsv1.Deployment
@@ -43,7 +43,7 @@ func inject(t *testing.T, env *testenv.Env, w workload) string {
 	return commit
 }
 
-func TestUnschedulableWorkloadPatchMustFitANodeAndTheKnownGoodValue(t *testing.T) {
+func TestUnschedulableTargetPatchMustFitANodeAndTheKnownGoodValue(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
 	env.CreateNode(t, "worker-1", corev1.ResourceList{
@@ -52,48 +52,48 @@ func TestUnschedulableWorkloadPatchMustFitANodeAndTheKnownGoodValue(t *testing.T
 		corev1.ResourcePods:   resource.MustParse("110"),
 	})
 
-	// The Workloads whose patches are tested against the Unschedulable bound. The
+	// The Targets whose patches are tested against the Unschedulable bound. The
 	// Sandbox's working copy is shared, so every commit is made before the
 	// parallel subtests report their Proposals.
 	pending := []string{
 		"pending-at-known-good", "pending-above-known-good", "pending-beyond-the-node", "pending-left-alone",
 	}
 	for _, name := range pending {
-		deploy(t, env, workload{name: name})
+		deploy(t, env, target{name: name})
 	}
-	deploy(t, env, workload{name: "schedulable"})
+	deploy(t, env, target{name: "schedulable"})
 	env.Sandbox.Tag(sandbox.KnownGoodTag)
 	for _, name := range pending {
-		inject(t, env, workload{name: name, requests: unschedulableRequests, limits: unschedulableLimits})
+		inject(t, env, target{name: name, requests: unschedulableRequests, limits: unschedulableLimits})
 	}
 
 	type attempt struct {
 		name             string
-		workload         string
+		target           string
 		requests, limits corev1.ResourceList
 		wantStatus       int
 		wantParts        []string
 	}
 	attempts := []attempt{
-		{name: "a request at the known-good value is accepted", workload: "pending-at-known-good",
+		{name: "a request at the known-good value is accepted", target: "pending-at-known-good",
 			requests: quantities("memory", "128Mi"), limits: quantities("memory", "256Mi"), wantStatus: http.StatusOK},
-		{name: "a request above the known-good value is refused", workload: "pending-above-known-good",
+		{name: "a request above the known-good value is refused", target: "pending-above-known-good",
 			requests: quantities("memory", "1Gi"), limits: quantities("memory", "2Gi"),
 			wantStatus: http.StatusUnprocessableEntity, wantParts: []string{"known-good"}},
-		{name: "a request no node can fit is refused", workload: "pending-beyond-the-node",
+		{name: "a request no node can fit is refused", target: "pending-beyond-the-node",
 			requests: quantities("memory", "8Gi"), limits: quantities("memory", "8Gi"),
 			wantStatus: http.StatusUnprocessableEntity, wantParts: []string{"node", "allocatable"}},
-		{name: "a patch that leaves the impossible request is refused", workload: "pending-left-alone",
+		{name: "a patch that leaves the impossible request is refused", target: "pending-left-alone",
 			limits:     quantities("cpu", "1"),
 			wantStatus: http.StatusUnprocessableEntity, wantParts: []string{"unschedulable", "allocatable"}},
-		{name: "a schedulable Workload may raise its request inside the node", workload: "schedulable",
+		{name: "a schedulable Target may raise its request inside the node", target: "schedulable",
 			requests: quantities("memory", "1Gi"), limits: quantities("memory", "2Gi"), wantStatus: http.StatusOK},
 	}
 
 	for _, a := range attempts {
 		t.Run(a.name, func(t *testing.T) {
 			t.Parallel()
-			name, agent := startTriage(t, env, a.workload)
+			name, agent := startPage(t, env, a.target)
 			result, err := agent.API.PostReport(t.Context(), patchReport("app", a.requests, a.limits))
 			if err != nil {
 				t.Fatal(err)

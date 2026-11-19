@@ -23,15 +23,16 @@ type approveOptions struct {
 	conn   *connection
 	yes    bool
 	reason string
+	by     string
 }
 
 func newApproveCommand(conn *connection) *cobra.Command {
 	o := &approveOptions{conn: conn}
 	cmd := &cobra.Command{
-		Use:   "approve <triage>",
-		Short: "Approve the Proposal of a Triage",
-		Long: `Show the rendered change of a Triage's Proposal and, after confirmation, approve
-exactly that Proposal by creating a TriageApproval bound to its hash.
+		Use:   "approve <page>",
+		Short: "Approve the Proposal of a Page",
+		Long: `Show the rendered change of a Page's Proposal and, after confirmation, approve
+exactly that Proposal by creating a PageApproval bound to its hash.
 
 If the Proposal changes before the approval is admitted, the approval is
 refused and nothing is approved. Approving a NoAction Proposal acknowledges the
@@ -41,6 +42,7 @@ Diagnosis.`,
 	}
 	cmd.Flags().BoolVarP(&o.yes, "yes", "y", false, "approve without asking for confirmation")
 	cmd.Flags().StringVar(&o.reason, "reason", "", "optional reason to record with the approval")
+	cmd.Flags().StringVar(&o.by, "by", "", "identity to record as the approver (default: the kubeconfig user)")
 	return cmd
 }
 
@@ -53,16 +55,16 @@ func (o *approveOptions) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	ctx := cmd.Context()
-	tr, err := loadProposedTriage(ctx, cl.client, args[0])
+	page, err := loadProposedPage(ctx, cl.client, args[0])
 	if err != nil {
 		return err
 	}
 	out := cmd.OutOrStdout()
-	if err := renderProposal(out, tr); err != nil {
+	if err := renderProposal(out, page); err != nil {
 		return err
 	}
 	if !o.yes {
-		confirmed, err := confirm(out, cmd.InOrStdin(), approvalPrompt(tr.Status.Proposal))
+		confirmed, err := confirm(out, cmd.InOrStdin(), approvalPrompt(page.Status.Proposal))
 		if err != nil {
 			return err
 		}
@@ -70,11 +72,14 @@ func (o *approveOptions) run(cmd *cobra.Command, args []string) error {
 			return errNotConfirmed
 		}
 	}
-	approval, err := submitDecision(ctx, cl.client, tr, v1alpha1.DecisionApproved, o.reason)
-	if err != nil {
+	decidedBy := o.by
+	if decidedBy == "" {
+		decidedBy = authenticatedUser(ctx, cl.client)
+	}
+	if err := submitDecision(ctx, cl.client, page, v1alpha1.DecisionApproved, o.reason, decidedBy); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(out, "%s created (approved by %s)\n", approvalRef(approval.Name), approval.Spec.Approver)
+	_, err = fmt.Fprintf(out, "%s approved by %s\n", pageRef(page.Name), decidedBy)
 	return err
 }
 
@@ -107,12 +112,12 @@ func confirm(out io.Writer, in io.Reader, question string) (bool, error) {
 
 // renderProposal shows what an approver decides on: the Diagnosis, the
 // Proposal, and the exact rendered change with the base it applies to.
-func renderProposal(w io.Writer, tr *v1alpha1.Triage) error {
+func renderProposal(w io.Writer, tr *v1alpha1.Page) error {
 	p := tr.Status.Proposal
 	var b strings.Builder
 	field := func(label, value string) { fmt.Fprintf(&b, "%-10s %s\n", label+":", value) }
-	field("Triage", tr.Name)
-	field("Workload", fmt.Sprintf("%s %s/%s", tr.Spec.Workload.Kind, tr.Spec.Workload.Namespace, tr.Spec.Workload.Name))
+	field("Page", tr.Name)
+	field("Target", fmt.Sprintf("%s %s/%s", tr.Spec.Target.Kind, tr.Spec.Target.Namespace, tr.Spec.Target.Name))
 	field("Diagnosis", tr.Status.Diagnosis)
 	field("Action", string(p.Action))
 	if summary := parametersSummary(p.Parameters); summary != "" {
@@ -122,7 +127,7 @@ func renderProposal(w io.Writer, tr *v1alpha1.Triage) error {
 	case p.RenderedChange != nil && p.RenderedChange.Patch != "":
 		field("File", p.RenderedChange.Path)
 		if p.Base != nil {
-			field("Base", fmt.Sprintf("Sandbox commit %s, Workload generation %d", p.Base.Commit, p.Base.WorkloadGeneration))
+			field("Base", fmt.Sprintf("Sandbox commit %s, Target generation %d", p.Base.Commit, p.Base.TargetGeneration))
 		}
 		b.WriteString("\nChange:\n")
 		for line := range strings.SplitSeq(strings.TrimRight(p.RenderedChange.Patch, "\n"), "\n") {

@@ -197,7 +197,7 @@ async def test_the_bundle_uses_scoped_live_reads_and_canonical_evidence_order() 
         client_factory=lambda _: Client(server),
     ) as tools:
         source = MCPContextSource(tools, clock=lambda: datetime(2026, 11, 16, 12, 3, tzinfo=UTC))
-        bundle = await source.gather(Target("triage-1", "Deployment", "sandbox", "checkout", "checkout-new"))
+        bundle = await source.gather(Target("page-1", "Deployment", "sandbox", "checkout", "checkout-new"))
     assert [pod.name for pod in bundle.pods] == ["checkout-old", "checkout-new"]
     assert bundle.pods[0].last_termination_reason == "OOMKilled"
     assert bundle.events[0].message == "back-off restarting" and len(bundle.events) == 1
@@ -232,7 +232,7 @@ async def test_a_deleted_triggering_pod_does_not_prevent_investigating_the_workl
         client_factory=lambda _: Client(server),
     ) as tools:
         bundle = await MCPContextSource(tools).gather(
-            Target("triage-1", "Deployment", "sandbox", "checkout", "checkout-deleted")
+            Target("page-1", "Deployment", "sandbox", "checkout", "checkout-deleted")
         )
     assert bundle.triggering_pod is None
     assert len(bundle.pods) == 2
@@ -287,7 +287,7 @@ async def test_bundle_tolerates_disabled_optional_mcp_servers_and_missing_chaos_
         assert not tools.has_server("argocd")
         assert not tools.has_server("github")
         bundle = await MCPContextSource(tools).gather(
-            Target("triage-live", "Deployment", "production", "checkout")
+            Target("page-live", "Deployment", "production", "checkout")
         )
 
     assert bundle.argocd_status == "Argo CD integration is not enabled for this investigation."
@@ -335,7 +335,7 @@ async def test_bundle_tolerates_unmanaged_argocd_app_unconfigured_github_and_non
         client_factory=lambda _: Client(server),
     ) as tools:
         bundle = await MCPContextSource(tools).gather(
-            Target("triage-unmanaged", "Deployment", "sandbox", "checkout")
+            Target("page-unmanaged", "Deployment", "sandbox", "checkout")
         )
 
     assert bundle.argocd_status.startswith("Argo CD status unavailable:")

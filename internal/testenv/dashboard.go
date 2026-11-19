@@ -1,7 +1,6 @@
 package testenv
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"sync"
@@ -105,39 +104,6 @@ func (a *fakeAuth) SignOut() http.Handler {
 // RealmProxy implements dashboardapi.Auth.
 func (a *fakeAuth) RealmProxy() http.Handler {
 	return nil
-}
-
-// fakeApprovers is a stand-in for the Keycloak group check.
-type fakeApprovers struct {
-	mu      sync.Mutex
-	members map[string]bool
-	err     error
-}
-
-func newFakeApprovers(members ...string) *fakeApprovers {
-	approvers := &fakeApprovers{members: make(map[string]bool)}
-	for _, member := range members {
-		approvers.members[member] = true
-	}
-	return approvers
-}
-
-// IsApprover implements admission.ApproverGroups.
-func (f *fakeApprovers) IsApprover(_ context.Context, username string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return false, f.err
-	}
-	return f.members[username], nil
-}
-
-// WithApprovers sets the users that the Keycloak membership stand-in reports as
-// members of the approvers group.
-func WithApprovers(usernames ...string) Option {
-	return func(o *options) {
-		o.approvers = newFakeApprovers(usernames...)
-	}
 }
 
 // WithDashboardUser sets the username and approver status of the session that

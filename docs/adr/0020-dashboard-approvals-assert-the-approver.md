@@ -1,8 +1,10 @@
 # ADR-0020: Dashboard Approvals assert the approver rather than impersonate
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0031](0031-approval-is-a-decision-on-the-page.md). The Keycloak client this record depends on is removed by the onboarding slice, not by this one.
 - **Date:** 2026-11-16
 - **Supersedes:** the impersonation clause of [ADR-0004](0004-approval-is-a-separate-resource.md)
+
+> Superseded in v2.0: a decision is an annotation on the Page, and the declaration is trusted exactly as far as the caller's RBAC on Pages. `internal/keycloak` stays in the tree, unused, until the onboarding slice replaces the dashboard sign-in and deletes it. See ADR-0031.
 
 ## Context
 

@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	proposalPoll  = 50 * time.Millisecond
-	workloadField = "workload"
-	movedPath     = "apps/path/moved.yaml"
+	proposalPoll = 50 * time.Millisecond
+	targetField  = "target"
+	movedPath    = "apps/path/moved.yaml"
 	// Text that several Validation errors share.
 	permittedRangeText  = "permitted range"
 	exceedText          = "exceed"
@@ -34,12 +34,12 @@ const (
 func TestPatchResourcesProposalCarriesTheRenderedPatchAndItsBase(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	w := workload{name: checkout}
+	w := target{name: checkout}
 	deploy(t, env, w)
 	head := env.Sandbox.Head()
 	before := liveDeployment(t, env, checkout)
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "512Mi")))
 	if err != nil {
 		t.Fatal(err)
@@ -68,12 +68,12 @@ func TestPatchResourcesProposalCarriesTheRenderedPatchAndItsBase(t *testing.T) {
 	if err := gitApplyCheck(t, env, change.Patch); err != nil {
 		t.Errorf("the patch does not apply to the Sandbox: %v", err)
 	}
-	if p.Base == nil || p.Base.Commit != head || p.Base.WorkloadGeneration != before.Generation {
+	if p.Base == nil || p.Base.Commit != head || p.Base.TargetGeneration != before.Generation {
 		t.Errorf("base = %+v, want commit %s and generation %d", p.Base, head, before.Generation)
 	}
 	want, err := proposal.Hash(tr, p.ProposedAction, p.RenderedChange, p.Base)
 	if err != nil || p.Hash != want {
-		t.Errorf("hash = %s, want %s (error %v): it covers the Triage, Action, Workload, and rendered change",
+		t.Errorf("hash = %s, want %s (error %v): it covers the Page, Action, Target, and rendered change",
 			p.Hash, want, err)
 	}
 
@@ -81,7 +81,7 @@ func TestPatchResourcesProposalCarriesTheRenderedPatchAndItsBase(t *testing.T) {
 	after := liveDeployment(t, env, checkout)
 	if after.Generation != before.Generation ||
 		!after.Spec.Template.Spec.Containers[0].Resources.Limits.Memory().Equal(resource.MustParse("256Mi")) {
-		t.Errorf("the dry run changed the Workload: generation %d, resources %+v",
+		t.Errorf("the dry run changed the Target: generation %d, resources %+v",
 			after.Generation, after.Spec.Template.Spec.Containers[0].Resources)
 	}
 	if env.Sandbox.Head() != head {
@@ -95,7 +95,7 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 
 	tests := []struct {
 		name      string
-		workload  workload
+		target    target
 		namespace string
 		container string
 		requests  corev1.ResourceList
@@ -104,7 +104,7 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 		wantText  string
 	}{
 		{name: "namespace outside the allowlist", namespace: "production", limits: quantities("memory", "512Mi"),
-			wantField: "workload.namespace", wantText: "allowlist"},
+			wantField: "target.namespace", wantText: "allowlist"},
 		{name: "resource without bounds", limits: quantities("ephemeral-storage", "1Gi"),
 			wantField: "limits[ephemeral-storage]", wantText: "not allowed"},
 		{name: "memory above the bound", limits: quantities("memory", "1Ti"),
@@ -116,23 +116,23 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 		{name: "request above the limit in the manifest", requests: quantities("memory", "512Mi"),
 			wantField: requestsMemoryField, wantText: exceedText},
 		{name: "nothing to set", wantField: "proposal.parameters.patchResources", wantText: "at least one"},
-		{name: "container the Workload lacks", container: "ghost", limits: quantities("memory", "512Mi"),
+		{name: "container the Target lacks", container: "ghost", limits: quantities("memory", "512Mi"),
 			wantField: "patchResources.container", wantText: "no container named ghost"},
 		{name: "values the Sandbox already declares", limits: quantities("memory", "256Mi"),
 			wantField: "patchResources", wantText: "already"},
-		{name: "workload without a source path", workload: workload{noAnnotation: true},
-			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: v1alpha1.AnnotationSourcePath},
-		{name: "source path that climbs out of the Sandbox", workload: workload{annotation: "../../etc/passwd.yaml"},
-			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: "inside the Sandbox"},
-		{name: "source path that is not in the Sandbox", workload: workload{annotation: "apps/nowhere.yaml"},
-			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: "regular file"},
-		{name: "workload that does not exist", workload: workload{noLive: true, noManifest: true},
-			limits: quantities("memory", "512Mi"), wantField: workloadField, wantText: "does not exist"},
-		// Argo CD may not have applied the manifest yet, so the live Workload can
+		{name: "target without a source path", target: target{noAnnotation: true},
+			limits: quantities("memory", "512Mi"), wantField: targetField, wantText: v1alpha1.AnnotationSourcePath},
+		{name: "source path that climbs out of the Sandbox", target: target{annotation: "../../etc/passwd.yaml"},
+			limits: quantities("memory", "512Mi"), wantField: targetField, wantText: "inside the Sandbox"},
+		{name: "source path that is not in the Sandbox", target: target{annotation: "apps/nowhere.yaml"},
+			limits: quantities("memory", "512Mi"), wantField: targetField, wantText: "regular file"},
+		{name: "target that does not exist", target: target{noLive: true, noManifest: true},
+			limits: quantities("memory", "512Mi"), wantField: targetField, wantText: "does not exist"},
+		// Argo CD may not have applied the manifest yet, so the live Target can
 		// differ from the Sandbox copy. Validation must judge the resources the
 		// API server will see and name the rule the Proposal breaks.
-		{name: "live Workload request above the proposed limit", limits: quantities("memory", "384Mi"),
-			workload: workload{mutateLive: func(d *appsv1.Deployment) {
+		{name: "live Target request above the proposed limit", limits: quantities("memory", "384Mi"),
+			target: target{mutateLive: func(d *appsv1.Deployment) {
 				c := &d.Spec.Template.Spec.Containers[0]
 				c.Resources.Requests = quantities("memory", "512Mi")
 				c.Resources.Limits = quantities("memory", "512Mi")
@@ -140,18 +140,18 @@ func TestPatchResourcesProposalsThatFailValidationAreRefusedWithErrors(t *testin
 			wantField: requestsMemoryField, wantText: exceedText},
 	}
 	for i, tc := range tests {
-		tc.workload.name = "refused-" + strings.ReplaceAll(strings.ToLower(tc.name), " ", "-")
-		deploy(t, env, tc.workload)
+		tc.target.name = "refused-" + strings.ReplaceAll(strings.ToLower(tc.name), " ", "-")
+		deploy(t, env, tc.target)
 		tests[i] = tc
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			triage := testenv.NewTriage(tc.workload.name)
+			page := testenv.NewPage(tc.target.name)
 			if tc.namespace != "" {
-				triage.Spec.Workload.Namespace = tc.namespace
+				page.Spec.Target.Namespace = tc.namespace
 			}
-			created := env.CreateTriage(t, triage)
+			created := env.CreatePage(t, page)
 			agent := env.StartAgent(t, created.Name)
 			container := tc.container
 			if container == "" {
@@ -205,14 +205,14 @@ func TestValidFirstPatchResourcesOnMemoryHolderIsAccepted(t *testing.T) {
 		t.Fatalf("create the injected Deployment: %v", err)
 	}
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), patchReport("memory-holder",
 		quantities("memory", "64Mi"), quantities("memory", "64Mi")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.StatusCode != http.StatusOK || result.Report == nil || !result.Report.Accepted {
-		t.Fatalf("answer = %+v, want the first Proposal accepted", result)
+		t.Fatalf("answer = %+v (errors %+v), want the first Proposal accepted", result, result.Report.Errors)
 	}
 	tr := env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
 	if tr.Status.ValidationAttempts != 0 {
@@ -221,8 +221,9 @@ func TestValidFirstPatchResourcesOnMemoryHolderIsAccepted(t *testing.T) {
 	if tr.Status.Proposal == nil || tr.Status.Proposal.Attempt != 1 {
 		t.Fatalf("proposal = %+v, want the first attempt", tr.Status.Proposal)
 	}
-	if condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionProposalRefused); condition != nil {
-		t.Errorf("an accepted Proposal left a %s condition: %+v", v1alpha1.ConditionProposalRefused, condition)
+	condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionInvestigated)
+	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != v1alpha1.ReasonAgentReported {
+		t.Errorf("Investigated condition = %+v, want True/AgentReported after an accepted Proposal", condition)
 	}
 	change := tr.Status.Proposal.RenderedChange
 	if change == nil {
@@ -235,14 +236,14 @@ func TestValidFirstPatchResourcesOnMemoryHolderIsAccepted(t *testing.T) {
 	}
 }
 
-// TestEveryRefusedProposalIsRecordedOnTheTriage keeps the refused Action, its
-// parameters, and its Validation errors on the Triage after the agent replaces
+// TestEveryRefusedProposalIsRecordedOnThePage keeps the refused Action, its
+// parameters, and its Validation errors on the Page after the agent replaces
 // it, so an operator can see what the agent first got wrong.
-func TestEveryRefusedProposalIsRecordedOnTheTriage(t *testing.T) {
+func TestEveryRefusedProposalIsRecordedOnThePage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	deploy(t, env, workload{name: "recorded"})
-	name, agent := startTriage(t, env, "recorded")
+	deploy(t, env, target{name: "recorded"})
+	name, agent := startPage(t, env, "recorded")
 
 	first, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "1Ti")))
 	if err != nil || first.StatusCode != http.StatusUnprocessableEntity {
@@ -250,12 +251,12 @@ func TestEveryRefusedProposalIsRecordedOnTheTriage(t *testing.T) {
 	}
 	condition := func() string {
 		tr := env.Get(t, name)
-		found := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionProposalRefused)
+		found := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionInvestigated)
 		if found == nil {
-			t.Fatalf("the Triage records no %s condition", v1alpha1.ConditionProposalRefused)
+			t.Fatalf("the Page records no %s condition", v1alpha1.ConditionInvestigated)
 		}
-		if found.Status != metav1.ConditionTrue || found.Reason != v1alpha1.ReasonValidationRefused {
-			t.Errorf("refusal condition = %+v, want status True and reason %s",
+		if found.Status != metav1.ConditionFalse || found.Reason != v1alpha1.ReasonValidationRefused {
+			t.Errorf("refusal condition = %+v, want status False and reason %s",
 				found, v1alpha1.ReasonValidationRefused)
 		}
 		return found.Message
@@ -268,7 +269,7 @@ func TestEveryRefusedProposalIsRecordedOnTheTriage(t *testing.T) {
 	}
 
 	// A second refusal of a different Action keeps the first line, so both
-	// attempts stay visible after the Triage ends as Invalid.
+	// attempts stay visible after the Page ends as Invalid.
 	second, err := agent.API.PostReport(t.Context(), agentapi.Report{
 		Diagnosis: "A replica count of zero would stop the traffic.",
 		Findings:  []v1alpha1.Finding{logFinding},
@@ -309,18 +310,18 @@ func oomInjectedCheckout(t *testing.T) string {
 	return manifest
 }
 
-func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {
+func TestSecondFailedProposalEndsThePageAsInvalid(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	deploy(t, env, workload{name: "revised"})
-	deploy(t, env, workload{name: "hopeless"})
-	deploy(t, env, workload{name: "malformed"})
+	deploy(t, env, target{name: "revised"})
+	deploy(t, env, target{name: "hopeless"})
+	deploy(t, env, target{name: "malformed"})
 	tooBig := patchReport("app", nil, quantities("memory", "1Ti"))
 	fine := patchReport("app", nil, quantities("memory", "512Mi"))
 
 	t.Run("a revised proposal that passes is attempt 2", func(t *testing.T) {
 		t.Parallel()
-		name, agent := startTriage(t, env, "revised")
+		name, agent := startPage(t, env, "revised")
 		first, err := agent.API.PostReport(t.Context(), tooBig)
 		if err != nil || first.StatusCode != http.StatusUnprocessableEntity {
 			t.Fatalf("first report: %+v, %v, want 422", first, err)
@@ -335,9 +336,9 @@ func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {
 		}
 	})
 
-	t.Run("two refused reports of any kind end the Triage", func(t *testing.T) {
+	t.Run("two refused reports of any kind end the Page", func(t *testing.T) {
 		t.Parallel()
-		name, agent := startTriage(t, env, "malformed")
+		name, agent := startPage(t, env, "malformed")
 		noDiagnosis := fine
 		noDiagnosis.Diagnosis = ""
 		first, err := agent.API.PostReport(t.Context(), noDiagnosis)
@@ -355,7 +356,7 @@ func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {
 
 	t.Run("a second failure is final", func(t *testing.T) {
 		t.Parallel()
-		name, agent := startTriage(t, env, "hopeless")
+		name, agent := startPage(t, env, "hopeless")
 		first, err := agent.API.PostReport(t.Context(), tooBig)
 		refused := func(r agentapi.Result) bool {
 			return r.StatusCode == http.StatusUnprocessableEntity && r.Report != nil
@@ -368,13 +369,13 @@ func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {
 			t.Fatalf("second report: %+v, %v, want 422 with errors in Invalid", second, err)
 		}
 		tr := env.WaitForPhase(t, name, v1alpha1.PhaseInvalid)
-		condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionInvalid)
+		condition := meta.FindStatusCondition(tr.Status.Conditions, v1alpha1.ConditionFailed)
 		if condition == nil || condition.Reason != v1alpha1.ReasonValidationFailedTwice ||
 			!strings.Contains(condition.Message, "limits[memory]") {
 			t.Errorf("Invalid condition = %+v, want reason %s and the errors", condition, v1alpha1.ReasonValidationFailedTwice)
 		}
 		if tr.Status.Proposal != nil {
-			t.Errorf("an Invalid Triage holds proposal %+v", tr.Status.Proposal)
+			t.Errorf("an Invalid Page holds proposal %+v", tr.Status.Proposal)
 		}
 		if late, err := agent.API.PostReport(t.Context(), fine); err != nil || late.StatusCode != http.StatusConflict {
 			t.Errorf("report after Invalid: %+v, %v, want 409", late, err)
@@ -385,10 +386,10 @@ func TestSecondFailedProposalEndsTheTriageAsInvalid(t *testing.T) {
 	})
 }
 
-// proposedTriage reports a valid patch for the Workload and waits for the Proposal.
-func proposedTriage(t *testing.T, env *testenv.Env, workloadName string) *v1alpha1.Triage {
+// proposedPage reports a valid patch for the Target and waits for the Proposal.
+func proposedPage(t *testing.T, env *testenv.Env, targetName string) *v1alpha1.Page {
 	t.Helper()
-	name, agent := startTriage(t, env, workloadName)
+	name, agent := startPage(t, env, targetName)
 	result, err := agent.API.PostReport(t.Context(), patchReport("app", nil, quantities("memory", "512Mi")))
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v, want 200", result, err)
@@ -396,10 +397,10 @@ func proposedTriage(t *testing.T, env *testenv.Env, workloadName string) *v1alph
 	return env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
 }
 
-// revalidated waits until the Triage holds a Proposal under a different hash.
-func revalidated(t *testing.T, env *testenv.Env, name, oldHash string) *v1alpha1.Triage {
+// revalidated waits until the Page holds a Proposal under a different hash.
+func revalidated(t *testing.T, env *testenv.Env, name, oldHash string) *v1alpha1.Page {
 	t.Helper()
-	return env.WaitFor(t, name, "the Proposal is re-validated under a new hash", func(tr *v1alpha1.Triage) bool {
+	return env.WaitFor(t, name, "the Proposal is re-validated under a new hash", func(tr *v1alpha1.Page) bool {
 		return tr.Status.Proposal != nil && tr.Status.Proposal.Hash != oldHash
 	})
 }
@@ -408,15 +409,14 @@ func TestProposalBecomesStaleWhenItsBaseChanges(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources(), testenv.WithProposalPollInterval(proposalPoll))
 	for _, name := range []string{"generation", "path", "file", "unrelated", "vanished"} {
-		deploy(t, env, workload{name: name})
+		deploy(t, env, target{name: name})
 	}
 
-	assertRevalidated := func(t *testing.T, before, after *v1alpha1.Triage, reason string) {
+	assertRevalidated := func(t *testing.T, before, after *v1alpha1.Page, reason string) {
 		t.Helper()
-		condition := meta.FindStatusCondition(after.Status.Conditions, v1alpha1.ConditionProposalRevalidated)
-		if after.Status.Phase != v1alpha1.PhaseProposed || condition == nil || condition.Reason != reason {
-			t.Errorf("phase = %s, revalidated condition = %+v, want Proposed and reason %s",
-				after.Status.Phase, condition, reason)
+		if after.Status.Phase != v1alpha1.PhaseProposed {
+			t.Errorf("phase = %s, want Proposed after the Stale Proposal was re-rendered (%s)",
+				after.Status.Phase, reason)
 		}
 		old, current := before.Status.Proposal, after.Status.Proposal
 		if current.Attempt != old.Attempt || !current.ExpiresAt.Equal(&old.ExpiresAt) {
@@ -428,24 +428,24 @@ func TestProposalBecomesStaleWhenItsBaseChanges(t *testing.T) {
 		}
 	}
 
-	t.Run("the Workload's generation changes", func(t *testing.T) {
-		before := proposedTriage(t, env, "generation")
+	t.Run("the Target's generation changes", func(t *testing.T) {
+		before := proposedPage(t, env, "generation")
 		d := liveDeployment(t, env, "generation")
 		d.Spec.Replicas = new(int32(2))
 		if err := env.Client.Update(t.Context(), d); err != nil {
 			t.Fatal(err)
 		}
 		after := revalidated(t, env, before.Name, before.Status.Proposal.Hash)
-		assertRevalidated(t, before, after, v1alpha1.ReasonWorkloadGenerationChanged)
+		assertRevalidated(t, before, after, v1alpha1.ReasonTargetGenerationChanged)
 		want := liveDeployment(t, env, "generation").Generation
-		if got := after.Status.Proposal.Base.WorkloadGeneration; got != want {
+		if got := after.Status.Proposal.Base.TargetGeneration; got != want {
 			t.Errorf("base generation = %d, want %d", got, want)
 		}
 	})
 
-	t.Run("the Workload's source path changes", func(t *testing.T) {
-		before := proposedTriage(t, env, "path")
-		moved := workload{name: "path", annotation: movedPath}
+	t.Run("the Target's source path changes", func(t *testing.T) {
+		before := proposedPage(t, env, "path")
+		moved := target{name: "path", annotation: movedPath}
 		env.Sandbox.Commit(movedPath, moved.manifest(), "Move the manifest")
 		d := liveDeployment(t, env, "path")
 		d.Annotations[v1alpha1.AnnotationSourcePath] = movedPath
@@ -460,11 +460,11 @@ func TestProposalBecomesStaleWhenItsBaseChanges(t *testing.T) {
 	})
 
 	t.Run("the Sandbox file changes", func(t *testing.T) {
-		before := proposedTriage(t, env, "file")
-		changed := workload{name: "file"}.manifest() + "# edited in the Sandbox\n"
+		before := proposedPage(t, env, "file")
+		changed := target{name: "file"}.manifest() + "# edited in the Sandbox\n"
 		head := env.Sandbox.Commit("apps/file/deployment.yaml", changed, "Edit the manifest")
 		after := revalidated(t, env, before.Name, before.Status.Proposal.Hash)
-		assertRevalidated(t, before, after, v1alpha1.ReasonSandboxFileChanged)
+		assertRevalidated(t, before, after, v1alpha1.ReasonTargetRepositoryFileChanged)
 		if got := after.Status.Proposal.Base.Commit; got != head {
 			t.Errorf("base commit = %s, want the new head %s", got, head)
 		}
@@ -474,28 +474,27 @@ func TestProposalBecomesStaleWhenItsBaseChanges(t *testing.T) {
 	})
 
 	t.Run("an unrelated Sandbox commit does not make it stale", func(t *testing.T) {
-		before := proposedTriage(t, env, "unrelated")
-		env.Sandbox.Commit("apps/other/deployment.yaml", "kind: Deployment\n", "Change another Workload")
+		before := proposedPage(t, env, "unrelated")
+		env.Sandbox.Commit("apps/other/deployment.yaml", "kind: Deployment\n", "Change another Target")
 		time.Sleep(20 * proposalPoll)
 		after := env.Get(t, before.Name)
-		if after.Status.Proposal.Hash != before.Status.Proposal.Hash ||
-			meta.FindStatusCondition(after.Status.Conditions, v1alpha1.ConditionProposalRevalidated) != nil {
+		if after.Status.Proposal.Hash != before.Status.Proposal.Hash {
 			t.Errorf("an unrelated commit re-validated the Proposal: %+v", after.Status)
 		}
 	})
 
-	t.Run("a Proposal that fails re-validation ends the Triage as Invalid", func(t *testing.T) {
-		before := proposedTriage(t, env, "vanished")
+	t.Run("a Proposal that fails re-validation ends the Page as Invalid", func(t *testing.T) {
+		before := proposedPage(t, env, "vanished")
 		d := liveDeployment(t, env, "vanished")
 		d.Spec.Template.Spec.Containers[0].Name = "renamed"
 		if err := env.Client.Update(t.Context(), d); err != nil {
 			t.Fatal(err)
 		}
 		after := env.WaitForPhase(t, before.Name, v1alpha1.PhaseInvalid)
-		condition := meta.FindStatusCondition(after.Status.Conditions, v1alpha1.ConditionInvalid)
-		if condition == nil || condition.Reason != v1alpha1.ReasonStaleProposalInvalid ||
+		condition := meta.FindStatusCondition(after.Status.Conditions, v1alpha1.ConditionFailed)
+		if condition == nil || condition.Reason != v1alpha1.ReasonValidationFailedTwice ||
 			!strings.Contains(condition.Message, "no container named app") {
-			t.Errorf("Invalid condition = %+v, want reason %s and the error", condition, v1alpha1.ReasonStaleProposalInvalid)
+			t.Errorf("Invalid condition = %+v, want reason %s and the error", condition, v1alpha1.ReasonValidationFailedTwice)
 		}
 	})
 }
@@ -503,8 +502,8 @@ func TestProposalBecomesStaleWhenItsBaseChanges(t *testing.T) {
 func TestUnapprovedProposalExpiresAfterOneHour(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources(), testenv.WithProposalPollInterval(proposalPoll))
-	deploy(t, env, workload{name: checkout})
-	proposed := proposedTriage(t, env, checkout)
+	deploy(t, env, target{name: checkout})
+	proposed := proposedPage(t, env, checkout)
 	if want := testenv.StartTime.Add(time.Hour); !proposed.Status.Proposal.ExpiresAt.Time.Equal(want) {
 		t.Fatalf("expiresAt = %v, want %v", proposed.Status.Proposal.ExpiresAt.Time, want)
 	}
@@ -518,14 +517,14 @@ func TestUnapprovedProposalExpiresAfterOneHour(t *testing.T) {
 	env.Clock.Step(time.Second)
 	expired := env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseExpired)
 	if expired.Status.Proposal == nil || expired.Status.Proposal.Hash != proposed.Status.Proposal.Hash {
-		t.Errorf("an Expired Triage should keep its Proposal for the record, got %+v", expired.Status.Proposal)
+		t.Errorf("an Expired Page should keep its Proposal for the record, got %+v", expired.Status.Proposal)
 	}
 }
 
 func TestNoActionProposalExpiresToo(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources(), testenv.WithProposalPollInterval(proposalPoll))
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 	if _, err := agent.API.PostReport(t.Context(), noActionReport()); err != nil {
 		t.Fatal(err)

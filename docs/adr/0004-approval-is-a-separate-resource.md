@@ -1,7 +1,9 @@
 # ADR-0004: Approval is a separate resource with webhook-stamped identity
 
-- **Status:** Accepted; the impersonation clause is superseded by [ADR-0020](0020-dashboard-approvals-assert-the-approver.md)
+- **Status:** Superseded by [ADR-0031](0031-approval-is-a-decision-on-the-page.md), which records the decision on the Page and installs no webhook.
 - **Date:** 2026-11-16
+
+> Superseded in v2.0: there is no approval resource, and no webhook stamps an identity. See ADR-0031 for the record and the accepted trade-off.
 
 ## Context
 

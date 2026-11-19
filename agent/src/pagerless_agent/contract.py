@@ -29,7 +29,7 @@ MAX_FINDING_SOURCE_LENGTH = 500
 MAX_FINDING_SUMMARY_LENGTH = 1000
 MAX_STEP_SUMMARY_LENGTH = 300
 MAX_TOOL_NAME_LENGTH = 128
-# The number of Findings a Triage keeps (`v1alpha1.MaxFindings`).
+# The number of Findings a Page keeps (`v1alpha1.MaxFindings`).
 MAX_FINDINGS = 20
 # Bounds on the model usage one report may carry, matching `internal/agentapi/check.go`.
 MAX_INPUT_TOKENS = 10_000_000
@@ -38,7 +38,7 @@ MAX_COST_USD = 100.0
 
 FindingKind = Literal["Log", "Metric", "Trace", "Event", "Commit"]
 StepKind = Literal["ToolCall", "Finding", "Progress"]
-ACTIONS = ("RestartWorkload", "Scale", "PatchResources", "Rollback", "NoAction")
+ACTIONS = ("Scale", "PatchResources", "Rollback", "NoAction")
 
 
 class _Strict(BaseModel):
@@ -121,10 +121,6 @@ class RollbackParameters(_Strict):
     rollback: RollbackSpec
 
 
-class RestartWorkloadProposal(_Strict):
-    action: Literal["RestartWorkload"]
-
-
 class ScaleProposal(_Strict):
     action: Literal["Scale"]
     parameters: ScaleParameters
@@ -145,7 +141,7 @@ class NoActionProposal(_Strict):
 
 
 ProposedAction = Annotated[
-    RestartWorkloadProposal | ScaleProposal | PatchResourcesProposal | RollbackProposal | NoActionProposal,
+    ScaleProposal | PatchResourcesProposal | RollbackProposal | NoActionProposal,
     Field(discriminator="action"),
 ]
 """One Action with the parameters that belong to it and no others (ADR-0002)."""
@@ -199,7 +195,7 @@ def proposal_tool_schema() -> dict[str, object]:
                 "description": (
                     "The fields for the chosen Action and no others: replicas for Scale; "
                     "container, requests, and limits for PatchResources; commit for Rollback. "
-                    "Omit parameters for RestartWorkload and NoAction."
+                    "Omit parameters for NoAction."
                 ),
                 "additionalProperties": False,
                 "properties": {
@@ -246,7 +242,7 @@ class DiagnosisOutput(_Strict):
 
 
 class Usage(_Strict):
-    """The model usage of one investigation, bounded like the Triage status."""
+    """The model usage of one investigation, bounded like the Page status."""
 
     inputTokens: Annotated[int, Field(ge=0, le=MAX_INPUT_TOKENS)]  # noqa: N815
     outputTokens: Annotated[int, Field(ge=0, le=MAX_OUTPUT_TOKENS)]  # noqa: N815
@@ -270,7 +266,7 @@ class ReportError(_Strict):
 
 
 class NarrativeReport(_Strict):
-    """The Narrative Job's answer: the short account of a finished Triage."""
+    """The Narrative Job's answer: the short account of a finished Page."""
 
     narrative: Annotated[str, StringConstraints(min_length=1, max_length=MAX_NARRATIVE_LENGTH)]
 
@@ -278,7 +274,7 @@ class NarrativeReport(_Strict):
 
 
 class NarrativeRecord(_Strict):
-    """What the server gives a Narrative Job: the Triage rendered as text, and its Workload."""
+    """What the server gives a Narrative Job: the Page rendered as text, and its Workload."""
 
     workload: WorkloadRef
     text: Annotated[str, StringConstraints(min_length=1)]

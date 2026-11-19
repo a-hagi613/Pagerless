@@ -19,7 +19,7 @@ import (
 // client carries a projected service account token that the API server issued for
 // it. No container runs.
 type StandInNarrative struct {
-	// Job is the Narrative Job the Triage started.
+	// Job is the Narrative Job the Page started.
 	Job *batchv1.Job
 	// Pod is the pod the stand-in Job pretends to run in.
 	Pod *corev1.Pod
@@ -30,11 +30,11 @@ type StandInNarrative struct {
 }
 
 // StartNarrative creates the pod that the Job controller would create for the
-// Triage's Narrative Job, and a token for it, as the kubelet would project it.
-// The Triage must have reached a terminal Verification outcome.
-func (e *Env) StartNarrative(t testing.TB, triageName string) *StandInNarrative {
+// Page's Narrative Job, and a token for it, as the kubelet would project it.
+// The Page must have reached a terminal Verification outcome.
+func (e *Env) StartNarrative(t testing.TB, pageName string) *StandInNarrative {
 	t.Helper()
-	tr := e.WaitFor(t, triageName, "the Narrative Job is recorded", func(tr *v1alpha1.Triage) bool {
+	tr := e.WaitFor(t, pageName, "the Narrative Job is recorded", func(tr *v1alpha1.Page) bool {
 		return tr.Status.NarrativeJobName != ""
 	})
 	// The reconciler records the Job's name before it creates the Job, so that no
@@ -62,7 +62,7 @@ func (e *Env) StartNarrative(t testing.TB, triageName string) *StandInNarrative 
 		Token: token,
 		API: &agentapi.Client{
 			BaseURL: e.ReportURL,
-			Triage:  triageName,
+			Page:    pageName,
 			Token:   func() (string, error) { return token, nil },
 		},
 	}

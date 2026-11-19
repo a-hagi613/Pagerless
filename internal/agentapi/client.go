@@ -16,8 +16,8 @@ import (
 type Client struct {
 	// BaseURL is the base URL of pagerless-server's agent API.
 	BaseURL string
-	// Triage is the name of the Triage the agent belongs to.
-	Triage string
+	// Page is the name of the Page the agent belongs to.
+	Page string
 	// Token returns the current projected service account token.
 	Token func() (string, error)
 	// HTTPClient performs the requests. It defaults to http.DefaultClient.
@@ -36,17 +36,17 @@ type Result struct {
 
 // PostEvent sends one step event.
 func (c *Client) PostEvent(ctx context.Context, e StepEvent) (Result, error) {
-	return c.post(ctx, EventsPath(c.Triage), e)
+	return c.post(ctx, EventsPath(c.Page), e)
 }
 
 // PostReport sends the final report.
 func (c *Client) PostReport(ctx context.Context, r Report) (Result, error) {
-	return c.post(ctx, ReportPath(c.Triage), r)
+	return c.post(ctx, ReportPath(c.Page), r)
 }
 
-// GetNarrative reads the Triage record that the Narrative describes.
+// GetNarrative reads the Page record that the Narrative describes.
 func (c *Client) GetNarrative(ctx context.Context) (NarrativeRecord, Result, error) {
-	result, raw, err := c.doRaw(ctx, http.MethodGet, NarrativePath(c.Triage), nil)
+	result, raw, err := c.doRaw(ctx, http.MethodGet, NarrativePath(c.Page), nil)
 	if err != nil {
 		return NarrativeRecord{}, result, err
 	}
@@ -61,9 +61,9 @@ func (c *Client) GetNarrative(ctx context.Context) (NarrativeRecord, Result, err
 	return record, result, nil
 }
 
-// PostNarrative sends the Narrative that the server stores in the Triage's status.
+// PostNarrative sends the Narrative that the server stores in the Page's status.
 func (c *Client) PostNarrative(ctx context.Context, r NarrativeReport) (Result, error) {
-	return c.post(ctx, NarrativePath(c.Triage), r)
+	return c.post(ctx, NarrativePath(c.Page), r)
 }
 
 func (c *Client) post(ctx context.Context, path string, body any) (Result, error) {

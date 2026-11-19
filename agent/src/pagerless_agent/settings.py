@@ -20,11 +20,11 @@ if TYPE_CHECKING:
 
 ENV_SERVER_URL = "PAGERLESS_SERVER_URL"
 ENV_TOKEN_FILE = "PAGERLESS_TOKEN_FILE"
-ENV_TRIAGE = "PAGERLESS_TRIAGE"
+ENV_PAGE = "PAGERLESS_PAGE"
 ENV_TASK = "PAGERLESS_TASK"
-ENV_WORKLOAD_KIND = "PAGERLESS_WORKLOAD_KIND"
-ENV_WORKLOAD_NAMESPACE = "PAGERLESS_WORKLOAD_NAMESPACE"
-ENV_WORKLOAD_NAME = "PAGERLESS_WORKLOAD_NAME"
+ENV_TARGET_KIND = "PAGERLESS_TARGET_KIND"
+ENV_TARGET_NAMESPACE = "PAGERLESS_TARGET_NAMESPACE"
+ENV_TARGET_NAME = "PAGERLESS_TARGET_NAME"
 ENV_TRIGGERING_POD = "PAGERLESS_TRIGGERING_POD"
 ENV_HINT = "PAGERLESS_HINT"
 ENV_MODEL_PROVIDER = "PAGERLESS_MODEL_PROVIDER"
@@ -59,9 +59,9 @@ TASKS = (TASK_INVESTIGATE, TASK_NARRATIVE)
 
 @dataclass(frozen=True)
 class Target:
-    """The Workload under investigation, and what started the Triage."""
+    """The Workload under investigation, and what started the Page."""
 
-    triage: str
+    page: str
     kind: Literal["Deployment", "StatefulSet"]
     namespace: str
     name: str
@@ -83,25 +83,25 @@ class Settings:
         required = [
             ENV_SERVER_URL,
             ENV_TOKEN_FILE,
-            ENV_TRIAGE,
-            ENV_WORKLOAD_KIND,
-            ENV_WORKLOAD_NAMESPACE,
-            ENV_WORKLOAD_NAME,
+            ENV_PAGE,
+            ENV_TARGET_KIND,
+            ENV_TARGET_NAMESPACE,
+            ENV_TARGET_NAME,
         ]
         missing = [name for name in required if not env.get(name)]
         if missing:
             raise ConfigError(f"missing environment variables: {', '.join(missing)}")
-        kind = env[ENV_WORKLOAD_KIND]
+        kind = env[ENV_TARGET_KIND]
         if kind not in ("Deployment", "StatefulSet"):
-            raise ConfigError(f"{ENV_WORKLOAD_KIND} must be Deployment or StatefulSet, not {kind!r}")
+            raise ConfigError(f"{ENV_TARGET_KIND} must be Deployment or StatefulSet, not {kind!r}")
         return cls(
             server_url=env[ENV_SERVER_URL],
             token_file=Path(env[ENV_TOKEN_FILE]),
             target=Target(
-                triage=env[ENV_TRIAGE],
+                page=env[ENV_PAGE],
                 kind=cast(Literal["Deployment", "StatefulSet"], kind),
-                namespace=env[ENV_WORKLOAD_NAMESPACE],
-                name=env[ENV_WORKLOAD_NAME],
+                namespace=env[ENV_TARGET_NAMESPACE],
+                name=env[ENV_TARGET_NAME],
                 triggering_pod=env.get(ENV_TRIGGERING_POD) or None,
                 hint=env.get(ENV_HINT) or None,
             ),
@@ -252,7 +252,7 @@ class NarrativeSettings:
 
     server_url: str
     token_file: Path
-    triage: str
+    page: str
     provider: ModelProviderName = "replay"
     replay_file: Path = Path("/app/recordings/narrative.json")
     recording_file: Path | None = None
@@ -260,7 +260,7 @@ class NarrativeSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> NarrativeSettings:
         """Read the Narrative Job's settings, refusing a recording that Replay cannot produce."""
-        required = [ENV_SERVER_URL, ENV_TOKEN_FILE, ENV_TRIAGE]
+        required = [ENV_SERVER_URL, ENV_TOKEN_FILE, ENV_PAGE]
         missing = [name for name in required if not env.get(name)]
         if missing:
             raise ConfigError(f"missing environment variables: {', '.join(missing)}")
@@ -273,7 +273,7 @@ class NarrativeSettings:
         return cls(
             server_url=env[ENV_SERVER_URL],
             token_file=Path(env[ENV_TOKEN_FILE]),
-            triage=env[ENV_TRIAGE],
+            page=env[ENV_PAGE],
             provider=cast(ModelProviderName, provider),
             replay_file=Path(env.get(ENV_NARRATIVE_REPLAY_FILE, "/app/recordings/narrative.json")),
             recording_file=Path(recording) if recording else None,

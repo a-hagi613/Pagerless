@@ -22,16 +22,16 @@ const (
 	EnvServerURL = "PAGERLESS_SERVER_URL"
 	// EnvTokenFile is the path of the projected service account token.
 	EnvTokenFile = "PAGERLESS_TOKEN_FILE"
-	// EnvTriage is the name of the Triage the agent investigates.
-	EnvTriage = "PAGERLESS_TRIAGE"
+	// EnvPage is the name of the Page the agent investigates.
+	EnvPage = "PAGERLESS_PAGE"
 	// EnvTask selects the Job's work: TaskInvestigate or TaskNarrative.
 	EnvTask = "PAGERLESS_TASK"
-	// EnvWorkloadKind is the kind of the target Workload.
-	EnvWorkloadKind = "PAGERLESS_WORKLOAD_KIND"
-	// EnvWorkloadNamespace is the namespace of the target Workload.
-	EnvWorkloadNamespace = "PAGERLESS_WORKLOAD_NAMESPACE"
-	// EnvWorkloadName is the name of the target Workload.
-	EnvWorkloadName = "PAGERLESS_WORKLOAD_NAME"
+	// EnvTargetKind is the kind of the target Target.
+	EnvTargetKind = "PAGERLESS_TARGET_KIND"
+	// EnvTargetNamespace is the namespace of the target Target.
+	EnvTargetNamespace = "PAGERLESS_TARGET_NAMESPACE"
+	// EnvTargetName is the name of the target Target.
+	EnvTargetName = "PAGERLESS_TARGET_NAME"
 	// EnvTriggeringPod is the pod that raised the Trigger, when there is one.
 	EnvTriggeringPod = "PAGERLESS_TRIGGERING_POD"
 	// EnvHint is the human Hint, when there is one.
@@ -71,23 +71,23 @@ const (
 const (
 	// TaskInvestigate runs the investigation graph.
 	TaskInvestigate = "investigate"
-	// TaskNarrative writes the Narrative of a finished Triage.
+	// TaskNarrative writes the Narrative of a finished Page.
 	TaskNarrative = "narrative"
 )
 
 // EventsPath is the path an agent posts step events to.
-func EventsPath(triage string) string {
-	return "/v1/triages/" + url.PathEscape(triage) + "/events"
+func EventsPath(page string) string {
+	return "/v1/pages/" + url.PathEscape(page) + "/events"
 }
 
 // ReportPath is the path an agent posts its report to.
-func ReportPath(triage string) string {
-	return "/v1/triages/" + url.PathEscape(triage) + "/report"
+func ReportPath(page string) string {
+	return "/v1/pages/" + url.PathEscape(page) + "/report"
 }
 
 // NarrativePath is the path a Narrative Job reads its record from and posts the Narrative to.
-func NarrativePath(triage string) string {
-	return "/v1/triages/" + url.PathEscape(triage) + "/narrative"
+func NarrativePath(page string) string {
+	return "/v1/pages/" + url.PathEscape(page) + "/narrative"
 }
 
 // StepEvent reports one step of the investigation. A Finding event also
@@ -130,10 +130,10 @@ type ValidationError struct {
 type ReportResponse struct {
 	// Accepted reports whether the server accepted the report.
 	Accepted bool `json:"accepted"`
-	// Phase is the Triage's phase after the report, when it was accepted or
+	// Phase is the Page's phase after the report, when it was accepted or
 	// when it failed Validation. After a refusal, Investigating means the
 	// agent may submit one revised Proposal, and Invalid means the second
-	// failure ended the Triage.
+	// failure ended the Page.
 	Phase v1alpha1.Phase `json:"phase,omitempty"`
 	// Errors lists the Validation errors, when the report was refused for its content.
 	Errors []ValidationError `json:"errors,omitempty"`
@@ -145,18 +145,18 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// NarrativeRecord is what a Narrative Job reads: the Triage rendered as text,
-// and the Workload it belongs to.
+// NarrativeRecord is what a Narrative Job reads: the Page rendered as text,
+// and the Target it belongs to.
 type NarrativeRecord struct {
-	// Workload is the Workload that the Triage investigated.
-	Workload v1alpha1.WorkloadReference `json:"workload"`
-	// Text describes the Triage for the model: its Diagnosis, Findings,
+	// Target is the Target that the Page investigated.
+	Target v1alpha1.TargetReference `json:"target"`
+	// Text describes the Page for the model: its Diagnosis, Findings,
 	// Proposal, decision, execution, and Verification checks.
 	Text string `json:"text"`
 }
 
-// NarrativeReport is the Narrative Job's answer: the short account of a finished Triage.
+// NarrativeReport is the Narrative Job's answer: the short account of a finished Page.
 type NarrativeReport struct {
-	// Narrative is the account, which the server stores in the Triage's status.
+	// Narrative is the account, which the server stores in the Page's status.
 	Narrative string `json:"narrative"`
 }

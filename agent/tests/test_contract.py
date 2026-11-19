@@ -52,7 +52,6 @@ class TestProposalToolSchema:
             ),
             ({"action": "Scale", "parameters": {"replicas": 2}}, "Scale"),
             ({"action": "Rollback", "parameters": {"commit": "a" * 40}}, "Rollback"),
-            ({"action": "RestartWorkload"}, "RestartWorkload"),
             ({"action": "NoAction"}, "NoAction"),
         ],
     )
@@ -84,12 +83,12 @@ class TestAgreementWithTheServer:
             "MaxStepSummaryLength": contract.MAX_STEP_SUMMARY_LENGTH,
             "MaxToolNameLength": contract.MAX_TOOL_NAME_LENGTH,
         }
-        types = go_source("api/v1alpha1/triage_types.go")
+        types = go_source("api/v1alpha1/page_types.go")
         assert re.search(rf"const MaxFindings = {contract.MAX_FINDINGS}\b", types)
         assert re.search(rf"const MaxNarrativeLength = {contract.MAX_NARRATIVE_LENGTH}\b", types)
 
     def test_the_vocabularies_match_the_servers(self) -> None:
-        types = go_source("api/v1alpha1/triage_types.go")
+        types = go_source("api/v1alpha1/page_types.go")
         proposal = go_source("api/v1alpha1/proposal_types.go")
         finding_kinds = re.findall(r'FindingKind\w+ FindingKind = "(\w+)"', types)
         step_kinds = re.findall(r'StepKind\w+ StepKind = "(\w+)"', types)
@@ -106,9 +105,9 @@ class TestAgreementWithTheServer:
     def test_the_audience_and_paths_match(self) -> None:
         source = go_source("internal/agentapi/contract.go")
         assert 'Audience = "pagerless-server"' in source
-        assert '"/v1/triages/" + url.PathEscape(triage) + "/events"' in source
-        assert '"/v1/triages/" + url.PathEscape(triage) + "/report"' in source
-        assert '"/v1/triages/" + url.PathEscape(triage) + "/narrative"' in source
+        assert '"/v1/pages/" + url.PathEscape(page) + "/events"' in source
+        assert '"/v1/pages/" + url.PathEscape(page) + "/report"' in source
+        assert '"/v1/pages/" + url.PathEscape(page) + "/narrative"' in source
 
 
 class TestFindingAndStep:
@@ -150,7 +149,6 @@ class TestFindingAndStep:
 
 VALID_PROPOSALS: list[dict[str, Any]] = [
     {"action": "NoAction"},
-    {"action": "RestartWorkload"},
     {"action": "Scale", "parameters": {"scale": {"replicas": 3}}},
     {"action": "Scale", "parameters": {"scale": {"replicas": 0}}},
     {
@@ -200,7 +198,6 @@ class TestProposalSchema:
                 "proposal.parameters.scale",
             ),
             ({"action": "NoAction", "parameters": {"scale": {"replicas": 1}}}, "proposal.parameters"),
-            ({"action": "RestartWorkload", "parameters": {}}, "proposal.parameters"),
             (
                 {"action": "PatchResources", "parameters": {"patchResources": {"container": "app"}}},
                 "proposal.parameters.patchResources",
@@ -301,8 +298,8 @@ def test_diagnosis_output_is_bounded_like_the_servers_report() -> None:
 
 
 def test_the_narrative_report_is_bounded_and_encoded_as_the_server_decodes_it() -> None:
-    assert encode(contract.NarrativeReport(narrative="The Triage recovered.")) == {
-        "narrative": "The Triage recovered."
+    assert encode(contract.NarrativeReport(narrative="The Page recovered.")) == {
+        "narrative": "The Page recovered."
     }
     for bad in ({"narrative": ""}, {"narrative": " "}, {"narrative": "x" * 4001}):
         with pytest.raises(ValidationError):

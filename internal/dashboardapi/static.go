@@ -67,7 +67,7 @@ func (s *spa) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.serveFile(w, r, requested, info)
 		return
 	}
-	// A client route such as /triages/foo has no extension and is answered with the application shell.
+	// A client route such as /pages/foo has no extension and is answered with the application shell.
 	if path.Ext(requested) != "" {
 		http.NotFound(w, r)
 		return

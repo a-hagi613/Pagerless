@@ -1,7 +1,7 @@
 """The Narrative: one short descriptive model call after Verification (ADR-0006).
 
-`pagerless-server` starts a Narrative Job once a Triage reaches a terminal
-Verification outcome. The Job reads the Triage record from the server, makes one
+`pagerless-server` starts a Narrative Job once a Page reaches a terminal
+Verification outcome. The Job reads the Page record from the server, makes one
 model call, and posts the Narrative back. It never writes a phase, a check, or a
 Finding, so a Narrative that fails or times out leaves the outcome as it was.
 
@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 
 # The one call's output cap, which bounds the cost of the Narrative (ADR-0010).
 NARRATIVE_MAX_OUTPUT_TOKENS = 2000
-# The Triage record is rendered within this many characters, which bounds the prompt.
+# The Page record is rendered within this many characters, which bounds the prompt.
 _MAX_RECORD_CHARS = 12_000
 
 
@@ -49,7 +49,7 @@ class NarrativeOutcome:
 
     @property
     def exit_code(self) -> int:
-        """A Job that writes no Narrative exits non-zero and leaves the Triage's status alone."""
+        """A Job that writes no Narrative exits non-zero and leaves the Page's status alone."""
         return 0 if self.kind == "written" else 1
 
 
@@ -59,9 +59,9 @@ async def run_narrative(
     server_http: httpx.AsyncClient | None = None,
     provider: ModelProvider | None = None,
 ) -> NarrativeOutcome:
-    """Read the Triage record, make one model call, and post the Narrative."""
+    """Read the Page record, make one model call, and post the Narrative."""
     selected = provider or create_provider(settings.provider, settings.replay_file)
-    server = ServerClient(settings.server_url, settings.triage, settings.token_file, http=server_http)
+    server = ServerClient(settings.server_url, settings.page, settings.token_file, http=server_http)
     recorder = None
     try:
         record = await server.narrative_record()
@@ -74,7 +74,7 @@ async def run_narrative(
                     role="user",
                     content=prompts.narrative_task_prompt(
                         _workload_label(record),
-                        present(new_nonce(), "triage record", record.text, limit=_MAX_RECORD_CHARS),
+                        present(new_nonce(), "page record", record.text, limit=_MAX_RECORD_CHARS),
                     ),
                 ),
             ),

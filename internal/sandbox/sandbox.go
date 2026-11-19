@@ -1,5 +1,5 @@
 // Package sandbox reads the Sandbox, the separate Git repository that holds the
-// Workloads' manifests, and renders changes to it as git patches (ADR-0003,
+// Targets' manifests, and renders changes to it as git patches (ADR-0003,
 // ADR-0008). It runs the git command line against a temporary shallow clone,
 // and never writes to the Sandbox itself.
 package sandbox

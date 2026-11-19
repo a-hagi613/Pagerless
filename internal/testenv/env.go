@@ -1,11 +1,10 @@
-// Package testenv is the envtest harness for pagerless-server (seam 2 of the
-// Phase 1 spec). It starts a real API server and etcd, installs the CRDs, the
-// webhook configuration, and the RBAC that charts/pagerless renders, and runs
-// pagerless-server in process under its own service account identity, so a
-// test exercises the same permissions and admission path as a cluster does.
+// Package testenv is the envtest harness for pagerless-server. It starts a real
+// API server and etcd, installs the CRDs and the RBAC that charts/pagerless
+// renders, and runs pagerless-server in process under its own service account
+// identity, so a test exercises the same permissions a cluster grants.
 //
 // Tests drive pagerless-server only through its public interfaces: they create
-// Triages with the Kubernetes API and play the agent through the agent API,
+// Pages with the Kubernetes API and play the agent through the agent API,
 // using a stand-in agent whose service account token the API server issues.
 // Later tickets extend the harness with options and helpers; the Sandbox slot
 // is a local bare git repository.
@@ -13,14 +12,12 @@ package testenv
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +48,7 @@ import (
 const (
 	// Namespace is the namespace in which pagerless-server runs in the harness, as in a cluster.
 	Namespace = "pagerless"
-	// SandboxNamespace is the namespace whose Workloads the harness's executable Actions may change.
+	// SandboxNamespace is the namespace whose Targets the harness's executable Actions may change.
 	SandboxNamespace = "sandbox"
 	// AgentImage is the agent image that Jobs reference. No container ever runs in envtest.
 	AgentImage = "registry.invalid/pagerless-agent:test"
@@ -96,27 +93,23 @@ type Env struct {
 	ArgoCD *FakeArgoCD
 	// Alertmanager is the fake Alertmanager API that pagerless-server asks whether the triggering alert resolved.
 	Alertmanager *FakeAlertmanager
-	// WebhookInstall describes the installed webhooks, for tests that call them directly.
-	WebhookInstall *envtest.WebhookInstallOptions
 	// Dashboard is the signed-in session that the dashboard tests send.
 	Dashboard DashboardSession
 
-	auth      *fakeAuth
-	approvers *fakeApprovers
-	t         testing.TB
+	auth *fakeAuth
+	t    testing.TB
 }
 
 type options struct {
 	validators        func(*Env) map[v1alpha1.Action]proposal.ActionValidator
 	proposalPoll      time.Duration
-	executionPoll     time.Duration
+	pullRequestPoll   time.Duration
 	verificationPoll  time.Duration
 	retentionPoll     time.Duration
 	agentDeadline     time.Duration
 	agentRuntime      controller.AgentRuntimeConfig
 	alertNamespaces   []string
 	alertToken        func() (string, error)
-	approvers         *fakeApprovers
 	dashboardUser     string
 	dashboardApprover bool
 	dashboardAuth     dashboardapi.Auth
@@ -138,7 +131,7 @@ func WithAgentDeadline(d time.Duration) Option {
 	return func(o *options) { o.agentDeadline = d }
 }
 
-// WithAlertNamespaces sets the namespaces whose opted-in alerts start Triages.
+// WithAlertNamespaces sets the namespaces whose opted-in alerts start Pages.
 func WithAlertNamespaces(namespaces ...string) Option {
 	return func(o *options) { o.alertNamespaces = namespaces }
 }
@@ -160,7 +153,7 @@ func WithDashboardAddress(address string) Option {
 	return func(o *options) { o.dashboardAddress = address }
 }
 
-// WithRetentionPollInterval sets how often the retention controller checks a terminal Triage. The fake clock only
+// WithRetentionPollInterval sets how often the retention controller checks a terminal Page. The fake clock only
 // advances when a test steps it, so a test that observes the deletion boundary sets a short interval; every other
 // test keeps the server's one-minute default and does no retention work.
 func WithRetentionPollInterval(d time.Duration) Option {
@@ -172,7 +165,7 @@ func WithRetentionPollInterval(d time.Duration) Option {
 func Start(t testing.TB, opts ...Option) *Env {
 	t.Helper()
 	o := options{
-		executionPoll:     defaultExecutionPoll,
+		pullRequestPoll:   defaultPullRequestPoll,
 		verificationPoll:  defaultVerificationPoll,
 		dashboardUser:     DashboardUser,
 		dashboardApprover: true,
@@ -180,9 +173,6 @@ func Start(t testing.TB, opts ...Option) *Env {
 	o.alertToken = func() (string, error) { return AlertmanagerToken, nil }
 	for _, opt := range opts {
 		opt(&o)
-	}
-	if o.approvers == nil {
-		o.approvers = newFakeApprovers()
 	}
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Fatal("KUBEBUILDER_ASSETS is not set; run the tests with `make test-go`, which downloads the envtest binaries")
@@ -195,21 +185,10 @@ func Start(t testing.TB, opts ...Option) *Env {
 	testEnv := &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join(root, "charts", "pagerless", "crds")},
 		ErrorIfCRDPathMissing: true,
-		WebhookInstallOptions: envtest.WebhookInstallOptions{Paths: []string{rendered.webhooks}},
 	}
-	// Serve the webhooks on a listener that is bound before the API server starts. envtest chooses a port by
-	// binding and immediately closing a listener, and the webhook server does not start until the manager does,
-	// so an unbound port can be taken by another listener or connection in between, after which the webhook
-	// server never starts. Serving the webhooks on the listener that reserved the port leaves no gap for that.
-	webhookListener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen for the webhook server: %v", err)
-	}
-	t.Cleanup(func() { _ = webhookListener.Close() })
-	testEnv.WebhookInstallOptions.LocalServingHost = "127.0.0.1"
-	testEnv.WebhookInstallOptions.LocalServingPort = webhookListener.Addr().(*net.TCPAddr).Port
 	cfg, err := testEnv.Start()
 	if err != nil {
+		_ = testEnv.Stop()
 		t.Fatalf("start envtest: %v", err)
 	}
 	t.Cleanup(func() {
@@ -270,19 +249,17 @@ func Start(t testing.TB, opts ...Option) *Env {
 	t.Cleanup(func() { _ = dashboardListener.Close() })
 	historyPath := filepath.Join(t.TempDir(), "history.db")
 	env := &Env{
-		Config:         cfg,
-		Client:         c,
-		Clientset:      clientset,
-		ServerConfig:   serverConfig,
-		ReportURL:      "http://" + listener.Addr().String(),
-		MetricsURL:     "http://" + metricsListener.Addr().String(),
-		DashboardURL:   "http://" + dashboardListener.Addr().String(),
-		HistoryPath:    historyPath,
-		Clock:          clocktesting.NewFakeClock(StartTime),
-		WebhookInstall: &testEnv.WebhookInstallOptions,
-		auth:           newFakeAuth(),
-		approvers:      o.approvers,
-		t:              t,
+		Config:       cfg,
+		Client:       c,
+		Clientset:    clientset,
+		ServerConfig: serverConfig,
+		ReportURL:    "http://" + listener.Addr().String(),
+		MetricsURL:   "http://" + metricsListener.Addr().String(),
+		DashboardURL: "http://" + dashboardListener.Addr().String(),
+		HistoryPath:  historyPath,
+		Clock:        clocktesting.NewFakeClock(StartTime),
+		auth:         newFakeAuth(),
+		t:            t,
 	}
 	env.Dashboard = env.auth.signIn(o.dashboardUser, o.dashboardApprover)
 	auth := dashboardapi.Auth(env.auth)
@@ -326,7 +303,7 @@ func Start(t testing.TB, opts ...Option) *Env {
 		GitHubToken:              func() (string, error) { return env.GitHub.Token(), nil },
 		AgentDeadline:            o.agentDeadline,
 		ProposalPollInterval:     o.proposalPoll,
-		ExecutionPollInterval:    o.executionPoll,
+		PullRequestPollInterval:  o.pullRequestPoll,
 		ArgoCDURL:                env.ArgoCD.URL,
 		ArgoCDToken:              func() (string, error) { return env.ArgoCD.Token(), nil },
 		AlertmanagerURL:          env.Alertmanager.URL,
@@ -334,13 +311,10 @@ func Start(t testing.TB, opts ...Option) *Env {
 		VerificationPollInterval: o.verificationPoll,
 		RetentionPollInterval:    o.retentionPoll,
 		AlertNamespaces:          o.alertNamespaces,
-		WorkloadNamespaces:       []string{SandboxNamespace},
+		TargetNamespaces:         []string{SandboxNamespace},
 		DashboardAuth:            auth,
-		Approvers:                env.approvers,
 		Clock:                    env.Clock,
 		Validators:               validators,
-		WebhookCertDir:           testEnv.WebhookInstallOptions.LocalServingCertDir,
-		WebhookListener:          webhookListener,
 	})
 	if err != nil {
 		t.Fatalf("create pagerless-server: %v", err)
@@ -354,17 +328,16 @@ func Start(t testing.TB, opts ...Option) *Env {
 			t.Errorf("run pagerless-server: %v", err)
 		}
 	})
-	waitForWebhooks(t, &testEnv.WebhookInstallOptions)
 	if !mgr.GetCache().WaitForCacheSync(ctx) {
 		t.Fatal("pagerless-server cache did not sync")
 	}
 	env.History, err = history.OpenReader(historyPath)
 	if err != nil {
-		t.Fatalf("open the Triage history for reading: %v", err)
+		t.Fatalf("open the Page history for reading: %v", err)
 	}
 	t.Cleanup(func() {
 		if err := env.History.Close(); err != nil {
-			t.Errorf("close the Triage history: %v", err)
+			t.Errorf("close the Page history: %v", err)
 		}
 	})
 	waitForMetrics(t, env.MetricsURL)
@@ -390,13 +363,13 @@ func waitForMetrics(t testing.TB, baseURL string) {
 	}
 }
 
-// WaitForGone polls until the Triage no longer exists.
+// WaitForGone polls until the Page no longer exists.
 func (e *Env) WaitForGone(t testing.TB, name string) {
 	t.Helper()
 	key := types.NamespacedName{Namespace: Namespace, Name: name}
 	err := wait.PollUntilContextTimeout(
 		t.Context(), pollInterval, waitTimeout, true, func(ctx context.Context) (bool, error) {
-			var tr v1alpha1.Triage
+			var tr v1alpha1.Page
 			if err := e.Client.Get(ctx, key, &tr); err != nil {
 				if errors.IsNotFound(err) {
 					return true, nil
@@ -407,7 +380,7 @@ func (e *Env) WaitForGone(t testing.TB, name string) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("waiting for Triage %s to be deleted: %v", name, err)
+		t.Fatalf("waiting for Page %s to be deleted: %v", name, err)
 	}
 }
 
@@ -418,25 +391,6 @@ func repoRoot(t testing.TB) string {
 		t.Fatal("locate the harness source file")
 	}
 	return filepath.Join(filepath.Dir(file), "..", "..")
-}
-
-func waitForWebhooks(t testing.TB, install *envtest.WebhookInstallOptions) {
-	t.Helper()
-	addr := net.JoinHostPort(install.LocalServingHost, strconv.Itoa(install.LocalServingPort))
-	err := wait.PollUntilContextTimeout(t.Context(), pollInterval, waitTimeout, true, func(context.Context) (bool, error) {
-		dialer := &net.Dialer{Timeout: time.Second}
-		// The probe only checks that the server accepts connections.
-		probe := &tls.Config{InsecureSkipVerify: true} //nolint:gosec
-		conn, err := tls.DialWithDialer(dialer, "tcp", addr, probe)
-		if err != nil {
-			return false, nil
-		}
-		_ = conn.Close()
-		return true, nil
-	})
-	if err != nil {
-		t.Fatalf("webhook server at %s did not start: %v", addr, err)
-	}
 }
 
 // applyManifestFile creates every object in a multi-document YAML file.
@@ -460,13 +414,13 @@ func applyManifestFile(ctx context.Context, c client.Client, path string) error 
 	return nil
 }
 
-// WaitFor polls until the Triage satisfies the condition and returns it. The
+// WaitFor polls until the Page satisfies the condition and returns it. The
 // description names the condition in the failure message.
 func (e *Env) WaitFor(
-	t testing.TB, name, description string, condition func(*v1alpha1.Triage) bool,
-) *v1alpha1.Triage {
+	t testing.TB, name, description string, condition func(*v1alpha1.Page) bool,
+) *v1alpha1.Page {
 	t.Helper()
-	var last v1alpha1.Triage
+	var last v1alpha1.Page
 	key := types.NamespacedName{Namespace: Namespace, Name: name}
 	poll := func(ctx context.Context) (bool, error) {
 		if err := e.Client.Get(ctx, key, &last); err != nil {
@@ -478,59 +432,77 @@ func (e *Env) WaitFor(
 		return condition(&last), nil
 	}
 	if err := wait.PollUntilContextTimeout(t.Context(), pollInterval, waitTimeout, true, poll); err != nil {
-		t.Fatalf("Triage %s: waiting until %s: %v (last status %+v)", name, description, err, last.Status)
+		t.Fatalf("Page %s: waiting until %s: %v (last status %+v)", name, description, err, last.Status)
 	}
 	return &last
 }
 
-// WaitForPhase polls until the Triage is in the phase.
-func (e *Env) WaitForPhase(t testing.TB, name string, phase v1alpha1.Phase) *v1alpha1.Triage {
+// WaitForPhase polls until the Page is in the phase.
+func (e *Env) WaitForPhase(t testing.TB, name string, phase v1alpha1.Phase) *v1alpha1.Page {
 	t.Helper()
-	inPhase := func(tr *v1alpha1.Triage) bool { return tr.Status.Phase == phase }
+	inPhase := func(tr *v1alpha1.Page) bool { return tr.Status.Phase == phase }
 	return e.WaitFor(t, name, "phase is "+string(phase), inPhase)
 }
 
-// WaitForApproved polls until the Triage holds an Approval: it is Approved,
+// WaitForApproved polls until the Page holds an Approval: it is Approved,
 // or Executing once pagerless-server has handed an Approved Proposal that is
 // delivered by pull request to the Executor, which happens within moments.
-func (e *Env) WaitForApproved(t testing.TB, name string) *v1alpha1.Triage {
+func (e *Env) WaitForApproved(t testing.TB, name string) *v1alpha1.Page {
 	t.Helper()
-	approved := func(tr *v1alpha1.Triage) bool {
-		return tr.Status.Phase == v1alpha1.PhaseApproved || tr.Status.Phase == v1alpha1.PhaseExecuting
+	approved := func(tr *v1alpha1.Page) bool {
+		return tr.Status.Phase == v1alpha1.PhaseApproved || tr.Status.Phase == v1alpha1.PhasePullRequestOpen
 	}
 	return e.WaitFor(t, name, "phase is Approved or Executing", approved)
 }
 
-// Get returns the Triage as the API server holds it.
-func (e *Env) Get(t testing.TB, name string) *v1alpha1.Triage {
+// RequirePhaseStays asserts that a Page stays in the phase for long enough that
+// a controller pass would have moved it had it been going to.
+func (e *Env) RequirePhaseStays(t testing.TB, name string, phase v1alpha1.Phase) {
 	t.Helper()
-	var tr v1alpha1.Triage
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := e.Get(t, name).Status.Phase; got != phase {
+			t.Fatalf("phase = %s, want it to stay %s", got, phase)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// Get returns the Page as the API server holds it.
+func (e *Env) Get(t testing.TB, name string) *v1alpha1.Page {
+	t.Helper()
+	var tr v1alpha1.Page
 	if err := e.Client.Get(t.Context(), types.NamespacedName{Namespace: Namespace, Name: name}, &tr); err != nil {
-		t.Fatalf("get Triage %s: %v", name, err)
+		t.Fatalf("get Page %s: %v", name, err)
 	}
 	return &tr
 }
 
-// NewTriage returns a Triage for a Workload, ready to create.
-func NewTriage(workloadName string) *v1alpha1.Triage {
-	return &v1alpha1.Triage{
-		GenerateName: "triage-", Namespace: Namespace,
-		Spec: v1alpha1.TriageSpec{
-			Workload: v1alpha1.WorkloadReference{
-				Kind:      v1alpha1.WorkloadKindDeployment,
-				Namespace: SandboxNamespace,
-				Name:      workloadName,
-			},
-			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI},
+// NewPage returns a Page for the Deployment that targetName names. The
+// Fingerprint is the same for every Page a test creates for the same Target, so
+// a second Page for one Target is a duplicate the controller supersedes.
+func NewPage(targetName string) *v1alpha1.Page {
+	target := v1alpha1.TargetReference{
+		APIVersion: "apps/v1",
+		Kind:       v1alpha1.TargetKindDeployment,
+		Namespace:  SandboxNamespace,
+		Name:       targetName,
+	}
+	return &v1alpha1.Page{
+		GenerateName: "page-", Namespace: Namespace,
+		Spec: v1alpha1.PageSpec{
+			Target:      target,
+			Fingerprint: v1alpha1.Fingerprint(target, "TestFailure"),
+			Trigger:     v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI},
 		},
 	}
 }
 
-// CreateTriage creates a Triage as the admin user and returns it.
-func (e *Env) CreateTriage(t testing.TB, tr *v1alpha1.Triage) *v1alpha1.Triage {
+// CreatePage creates a Page as the admin user and returns it.
+func (e *Env) CreatePage(t testing.TB, tr *v1alpha1.Page) *v1alpha1.Page {
 	t.Helper()
 	if err := e.Client.Create(t.Context(), tr); err != nil {
-		t.Fatalf("create Triage: %v", err)
+		t.Fatalf("create Page: %v", err)
 	}
 	return tr
 }

@@ -23,23 +23,21 @@ trap 'rm -rf "$state"' EXIT
 
 helm lint "$REPO_ROOT/charts/pagerless"
 
-# The chart in its default live-only mode, in GitOps mode with the placeholder
-# Secrets that a standalone trial uses, and through the installer's own dry run,
-# which is the path hack/install.sh actually takes.
+# The chart in both watch modes, with an externally managed credentials Secret,
+# and through the installer's own dry run, which is the path hack/install.sh
+# actually takes.
 helm template pagerless "$REPO_ROOT/charts/pagerless" \
-	--namespace pagerless >"$state/chart-live.yaml"
+	--namespace pagerless --include-crds >"$state/chart-cluster-wide.yaml"
 
 helm template pagerless "$REPO_ROOT/charts/pagerless" \
-	--namespace pagerless \
-	--set secrets.createPlaceholders=true \
-	--set "workloadNamespaces={payments,checkout}" \
-	--set-string "sandbox.url=https://github.com/example/workloads" \
-	--set-string "argocd.application=workloads" >"$state/chart-gitops.yaml"
+	--namespace pagerless --include-crds \
+	--set rbac.watchAllNamespaces=false \
+	--set "rbac.watchNamespaces={payments,checkout}" \
+	--set credentials.existingSecret=team-credentials >"$state/chart-allowlist.yaml"
 
-bash "$REPO_ROOT/hack/install.sh" --dry-run --context validate-ctx \
-	--namespaces payments,checkout --provider anthropic >"$state/install-dry-run.yaml"
+bash "$REPO_ROOT/hack/install.sh" --dry-run --namespaces payments,checkout >"$state/install-dry-run.yaml"
 
 kubeconform -strict -ignore-missing-schemas -summary \
-	"$state/chart-live.yaml" \
-	"$state/chart-gitops.yaml" \
+	"$state/chart-cluster-wide.yaml" \
+	"$state/chart-allowlist.yaml" \
 	"$state/install-dry-run.yaml"

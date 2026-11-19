@@ -1,7 +1,9 @@
 # ADR-0014: The Executor verifies the Approval independently
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md), in which the pull request engine re-reads the recorded decision before any write.
 - **Date:** 2026-11-16
+
+> Superseded in v2.0: there is no executor. The pull request engine is the only writer and re-checks the Page's recorded decision, its hash, and its base commit before it pushes. See ADR-0030.
 
 ## Context
 

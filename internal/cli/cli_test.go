@@ -29,7 +29,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-// Names of the Workloads and namespaces that these tests use.
+// Names of the Targets and namespaces that these tests use.
 const (
 	sandbox  = "sandbox"
 	checkout = "checkout"
@@ -37,7 +37,7 @@ const (
 	ledger   = "ledger"
 	vault    = "vault"
 
-	// labelKey labels the pods of the Workloads that these tests create.
+	// labelKey labels the pods of the Targets that these tests create.
 	labelKey      = "app"
 	containerName = "app"
 )
@@ -48,7 +48,7 @@ var (
 		Source:  `loki: {namespace="sandbox",app="checkout"}`,
 		Summary: "the container was killed with exit code 137 shortly after start",
 	}
-	createdPattern = regexp.MustCompile(`triage\.pagerless\.dev/(\S+) created`)
+	createdPattern = regexp.MustCompile(`page\.pagerless\.dev/(\S+) created`)
 )
 
 func TestStartTargetsTheDeploymentThatOwnsAPod(t *testing.T) {
@@ -60,14 +60,21 @@ func TestStartTargetsTheDeploymentThatOwnsAPod(t *testing.T) {
 	out, err := execute(t.Context(), kubeconfig,
 		"-n", sandbox, "pod/checkout-7d9f-x2x4q", "--hint", "started after the last release")
 	if err != nil {
-		t.Fatalf("start a Triage for a pod: %v", err)
+		t.Fatalf("start a Page for a pod: %v", err)
 	}
 
-	tr := onlyTriage(t, env)
+	tr := onlyPage(t, env)
 	env.WaitForPhase(t, tr.Name, v1alpha1.PhaseInvestigating)
-	want := v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindDeployment, Namespace: sandbox, Name: checkout}
-	if tr.Spec.Workload != want {
-		t.Errorf("workload = %+v, want %+v", tr.Spec.Workload, want)
+	want := v1alpha1.TargetReference{
+		APIVersion: "apps/v1", Kind: v1alpha1.TargetKindDeployment, Namespace: sandbox, Name: checkout,
+	}
+	if tr.Spec.Target.Kind != want.Kind || tr.Spec.Target.Namespace != want.Namespace ||
+		tr.Spec.Target.Name != want.Name || tr.Spec.Target.APIVersion != want.APIVersion ||
+		tr.Spec.Target.UID == "" {
+		t.Errorf("target = %+v, want %+v with a UID", tr.Spec.Target, want)
+	}
+	if tr.Spec.Fingerprint != v1alpha1.Fingerprint(tr.Spec.Target, "ManualRequest") {
+		t.Errorf("fingerprint = %q, want the canonical identity of the Target", tr.Spec.Fingerprint)
 	}
 	if want := (v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI, Pod: "checkout-7d9f-x2x4q"}); tr.Spec.Trigger != want {
 		t.Errorf("trigger = %+v, want %+v", tr.Spec.Trigger, want)
@@ -75,12 +82,12 @@ func TestStartTargetsTheDeploymentThatOwnsAPod(t *testing.T) {
 	if tr.Spec.Hint != "started after the last release" {
 		t.Errorf("hint = %q", tr.Spec.Hint)
 	}
-	if want := "triage.pagerless.dev/" + tr.Name + " created\n"; out != want {
+	if want := "page.pagerless.dev/" + tr.Name + " created\n"; out != want {
 		t.Errorf("output = %q, want %q", out, want)
 	}
 }
 
-func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
+func TestStartResolvesEachTargetToItsTarget(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	createStatefulSet(t, env, ledger)
@@ -90,23 +97,23 @@ func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
 	cases := []struct {
 		name    string
 		args    []string
-		want    v1alpha1.WorkloadReference
+		want    v1alpha1.TargetReference
 		wantPod string
 	}{
 		{
 			name: "deploy names the Deployment directly",
 			args: []string{"deploy/" + checkout},
-			want: v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindDeployment, Namespace: sandbox, Name: checkout},
+			want: v1alpha1.TargetReference{Kind: v1alpha1.TargetKindDeployment, Namespace: sandbox, Name: checkout},
 		},
 		{
 			name: "sts names the StatefulSet directly",
 			args: []string{"sts/" + ledger},
-			want: v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: sandbox, Name: ledger},
+			want: v1alpha1.TargetReference{Kind: v1alpha1.TargetKindStatefulSet, Namespace: sandbox, Name: ledger},
 		},
 		{
 			name:    "pod of a StatefulSet resolves to it",
 			args:    []string{"pod/" + vault + "-0"},
-			want:    v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: sandbox, Name: vault},
+			want:    v1alpha1.TargetReference{Kind: v1alpha1.TargetKindStatefulSet, Namespace: sandbox, Name: vault},
 			wantPod: vault + "-0",
 		},
 	}
@@ -116,7 +123,7 @@ func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
 			if _, err := execute(t.Context(), kubeconfig, args...); err != nil {
 				t.Fatalf("start: %v", err)
 			}
-			tr := triageFor(t, env, tc.want)
+			tr := pageFor(t, env, tc.want)
 			env.WaitForPhase(t, tr.Name, v1alpha1.PhaseInvestigating)
 			if tr.Spec.Trigger.Pod != tc.wantPod {
 				t.Errorf("trigger pod = %q, want %q", tr.Spec.Trigger.Pod, tc.wantPod)
@@ -125,7 +132,7 @@ func TestStartResolvesEachTargetToItsWorkload(t *testing.T) {
 	}
 }
 
-func TestStartRefusesATargetWithoutAWorkload(t *testing.T) {
+func TestStartRefusesATargetWithoutATarget(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createPod(t, env, "orphan", nil)
 
@@ -145,12 +152,12 @@ func TestStartRefusesATargetWithoutAWorkload(t *testing.T) {
 			}
 		})
 	}
-	if n := len(triagesIn(t, env)); n != 0 {
-		t.Errorf("%d Triages were created for targets without a Workload, want none", n)
+	if n := len(pagesIn(t, env)); n != 0 {
+		t.Errorf("%d Pages were created for targets without a Target, want none", n)
 	}
 }
 
-func TestStartPrintsTheNameOfTheActiveTriage(t *testing.T) {
+func TestStartPrintsTheNameOfTheActivePage(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 
@@ -165,27 +172,27 @@ func TestStartPrintsTheNameOfTheActiveTriage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second start: %v", err)
 	}
-	if want := "triage.pagerless.dev/" + name + " already active\n"; second != want {
+	if want := "page.pagerless.dev/" + name + " already active\n"; second != want {
 		t.Errorf("second start printed %q, want %q", second, want)
 	}
-	if n := len(triagesIn(t, env)); n != 1 {
-		t.Errorf("%d Triages exist after two starts for one Workload, want 1", n)
+	if n := len(pagesIn(t, env)); n != 1 {
+		t.Errorf("%d Pages exist after two starts for one Target, want 1", n)
 	}
 }
 
-func TestListShowsEachTriageInEveryFormat(t *testing.T) {
+func TestListShowsEachPageInEveryFormat(t *testing.T) {
 	env, kubeconfig := startCluster(t)
 	createDeployment(t, env, checkout)
 	createDeployment(t, env, cart)
-	names := map[string]v1alpha1.WorkloadReference{}
-	for _, workload := range []string{checkout, cart} {
-		out, err := execute(t.Context(), kubeconfig, "-n", sandbox, "deploy/"+workload)
+	names := map[string]v1alpha1.TargetReference{}
+	for _, target := range []string{checkout, cart} {
+		out, err := execute(t.Context(), kubeconfig, "-n", sandbox, "deploy/"+target)
 		if err != nil {
-			t.Fatalf("start %s: %v", workload, err)
+			t.Fatalf("start %s: %v", target, err)
 		}
 		name := createdName(t, out)
 		env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
-		names[name] = v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindDeployment, Namespace: sandbox, Name: workload}
+		names[name] = v1alpha1.TargetReference{Kind: v1alpha1.TargetKindDeployment, Namespace: sandbox, Name: target}
 	}
 
 	table, err := execute(t.Context(), kubeconfig, "list")
@@ -193,12 +200,12 @@ func TestListShowsEachTriageInEveryFormat(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	header := strings.Join(strings.Fields(strings.SplitN(table, "\n", 2)[0]), " ")
-	if want := "NAME PHASE WORKLOAD TRIGGER AGE"; header != want {
+	if want := "NAME TARGET PHASE TRIGGER PR AGE"; header != want {
 		t.Errorf("table header = %q, want %q", header, want)
 	}
-	for name, workload := range names {
+	for name, target := range names {
 		row := lineContaining(table, name)
-		for _, want := range []string{"Investigating", "Deployment/sandbox/" + workload.Name, "CLI"} {
+		for _, want := range []string{target.Name, "Investigating", "CLI", "-"} {
 			if !strings.Contains(row, want) {
 				t.Errorf("row %q lacks %q", row, want)
 			}
@@ -209,7 +216,7 @@ func TestListShowsEachTriageInEveryFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list -o json: %v", err)
 	}
-	var fromJSON v1alpha1.TriageList
+	var fromJSON v1alpha1.PageList
 	if err := json.Unmarshal([]byte(jsonOut), &fromJSON); err != nil {
 		t.Fatalf("decode list -o json: %v", err)
 	}
@@ -219,7 +226,7 @@ func TestListShowsEachTriageInEveryFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list -o yaml: %v", err)
 	}
-	var fromYAML v1alpha1.TriageList
+	var fromYAML v1alpha1.PageList
 	if err := yaml.Unmarshal([]byte(yamlOut), &fromYAML); err != nil {
 		t.Fatalf("decode list -o yaml: %v", err)
 	}
@@ -248,7 +255,7 @@ func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 	for _, want := range []string{
 		"Name:       " + name,
 		"Phase:      Proposed",
-		"Workload:   Deployment/sandbox/checkout",
+		"Target:     Deployment/sandbox/checkout",
 		report.Diagnosis,
 		logFinding.Source,
 		logFinding.Summary,
@@ -263,20 +270,20 @@ func TestShowPresentsTheReportedDiagnosisAndProposal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("show -o json: %v", err)
 	}
-	var fromJSON v1alpha1.Triage
+	var fromJSON v1alpha1.Page
 	if err := json.Unmarshal([]byte(shownJSON), &fromJSON); err != nil {
 		t.Fatalf("decode show -o json: %v", err)
 	}
 	if fromJSON.Name != name || fromJSON.Status.Phase != v1alpha1.PhaseProposed ||
 		fromJSON.Status.Proposal == nil || fromJSON.Status.Proposal.Action != v1alpha1.ActionNoAction {
-		t.Errorf("show -o json = %+v, want the Proposed Triage %s", fromJSON.Status, name)
+		t.Errorf("show -o json = %+v, want the Proposed Page %s", fromJSON.Status, name)
 	}
 
 	shownYAML, err := execute(t.Context(), kubeconfig, "show", name, "-o", "yaml")
 	if err != nil {
 		t.Fatalf("show -o yaml: %v", err)
 	}
-	var fromYAML v1alpha1.Triage
+	var fromYAML v1alpha1.Page
 	if err := yaml.Unmarshal([]byte(shownYAML), &fromYAML); err != nil {
 		t.Fatalf("decode show -o yaml: %v", err)
 	}
@@ -321,7 +328,7 @@ func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
 	select {
 	case result = <-done:
 	case <-time.After(time.Minute):
-		t.Fatal("show --watch did not return after the Triage was Proposed")
+		t.Fatal("show --watch did not return after the Page was Proposed")
 	}
 	if result.err != nil {
 		t.Fatalf("show --watch: %v", result.err)
@@ -342,10 +349,10 @@ func TestShowWatchFollowsTheStepsUntilTheProposal(t *testing.T) {
 	}
 }
 
-func TestShowRefusesAnUnknownTriage(t *testing.T) {
+func TestShowRefusesAnUnknownPage(t *testing.T) {
 	_, kubeconfig := startCluster(t)
 	_, err := execute(t.Context(), kubeconfig, "show", "missing")
-	if err == nil || !strings.Contains(err.Error(), `no Triage named "missing" in namespace "pagerless"`) {
+	if err == nil || !strings.Contains(err.Error(), `no Page named "missing" in namespace "pagerless"`) {
 		t.Fatalf("show missing: error = %v", err)
 	}
 }
@@ -364,7 +371,7 @@ func TestShowDisplaysTheNarrative(t *testing.T) {
 	env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
 
 	narrative := "The checkout Deployment recovered after the approved memory change."
-	writeServerStatus(t, env, name, func(tr *v1alpha1.Triage) {
+	writeServerStatus(t, env, name, func(tr *v1alpha1.Page) {
 		tr.Status.Phase = v1alpha1.PhaseRecovered
 		tr.Status.Diagnosis = "The container exceeded its 128Mi memory limit."
 		tr.Status.Narrative = narrative
@@ -382,7 +389,7 @@ func TestShowDisplaysTheNarrative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("show -o json: %v", err)
 	}
-	var fromJSON v1alpha1.Triage
+	var fromJSON v1alpha1.Page
 	if err := json.Unmarshal([]byte(shownJSON), &fromJSON); err != nil {
 		t.Fatalf("decode show -o json: %v", err)
 	}
@@ -394,7 +401,7 @@ func TestShowDisplaysTheNarrative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("show -o yaml: %v", err)
 	}
-	var fromYAML v1alpha1.Triage
+	var fromYAML v1alpha1.Page
 	if err := yaml.Unmarshal([]byte(shownYAML), &fromYAML); err != nil {
 		t.Fatalf("decode show -o yaml: %v", err)
 	}
@@ -412,7 +419,7 @@ func TestCommandLineRefusesInvalidArguments(t *testing.T) {
 	}{
 		{"unknown output format", []string{"list", "-o", "xml"}, "unsupported output format"},
 		{"watch with machine output", []string{"show", "checkout", "--watch", "-o", "json"}, "--watch"},
-		{"resource without a Workload kind", []string{"pods/checkout"}, "invalid target"},
+		{"resource without a Target kind", []string{"pods/checkout"}, "invalid target"},
 		{"target without a name", []string{"pod/"}, "invalid target"},
 	}
 	for _, tc := range cases {
@@ -426,7 +433,7 @@ func TestCommandLineRefusesInvalidArguments(t *testing.T) {
 	}
 }
 
-// execute runs kubectl-triage with the arguments against the cluster that the
+// execute runs kubectl-page with the arguments against the cluster that the
 // kubeconfig names, and returns what it printed to standard output.
 func execute(ctx context.Context, kubeconfig string, args ...string) (string, error) {
 	root := cli.NewRootCommand()
@@ -438,7 +445,7 @@ func execute(ctx context.Context, kubeconfig string, args ...string) (string, er
 	return stdout.String(), err
 }
 
-// startCluster starts the harness and creates the sandbox namespace, in which the Workloads of these tests run.
+// startCluster starts the harness and creates the sandbox namespace, in which the Targets of these tests run.
 // The tests that call it run one after another. Each start runs a control plane, and when several packages start
 // control planes at once, the API servers time out while they start.
 func startCluster(t testing.TB) (*testenv.Env, string) {
@@ -447,10 +454,10 @@ func startCluster(t testing.TB) (*testenv.Env, string) {
 	return env, kubeconfigFor(t, env.Config)
 }
 
-// writeServerStatus changes a Triage's status with the server's identity, the
+// writeServerStatus changes a Page's status with the server's identity, the
 // only one that the status guard admits. It arranges a state that the server
 // would have written.
-func writeServerStatus(t testing.TB, env *testenv.Env, name string, mutate func(*v1alpha1.Triage)) {
+func writeServerStatus(t testing.TB, env *testenv.Env, name string, mutate func(*v1alpha1.Page)) {
 	t.Helper()
 	scheme, err := server.Scheme()
 	if err != nil {
@@ -461,7 +468,7 @@ func writeServerStatus(t testing.TB, env *testenv.Env, name string, mutate func(
 		t.Fatalf("create a client with the server's identity: %v", err)
 	}
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var tr v1alpha1.Triage
+		var tr v1alpha1.Page
 		if err := c.Get(t.Context(), client.ObjectKey{Namespace: testenv.Namespace, Name: name}, &tr); err != nil {
 			return err
 		}
@@ -469,7 +476,7 @@ func writeServerStatus(t testing.TB, env *testenv.Env, name string, mutate func(
 		return c.Status().Update(t.Context(), &tr)
 	})
 	if err != nil {
-		t.Fatalf("write the status of Triage %s: %v", name, err)
+		t.Fatalf("write the status of Page %s: %v", name, err)
 	}
 }
 
@@ -572,44 +579,50 @@ func ownedBy(owner metav1.Object, kind string) []metav1.OwnerReference {
 	return []metav1.OwnerReference{*metav1.NewControllerRef(owner, gvk)}
 }
 
-// triagesIn returns every Triage in the pagerless namespace.
-func triagesIn(t testing.TB, env *testenv.Env) []v1alpha1.Triage {
+// pagesIn returns every Page in the pagerless namespace.
+func pagesIn(t testing.TB, env *testenv.Env) []v1alpha1.Page {
 	t.Helper()
-	var list v1alpha1.TriageList
+	var list v1alpha1.PageList
 	if err := env.Client.List(t.Context(), &list, client.InNamespace(testenv.Namespace)); err != nil {
-		t.Fatalf("list Triages: %v", err)
+		t.Fatalf("list Pages: %v", err)
 	}
 	return list.Items
 }
 
-// onlyTriage returns the single Triage in the pagerless namespace.
-func onlyTriage(t testing.TB, env *testenv.Env) v1alpha1.Triage {
+// onlyPage returns the single Page in the pagerless namespace.
+func onlyPage(t testing.TB, env *testenv.Env) v1alpha1.Page {
 	t.Helper()
-	triages := triagesIn(t, env)
-	if len(triages) != 1 {
-		t.Fatalf("%d Triages exist, want 1", len(triages))
+	pages := pagesIn(t, env)
+	if len(pages) != 1 {
+		t.Fatalf("%d Pages exist, want 1", len(pages))
 	}
-	return triages[0]
+	return pages[0]
 }
 
-// triageFor returns a Triage for the Workload, and fails the test when there is none.
-func triageFor(t testing.TB, env *testenv.Env, workload v1alpha1.WorkloadReference) v1alpha1.Triage {
+// pageFor returns a Page for the Target, and fails the test when there is none.
+func pageFor(t testing.TB, env *testenv.Env, target v1alpha1.TargetReference) v1alpha1.Page {
 	t.Helper()
-	for _, tr := range triagesIn(t, env) {
-		if tr.Spec.Workload == workload {
+	for _, tr := range pagesIn(t, env) {
+		if sameTarget(tr.Spec.Target, target) {
 			return tr
 		}
 	}
-	t.Fatalf("no Triage exists for %+v", workload)
-	return v1alpha1.Triage{}
+	t.Fatalf("no Page exists for %+v", target)
+	return v1alpha1.Page{}
 }
 
-// createdName returns the name of the Triage that a start command reports as created.
+// sameTarget reports whether two Target references name the same object, ignoring
+// the API version and UID that the CLI records and a test fixture may omit.
+func sameTarget(a, b v1alpha1.TargetReference) bool {
+	return a.Kind == b.Kind && a.Namespace == b.Namespace && a.Name == b.Name
+}
+
+// createdName returns the name of the Page that a start command reports as created.
 func createdName(t testing.TB, output string) string {
 	t.Helper()
 	match := createdPattern.FindStringSubmatch(output)
 	if match == nil {
-		t.Fatalf("start printed %q, want the name of the created Triage", output)
+		t.Fatalf("start printed %q, want the name of the created Page", output)
 	}
 	return match[1]
 }
@@ -624,21 +637,21 @@ func lineContaining(output, text string) string {
 	return ""
 }
 
-// checkListed verifies that the listed Triages are exactly the named ones, each with its Workload.
-func checkListed(t testing.TB, items []v1alpha1.Triage, want map[string]v1alpha1.WorkloadReference) {
+// checkListed verifies that the listed Pages are exactly the named ones, each with its Target.
+func checkListed(t testing.TB, items []v1alpha1.Page, want map[string]v1alpha1.TargetReference) {
 	t.Helper()
 	if len(items) != len(want) {
-		t.Fatalf("listed %d Triages, want %d", len(items), len(want))
+		t.Fatalf("listed %d Pages, want %d", len(items), len(want))
 	}
 	for _, tr := range items {
-		workload, ok := want[tr.Name]
+		target, ok := want[tr.Name]
 		if !ok {
-			t.Errorf("listed unexpected Triage %s", tr.Name)
+			t.Errorf("listed unexpected Page %s", tr.Name)
 			continue
 		}
-		if tr.Spec.Workload != workload || tr.Status.Phase != v1alpha1.PhaseInvestigating {
+		if !sameTarget(tr.Spec.Target, target) || tr.Status.Phase != v1alpha1.PhaseInvestigating {
 			t.Errorf("listed %s as %+v in phase %s, want %+v in Investigating",
-				tr.Name, tr.Spec.Workload, tr.Status.Phase, workload)
+				tr.Name, tr.Spec.Target, tr.Status.Phase, target)
 		}
 	}
 }

@@ -16,15 +16,15 @@ const (
 	logsKey    = "logs"
 )
 
-func TestGrafanaLinksEmbedAndDeepLinkTheWorkload(t *testing.T) {
+func TestGrafanaLinksEmbedAndDeepLinkTheTarget(t *testing.T) {
 	t.Parallel()
 	started := time.Date(2026, time.November, 16, 12, 0, 0, 0, time.UTC)
 	terminal := started.Add(5 * time.Minute)
 	now := started.Add(time.Hour)
-	spec := &v1alpha1.TriageSpec{Workload: v1alpha1.WorkloadReference{
-		Kind: v1alpha1.WorkloadKindDeployment, Namespace: "sandbox", Name: "checkout",
+	spec := &v1alpha1.PageSpec{Target: v1alpha1.TargetReference{
+		Kind: v1alpha1.TargetKindDeployment, Namespace: "sandbox", Name: "checkout",
 	}}
-	status := &v1alpha1.TriageStatus{
+	status := &v1alpha1.PageStatus{
 		StartedAt:  &metav1.Time{Time: started},
 		TerminalAt: &metav1.Time{Time: terminal},
 	}
@@ -64,7 +64,7 @@ func TestGrafanaLinksEmbedAndDeepLinkTheWorkload(t *testing.T) {
 		query := embed.Query()
 		for key, want := range map[string]string{
 			"var-namespace": "sandbox",
-			"var-workload":  "checkout",
+			"var-target":    "checkout",
 			"from":          strconv.FormatInt(started.Add(-windowLead).UnixMilli(), 10),
 			"to":            strconv.FormatInt(terminal.Add(windowTail).UnixMilli(), 10),
 		} {
@@ -84,7 +84,7 @@ func TestGrafanaLinksEmbedAndDeepLinkTheWorkload(t *testing.T) {
 func TestGrafanaLinksAreAbsentWithoutABaseURL(t *testing.T) {
 	t.Parallel()
 	links := GrafanaConfig{MetricsDashboardUID: "a", LogsDashboardUID: "b"}.
-		links(&v1alpha1.TriageSpec{}, &v1alpha1.TriageStatus{}, time.Now(), time.Now())
+		links(&v1alpha1.PageSpec{}, &v1alpha1.PageStatus{}, time.Now(), time.Now())
 	if links != nil {
 		t.Errorf("links = %+v, want none when Grafana is not configured", links)
 	}

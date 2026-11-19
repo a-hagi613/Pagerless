@@ -11,7 +11,7 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// newShowCommand returns the command that shows one Triage.
+// newShowCommand returns the command that shows one Page.
 func newShowCommand(conn *connection) *cobra.Command {
 	var (
 		output     string
@@ -19,7 +19,7 @@ func newShowCommand(conn *connection) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "show <name>",
-		Short: "Show a Triage's Diagnosis, Findings, Proposal, execution, Verification checks, and Narrative",
+		Short: "Show a Page's Diagnosis, Findings, Proposal, pull request, Verification checks, and Narrative",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			format, err := parseFormat(output)
@@ -27,7 +27,7 @@ func newShowCommand(conn *connection) *cobra.Command {
 				return err
 			}
 			if watchSteps && format != formatDefault {
-				return errors.New("--watch prints the presentation of the Triage and cannot be combined with --output")
+				return errors.New("--watch prints the presentation of the Page and cannot be combined with --output")
 			}
 			cl, err := conn.connect()
 			if err != nil {
@@ -35,7 +35,7 @@ func newShowCommand(conn *connection) *cobra.Command {
 			}
 			ctx := cmd.Context()
 			name := args[0]
-			key := client.ObjectKey{Namespace: TriageNamespace, Name: name}
+			key := client.ObjectKey{Namespace: PageNamespace, Name: name}
 			out := cmd.OutOrStdout()
 
 			if watchSteps {
@@ -51,11 +51,11 @@ func newShowCommand(conn *connection) *cobra.Command {
 				return describe(out, tr)
 			}
 
-			var tr v1alpha1.Triage
+			var tr v1alpha1.Page
 			if err := cl.client.Get(ctx, key, &tr); err != nil {
-				return triageError(err, name)
+				return pageError(err, name)
 			}
-			tr.TypeMeta = metaFor("Triage")
+			tr.TypeMeta = metaFor("Page")
 			switch format {
 			case formatJSON:
 				return writeJSON(out, &tr)
@@ -68,14 +68,14 @@ func newShowCommand(conn *connection) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&output, "output", "o", "", "output format: json or yaml")
 	cmd.Flags().BoolVar(&watchSteps, "watch", false,
-		"print the agent's steps as they happen, then the presentation, once the Triage is Proposed or ends")
+		"print the agent's steps as they happen, then the presentation, once the Page is Proposed or ends")
 	return cmd
 }
 
-// triageError describes a failure to read a Triage, naming the Triage when it does not exist.
-func triageError(err error, name string) error {
+// pageError describes a failure to read a Page, naming the Page when it does not exist.
+func pageError(err error, name string) error {
 	if apierrors.IsNotFound(err) {
-		return fmt.Errorf("no Triage named %q in namespace %q", name, TriageNamespace)
+		return fmt.Errorf("no Page named %q in namespace %q", name, PageNamespace)
 	}
-	return fmt.Errorf("get Triage %q: %w", name, err)
+	return fmt.Errorf("get Page %q: %w", name, err)
 }

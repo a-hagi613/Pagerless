@@ -19,7 +19,7 @@ import (
 
 // The API's filter names and source values, so the tests spell each once.
 const (
-	workloadFilter     = workloadField
+	targetFilter       = targetField
 	triggerFilter      = "trigger"
 	phaseFilter        = "phase"
 	investigatingValue = "Investigating"
@@ -51,10 +51,10 @@ func dashboardGet(t *testing.T, env *testenv.Env, target string) (*http.Response
 	return response, body
 }
 
-// dashboardList reads the Triage list with the filters.
+// dashboardList reads the Page list with the filters.
 func dashboardList(t *testing.T, env *testenv.Env, filters url.Values) dashboardapi.ListResponse {
 	t.Helper()
-	target := "/api/triages"
+	target := "/api/pages"
 	if encoded := filters.Encode(); encoded != "" {
 		target += "?" + encoded
 	}
@@ -69,10 +69,10 @@ func dashboardList(t *testing.T, env *testenv.Env, filters url.Values) dashboard
 	return list
 }
 
-// dashboardDetail reads one Triage's record.
+// dashboardDetail reads one Page's record.
 func dashboardDetail(t *testing.T, env *testenv.Env, name string) dashboardapi.DetailResponse {
 	t.Helper()
-	response, body := dashboardGet(t, env, "/api/triages/"+url.PathEscape(name))
+	response, body := dashboardGet(t, env, "/api/pages/"+url.PathEscape(name))
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("GET the record of %s = %d: %s", name, response.StatusCode, body)
 	}
@@ -85,46 +85,46 @@ func dashboardDetail(t *testing.T, env *testenv.Env, name string) dashboardapi.D
 
 // names returns the names of the list rows, in order.
 func names(list dashboardapi.ListResponse) []string {
-	result := make([]string, 0, len(list.Triages))
-	for _, triage := range list.Triages {
-		result = append(result, triage.Name)
+	result := make([]string, 0, len(list.Pages))
+	for _, page := range list.Pages {
+		result = append(result, page.Name)
 	}
 	return result
 }
 
-// createInvestigating creates a Triage with the Trigger, waits for the server to start it, and returns it.
+// createInvestigating creates a Page with the Trigger, waits for the server to start it, and returns it.
 func createInvestigating(
-	t *testing.T, env *testenv.Env, workload string, trigger v1alpha1.TriggerSource,
-) *v1alpha1.Triage {
+	t *testing.T, env *testenv.Env, target string, trigger v1alpha1.TriggerSource,
+) *v1alpha1.Page {
 	t.Helper()
-	candidate := testenv.NewTriage(workload)
+	candidate := testenv.NewPage(target)
 	candidate.Spec.Trigger = v1alpha1.Trigger{Source: trigger}
-	created := env.CreateTriage(t, candidate)
+	created := env.CreatePage(t, candidate)
 	env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
 	return created
 }
 
-func TestDashboardListsTriagesMostRecentFirstWithFilters(t *testing.T) {
+func TestDashboardListsPagesMostRecentFirstWithFilters(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
 	first := createInvestigating(t, env, checkout, v1alpha1.TriggerSourceCLI)
-	// A Workload has at most one Active Triage, so the first checkout Triage ends before the third starts. Its
+	// A Target has at most one Active Page, so the first checkout Page ends before the third starts. Its
 	// Failed phase also keeps it in the list, which the history fallback below relies on.
-	env.EndJob(t, env.Get(t, first.Name).Status.JobName, testenv.JobDeadlineExceeded)
+	env.EndJob(t, env.Get(t, first.Name).Status.AgentJobName, testenv.JobDeadlineExceeded)
 	env.WaitForPhase(t, first.Name, v1alpha1.PhaseFailed)
 	env.Clock.Step(time.Minute)
 	second := createInvestigating(t, env, "cart", v1alpha1.TriggerSourceAlertmanager)
 	env.Clock.Step(time.Minute)
 	third := createInvestigating(t, env, checkout, v1alpha1.TriggerSourceCLI)
 
-	eventually(t, "the dashboard lists every Triage", func() bool {
-		return len(dashboardList(t, env, nil).Triages) == 3
+	eventually(t, "the dashboard lists every Page", func() bool {
+		return len(dashboardList(t, env, nil).Pages) == 3
 	})
 	list := dashboardList(t, env, nil)
 	if got, want := names(list), []string{third.Name, second.Name, first.Name}; strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("list order = %v, want the most recent Triage first %v", got, want)
+		t.Errorf("list order = %v, want the most recent Page first %v", got, want)
 	}
-	for _, row := range list.Triages {
+	for _, row := range list.Pages {
 		if row.Source != liveSource || row.CreatedAt.IsZero() {
 			t.Errorf("row %+v, want a live row with a creation time", row)
 		}
@@ -135,11 +135,11 @@ func TestDashboardListsTriagesMostRecentFirstWithFilters(t *testing.T) {
 		filters url.Values
 		want    []string
 	}{
-		{name: "Workload", filters: url.Values{workloadFilter: {checkout}}, want: []string{third.Name, first.Name}},
+		{name: "Target", filters: url.Values{targetFilter: {checkout}}, want: []string{third.Name, first.Name}},
 		{name: "Trigger source", filters: url.Values{triggerFilter: {"Alertmanager"}}, want: []string{second.Name}},
 		{name: "Phase", filters: url.Values{phaseFilter: {investigatingValue}}, want: []string{third.Name, second.Name}},
-		{name: "a Workload and a Trigger", filters: url.Values{
-			workloadFilter: {checkout}, triggerFilter: {"CLI"}, phaseFilter: {investigatingValue},
+		{name: "a Target and a Trigger", filters: url.Values{
+			targetFilter: {checkout}, triggerFilter: {"CLI"}, phaseFilter: {investigatingValue},
 		}, want: []string{third.Name}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -150,21 +150,21 @@ func TestDashboardListsTriagesMostRecentFirstWithFilters(t *testing.T) {
 		})
 	}
 
-	t.Run("the time range excludes an older Triage", func(t *testing.T) {
+	t.Run("the time range excludes an older Page", func(t *testing.T) {
 		future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 		if got := names(dashboardList(t, env, url.Values{"since": {future}})); len(got) != 0 {
-			t.Errorf("list since %s = %v, want no Triages", future, got)
+			t.Errorf("list since %s = %v, want no Pages", future, got)
 		}
 		if got := names(dashboardList(t, env, url.Values{"since": {"24h"}})); len(got) != 3 {
-			t.Errorf("list since 24h = %v, want all three Triages", got)
+			t.Errorf("list since 24h = %v, want all three Pages", got)
 		}
 	})
 
 	t.Run("a bad filter is refused", func(t *testing.T) {
 		for _, target := range []string{
-			"/api/triages?phase=Exploded",
-			"/api/triages?trigger=Telepathy",
-			"/api/triages?since=yesterday",
+			"/api/pages?phase=Exploded",
+			"/api/pages?trigger=Telepathy",
+			"/api/pages?since=yesterday",
 		} {
 			response, body := dashboardGet(t, env, target)
 			if response.StatusCode != http.StatusBadRequest {
@@ -173,15 +173,15 @@ func TestDashboardListsTriagesMostRecentFirstWithFilters(t *testing.T) {
 		}
 	})
 
-	// Retention deletes the resource but not its history, so the row must remain with its Workload and Trigger.
+	// Retention deletes the resource but not its history, so the row must remain with its Target and Trigger.
 	if err := env.Client.Delete(t.Context(), first); err != nil {
-		t.Fatalf("delete Triage %s: %v", first.Name, err)
+		t.Fatalf("delete Page %s: %v", first.Name, err)
 	}
 	env.WaitForGone(t, first.Name)
-	eventually(t, "the deleted Triage is listed from history", func() bool {
-		for _, row := range dashboardList(t, env, nil).Triages {
+	eventually(t, "the deleted Page is listed from history", func() bool {
+		for _, row := range dashboardList(t, env, nil).Pages {
 			if row.Name == first.Name {
-				return row.Source == historySource && row.Workload.Name == checkout &&
+				return row.Source == historySource && row.Target.Name == checkout &&
 					row.Trigger.Source == v1alpha1.TriggerSourceCLI
 			}
 		}
@@ -206,7 +206,7 @@ func TestDashboardDetailFallsBackToHistory(t *testing.T) {
 	env.WaitForPhase(t, created.Name, v1alpha1.PhaseProposed)
 
 	if err := env.Client.Delete(t.Context(), created); err != nil {
-		t.Fatalf("delete Triage: %v", err)
+		t.Fatalf("delete Page: %v", err)
 	}
 	env.WaitForGone(t, created.Name)
 	eventually(t, "the dashboard falls back to history", func() bool {
@@ -217,8 +217,8 @@ func TestDashboardDetailFallsBackToHistory(t *testing.T) {
 	if record.Source != historySource {
 		t.Errorf("source = %q, want history", record.Source)
 	}
-	if record.Workload.Name != checkout || record.Trigger.Source != v1alpha1.TriggerSourceAlertmanager {
-		t.Errorf("record = %+v, want the Workload and Trigger from history", record)
+	if record.Target.Name != checkout || record.Trigger.Source != v1alpha1.TriggerSourceAlertmanager {
+		t.Errorf("record = %+v, want the Target and Trigger from history", record)
 	}
 	if record.Phase != v1alpha1.PhaseProposed {
 		t.Errorf("phase = %s, want Proposed", record.Phase)
@@ -233,19 +233,19 @@ func TestDashboardDetailFallsBackToHistory(t *testing.T) {
 		t.Errorf("findings = %+v, want the recorded Finding", record.Findings)
 	}
 
-	response, _ := dashboardGet(t, env, "/api/triages/absent")
+	response, _ := dashboardGet(t, env, "/api/pages/absent")
 	if response.StatusCode != http.StatusNotFound {
-		t.Errorf("GET an absent Triage = %d, want 404", response.StatusCode)
+		t.Errorf("GET an absent Page = %d, want 404", response.StatusCode)
 	}
 }
 
-func TestDashboardDetailShowsTheWholeTriageRecord(t *testing.T) {
+func TestDashboardDetailShowsTheWholePageRecord(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
 	name := recovered(t, env)
 	narrative := env.StartNarrative(t, name)
 	written := "The checkout Deployment was failing on a low memory limit. The approved change raised it, and " +
-		"Verification found the Workload recovered."
+		"Verification found the Target recovered."
 	if result, err := narrative.API.PostNarrative(t.Context(),
 		agentapi.NarrativeReport{Narrative: written}); err != nil || result.StatusCode != http.StatusAccepted {
 		t.Fatalf("post the Narrative: %+v, %v, want 202", result, err)
@@ -254,15 +254,15 @@ func TestDashboardDetailShowsTheWholeTriageRecord(t *testing.T) {
 		return dashboardDetail(t, env, name).Narrative == written
 	})
 
-	requireTriageRecord(t, dashboardDetail(t, env, name), written)
+	requirePageRecord(t, dashboardDetail(t, env, name), written)
 }
 
-// requireTriageRecord checks every part of a completed Triage's record.
-func requireTriageRecord(t *testing.T, record dashboardapi.DetailResponse, narrative string) {
+// requirePageRecord checks every part of a completed Page's record.
+func requirePageRecord(t *testing.T, record dashboardapi.DetailResponse, narrative string) {
 	t.Helper()
-	requireTriageIdentity(t, record)
+	requirePageIdentity(t, record)
 	requireProposal(t, record.Proposal)
-	requireExecution(t, record)
+	requirePullRequest(t, record)
 	requireVerification(t, record.Verification)
 	if record.Narrative != narrative {
 		t.Errorf("narrative = %q, want %q", record.Narrative, narrative)
@@ -270,14 +270,14 @@ func requireTriageRecord(t *testing.T, record dashboardapi.DetailResponse, narra
 	requireGrafana(t, record.Grafana)
 }
 
-// requireTriageIdentity checks the Workload, Trigger, Phase, Diagnosis and Finding of a completed record.
-func requireTriageIdentity(t *testing.T, record dashboardapi.DetailResponse) {
+// requirePageIdentity checks the Target, Trigger, Phase, Diagnosis and Finding of a completed record.
+func requirePageIdentity(t *testing.T, record dashboardapi.DetailResponse) {
 	t.Helper()
 	if record.Source != liveSource || record.Phase != v1alpha1.PhaseRecovered {
-		t.Errorf("record = %s in %s, want the live Recovered Triage", record.Source, record.Phase)
+		t.Errorf("record = %s in %s, want the live Recovered Page", record.Source, record.Phase)
 	}
-	if record.Workload.Name != checkout || record.Trigger.Source != v1alpha1.TriggerSourceCLI {
-		t.Errorf("workload = %+v trigger = %+v, want the checkout Triage", record.Workload, record.Trigger)
+	if record.Target.Name != checkout || record.Trigger.Source != v1alpha1.TriggerSourceCLI {
+		t.Errorf("target = %+v trigger = %+v, want the checkout Page", record.Target, record.Trigger)
 	}
 	if record.Diagnosis == "" {
 		t.Error("the record has no Diagnosis")
@@ -302,13 +302,13 @@ func requireProposal(t *testing.T, proposal *v1alpha1.Proposal) {
 	}
 }
 
-// requireExecution checks the decision and the Executor's result.
-func requireExecution(t *testing.T, record dashboardapi.DetailResponse) {
+// requirePullRequest checks the decision and the pull request that carries it.
+func requirePullRequest(t *testing.T, record dashboardapi.DetailResponse) {
 	t.Helper()
-	execution := record.Execution
-	if execution == nil || execution.PullRequestURL == "" || execution.MergeCommit == "" ||
-		execution.ExecutedAt == nil {
-		t.Errorf("execution = %+v, want the merged pull request", execution)
+	pullRequest := record.PullRequest
+	if pullRequest == nil || pullRequest.URL == "" || pullRequest.MergeCommit == "" ||
+		pullRequest.State != v1alpha1.PullRequestMerged {
+		t.Errorf("pull request = %+v, want the merged pull request", pullRequest)
 	}
 	if record.Decision == nil || record.Decision.Outcome != v1alpha1.DecisionApproved {
 		t.Errorf("decision = %+v, want the Approval", record.Decision)
@@ -343,8 +343,8 @@ func requireGrafana(t *testing.T, grafana *dashboardapi.GrafanaLinks) {
 			t.Fatalf("%s embed URL does not parse: %v", name, err)
 		}
 		if parsed.Query().Get("var-namespace") != sandboxNamespace ||
-			parsed.Query().Get("var-workload") != checkout {
-			t.Errorf("%s embed URL = %s, want the checkout Workload", name, link)
+			parsed.Query().Get("var-target") != checkout {
+			t.Errorf("%s embed URL = %s, want the checkout Target", name, link)
 		}
 	}
 	for name, link := range map[string]string{
@@ -395,7 +395,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	created := createInvestigating(t, env, checkout, v1alpha1.TriggerSourceCLI)
 	agent := env.StartAgent(t, created.Name)
 	if result, err := agent.API.PostEvent(t.Context(), agentapi.StepEvent{
-		Kind: v1alpha1.StepKindProgress, Summary: "gathered the Workload status",
+		Kind: v1alpha1.StepKindProgress, Summary: "gathered the Target status",
 	}); err != nil || result.StatusCode != http.StatusAccepted {
 		t.Fatalf("post the first step: %+v, %v, want 202", result, err)
 	}
@@ -408,7 +408,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodGet, env.DashboardURL+"/api/triages/"+created.Name+"/events", nil)
+		ctx, http.MethodGet, env.DashboardURL+"/api/pages/"+created.Name+"/events", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	if err := json.Unmarshal(snapshot.data, &record); err != nil {
 		t.Fatalf("decode the snapshot: %v", err)
 	}
-	if len(record.Steps) != 1 || record.Steps[0].Summary != "gathered the Workload status" {
+	if len(record.Steps) != 1 || record.Steps[0].Summary != "gathered the Target status" {
 		t.Errorf("snapshot steps = %+v, want the step recorded before the stream opened", record.Steps)
 	}
 
@@ -465,13 +465,13 @@ func TestDashboardStreamsStepsAndPhaseChanges(t *testing.T) {
 	}
 }
 
-func TestDashboardRefusesAnUnknownTriageStream(t *testing.T) {
+func TestDashboardRefusesAnUnknownPageStream(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	t.Cleanup(cancel)
 	request, err := http.NewRequestWithContext(
-		ctx, http.MethodGet, env.DashboardURL+"/api/triages/absent/events", nil)
+		ctx, http.MethodGet, env.DashboardURL+"/api/pages/absent/events", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

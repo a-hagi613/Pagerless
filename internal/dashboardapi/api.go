@@ -24,7 +24,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/history"
 )
 
-// Phase, Step, and Finding are the API's vocabulary: the dashboard renders exactly what the Triage records.
+// Phase, Step, and Finding are the API's vocabulary: the dashboard renders exactly what the Page records.
 type (
 	Phase   = v1alpha1.Phase
 	Step    = v1alpha1.Step
@@ -36,21 +36,21 @@ const streamHeartbeat = 15 * time.Second
 
 // Config assembles the dashboard API.
 type Config struct {
-	// Namespace is the namespace whose Triages the dashboard shows. It is required.
+	// Namespace is the namespace whose Pages the dashboard shows. It is required.
 	Namespace string
-	// Reader reads Triages through the server's cache, so the dashboard inherits the server's RBAC.
+	// Reader reads Pages through the server's cache, so the dashboard inherits the server's RBAC.
 	Reader client.Reader
-	// Writer creates Triages and TriageApprovals as pagerless-server. It is required for Start Triage and
+	// Writer creates Pages and PageApprovals as pagerless-server. It is required for Start Page and
 	// for dashboard decisions.
 	Writer client.Client
-	// Workloads lists the Workloads that Start Triage may target. It defaults to Reader.
-	Workloads client.Reader
-	// WorkloadNamespaces are the namespaces whose Deployments and StatefulSets Start Triage offers. Empty
+	// Targets lists the Targets that Start Page may target. It defaults to Reader.
+	Targets client.Reader
+	// TargetNamespaces are the namespaces whose Deployments and StatefulSets Start Page offers. Empty
 	// offers none.
-	WorkloadNamespaces []string
+	TargetNamespaces []string
 	// Auth authenticates dashboard requests and serves the sign-in routes. It is required.
 	Auth Auth
-	// History is the append-only record that supplies Triages whose resource is gone, and their steps.
+	// History is the append-only record that supplies Pages whose resource is gone, and their steps.
 	History *history.Store
 	// Broker carries live steps and Phase changes to open streams.
 	Broker *Broker
@@ -87,7 +87,7 @@ type Handler struct {
 	namespace  string
 	reader     client.Reader
 	writer     client.Client
-	workloads  client.Reader
+	targets    client.Reader
 	namespaces []string
 	auth       Auth
 	history    *history.Store
@@ -103,16 +103,16 @@ func New(cfg Config) *Handler {
 		namespace:  cfg.Namespace,
 		reader:     cfg.Reader,
 		writer:     cfg.Writer,
-		workloads:  cfg.Workloads,
-		namespaces: cfg.WorkloadNamespaces,
+		targets:    cfg.Targets,
+		namespaces: cfg.TargetNamespaces,
 		auth:       cfg.Auth,
 		history:    cfg.History,
 		broker:     cfg.Broker,
 		clock:      cfg.Clock,
 		grafana:    cfg.Grafana,
 	}
-	if h.workloads == nil {
-		h.workloads = cfg.Reader
+	if h.targets == nil {
+		h.targets = cfg.Reader
 	}
 	if h.clock == nil {
 		h.clock = clock.RealClock{}
@@ -127,12 +127,12 @@ func New(cfg Config) *Handler {
 	}
 	h.mux.HandleFunc("GET /signed-out", h.signedOut)
 	h.mux.HandleFunc("GET /api/session", h.session)
-	h.mux.HandleFunc("GET /api/triages", h.list)
-	h.mux.HandleFunc("GET /api/triages/{name}", h.detail)
-	h.mux.HandleFunc("GET /api/triages/{name}/events", h.events)
-	h.mux.HandleFunc("POST /api/triages", h.start)
-	h.mux.HandleFunc("POST /api/triages/{name}/decision", h.decide)
-	h.mux.HandleFunc("GET /api/workloads", h.workloadList)
+	h.mux.HandleFunc("GET /api/pages", h.list)
+	h.mux.HandleFunc("GET /api/pages/{name}", h.detail)
+	h.mux.HandleFunc("GET /api/pages/{name}/events", h.events)
+	h.mux.HandleFunc("POST /api/pages", h.start)
+	h.mux.HandleFunc("POST /api/pages/{name}/decision", h.decide)
+	h.mux.HandleFunc("GET /api/targets", h.targetList)
 	h.mux.Handle("/api/", http.NotFoundHandler())
 	h.mux.Handle("/", NewSPA(cfg.Assets))
 	return h
@@ -178,14 +178,14 @@ func (h *Handler) publicPath(r *http.Request) bool {
 	return strings.HasPrefix(r.URL.Path, "/assets/")
 }
 
-// TriageSummary is one row of the Triage list.
-type TriageSummary struct {
+// PageSummary is one row of the Page list.
+type PageSummary struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Phase     Phase  `json:"phase"`
 
-	Workload v1alpha1.WorkloadReference `json:"workload"`
-	Trigger  v1alpha1.Trigger           `json:"trigger"`
+	Target  v1alpha1.TargetReference `json:"target"`
+	Trigger v1alpha1.Trigger         `json:"trigger"`
 
 	CreatedAt  time.Time  `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt,omitempty"`
@@ -193,24 +193,22 @@ type TriageSummary struct {
 
 	// Action is the current Proposal's Action, when there is one.
 	Action v1alpha1.Action `json:"action,omitempty"`
-	// FollowUpTriage names the Follow-up Triage this Triage started.
-	FollowUpTriage string `json:"followUpTriage,omitempty"`
-	// Source reports whether the row came from the live Triage resource or only from history.
+	// Source reports whether the row came from the live Page resource or only from history.
 	Source string `json:"source"`
 }
 
-// ListResponse is the body of GET /api/triages.
+// ListResponse is the body of GET /api/pages.
 type ListResponse struct {
-	Triages []TriageSummary `json:"triages"`
+	Pages []PageSummary `json:"pages"`
 }
 
-// Verification is the Verification part of a Triage's record.
+// Verification is the Verification part of a Page's record.
 type Verification struct {
 	StartedAt *time.Time                   `json:"startedAt,omitempty"`
 	Checks    []v1alpha1.VerificationCheck `json:"checks"`
 }
 
-// DetailResponse is the body of GET /api/triages/{name} and of the stream's snapshot event.
+// DetailResponse is the body of GET /api/pages/{name} and of the stream's snapshot event.
 type DetailResponse struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
@@ -222,42 +220,41 @@ type DetailResponse struct {
 	TerminalAt *time.Time `json:"terminalAt,omitempty"`
 	ObservedAt *time.Time `json:"observedAt,omitempty"`
 
-	Workload      v1alpha1.WorkloadReference `json:"workload"`
-	Trigger       v1alpha1.Trigger           `json:"trigger"`
-	Hint          string                     `json:"hint,omitempty"`
-	FollowsTriage string                     `json:"followsTriage,omitempty"`
-	TriggerCount  int32                      `json:"triggerCount"`
+	Target       v1alpha1.TargetReference `json:"target"`
+	Trigger      v1alpha1.Trigger         `json:"trigger"`
+	Hint         string                   `json:"hint,omitempty"`
+	PreviousPage string                   `json:"previousPage,omitempty"`
+	TriggerCount int32                    `json:"triggerCount"`
 
 	Steps         []Step `json:"steps"`
 	StepCount     int32  `json:"stepCount"`
 	ToolCallCount int32  `json:"toolCallCount"`
 
-	Usage     *v1alpha1.Usage     `json:"usage,omitempty"`
-	Findings  []Finding           `json:"findings"`
-	Diagnosis string              `json:"diagnosis,omitempty"`
-	Proposal  *v1alpha1.Proposal  `json:"proposal,omitempty"`
-	Decision  *v1alpha1.Decision  `json:"decision,omitempty"`
-	Execution *v1alpha1.Execution `json:"execution,omitempty"`
+	Usage       *v1alpha1.Usage       `json:"usage,omitempty"`
+	Findings    []Finding             `json:"findings"`
+	Diagnosis   string                `json:"diagnosis,omitempty"`
+	Proposal    *v1alpha1.Proposal    `json:"proposal,omitempty"`
+	Decision    *v1alpha1.Decision    `json:"decision,omitempty"`
+	PullRequest *v1alpha1.PullRequest `json:"pullRequest,omitempty"`
 
 	Verification *Verification `json:"verification,omitempty"`
 
-	Narrative      string `json:"narrative,omitempty"`
-	FollowUpTriage string `json:"followUpTriage,omitempty"`
+	Narrative string `json:"narrative,omitempty"`
 
 	// Grafana is absent when the server has no Grafana base URL configured.
 	Grafana *GrafanaLinks `json:"grafana,omitempty"`
 }
 
-// errNotFound is returned when neither the live resource nor history knows the Triage.
-var errNotFound = errors.New("the Triage does not exist")
+// errNotFound is returned when neither the live resource nor history knows the Page.
+var errNotFound = errors.New("the Page does not exist")
 
-// list answers with the Triages that match the filters, most recent first. It starts from the latest history
-// snapshot of every Triage and overlays the live resource, so the list survives retention.
+// list answers with the Pages that match the filters, most recent first. It starts from the latest history
+// snapshot of every Page and overlays the live resource, so the list survives retention.
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	phase := Phase(query.Get("phase"))
 	trigger := v1alpha1.TriggerSource(query.Get("trigger"))
-	workload := strings.TrimSpace(query.Get("workload"))
+	target := strings.TrimSpace(query.Get("target"))
 	if phase != "" && !knownPhase(phase) {
 		writeError(w, http.StatusBadRequest, "unknown phase "+string(phase))
 		return
@@ -278,7 +275,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		h.internal(w, ctx, err)
 		return
 	}
-	var live v1alpha1.TriageList
+	var live v1alpha1.PageList
 	if err := h.reader.List(ctx, &live, client.InNamespace(h.namespace)); err != nil {
 		h.internal(w, ctx, err)
 		return
@@ -286,7 +283,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 
 	type entry struct {
 		snapshot *history.Snapshot
-		live     *v1alpha1.Triage
+		live     *v1alpha1.Page
 	}
 	entries := make(map[string]*entry, len(snapshots)+len(live.Items))
 	for i := range snapshots {
@@ -294,7 +291,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		if snapshot.Namespace != h.namespace {
 			continue
 		}
-		entries[snapshot.Triage] = &entry{snapshot: snapshot}
+		entries[snapshot.Page] = &entry{snapshot: snapshot}
 	}
 	for i := range live.Items {
 		tr := &live.Items[i]
@@ -306,7 +303,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		e.live = tr
 	}
 
-	summaries := make([]TriageSummary, 0, len(entries))
+	summaries := make([]PageSummary, 0, len(entries))
 	for _, e := range entries {
 		summary := h.summarize(e.snapshot, e.live)
 		if phase != "" && summary.Phase != phase {
@@ -315,7 +312,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		if trigger != "" && summary.Trigger.Source != trigger {
 			continue
 		}
-		if workload != "" && summary.Workload.Name != workload {
+		if target != "" && summary.Target.Name != target {
 			continue
 		}
 		if !since.IsZero() && summary.CreatedAt.Before(since) {
@@ -323,7 +320,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		summaries = append(summaries, summary)
 	}
-	slices.SortFunc(summaries, func(a, b TriageSummary) int {
+	slices.SortFunc(summaries, func(a, b PageSummary) int {
 		first, second := sortTime(a), sortTime(b)
 		if !first.Equal(second) {
 			if first.After(second) {
@@ -333,10 +330,10 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.Compare(b.Name, a.Name)
 	})
-	writeJSON(w, http.StatusOK, ListResponse{Triages: summaries})
+	writeJSON(w, http.StatusOK, ListResponse{Pages: summaries})
 }
 
-// detail answers with one Triage's complete record, from the live resource when it exists and from history when
+// detail answers with one Page's complete record, from the live resource when it exists and from history when
 // retention has deleted it.
 func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	record, err := h.record(r.Context(), r.PathValue("name"))
@@ -347,7 +344,7 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, record)
 }
 
-// events streams the Triage's steps and Phase changes as Server-Sent Events. The first event is a snapshot of
+// events streams the Page's steps and Phase changes as Server-Sent Events. The first event is a snapshot of
 // the whole record, so a client that connects late still sees the steps it missed.
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
@@ -375,7 +372,7 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if record.Phase.IsTerminal() {
-		// A Triage that is already terminal cannot change again, so the stream ends after its snapshot.
+		// A Page that is already terminal cannot change again, so the stream ends after its snapshot.
 		_ = writeEvent(w, flusher, EventEnd, PhaseEvent{Phase: record.Phase, Terminal: true})
 		return
 	}
@@ -404,15 +401,15 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// record assembles one Triage from the live resource, or from history when the resource is gone.
+// record assembles one Page from the live resource, or from history when the resource is gone.
 func (h *Handler) record(ctx context.Context, name string) (*DetailResponse, error) {
-	var tr v1alpha1.Triage
+	var tr v1alpha1.Page
 	err := h.reader.Get(ctx, types.NamespacedName{Namespace: h.namespace, Name: name}, &tr)
 	switch {
 	case err == nil:
 		return h.detailFromLive(&tr), nil
 	case !apierrors.IsNotFound(err):
-		return nil, fmt.Errorf("read Triage %s: %w", name, err)
+		return nil, fmt.Errorf("read Page %s: %w", name, err)
 	}
 
 	snapshots, err := h.history.Snapshots(ctx, name)
@@ -441,105 +438,101 @@ func (h *Handler) record(ctx context.Context, name string) (*DetailResponse, err
 		}
 	}
 	return &DetailResponse{
-		Name:           latest.Triage,
-		Namespace:      latest.Namespace,
-		Phase:          latest.Phase,
-		Source:         "history",
-		CreatedAt:      historyCreatedAt(latest),
-		StartedAt:      timePtr(latest.Status.StartedAt),
-		TerminalAt:     timePtr(latest.Status.TerminalAt),
-		ObservedAt:     &latest.ObservedAt,
-		Workload:       latest.Spec.Workload,
-		Trigger:        latest.Spec.Trigger,
-		Hint:           latest.Spec.Hint,
-		FollowsTriage:  latest.Spec.FollowsTriage,
-		TriggerCount:   latest.Status.TriggerCount,
-		Steps:          recorded,
-		StepCount:      latest.Status.StepCount,
-		ToolCallCount:  latest.Status.ToolCallCount,
-		Usage:          latest.Status.Usage,
-		Findings:       nonNilFindings(latest.Status.Findings),
-		Diagnosis:      latest.Status.Diagnosis,
-		Proposal:       latest.Status.Proposal,
-		Decision:       latest.Status.Decision,
-		Execution:      latest.Status.Execution,
-		Verification:   verificationOf(latest.Status),
-		Narrative:      latest.Status.Narrative,
-		FollowUpTriage: latest.Status.FollowUpTriage,
-		Grafana:        h.grafana.links(&latest.Spec, &latest.Status, historyCreatedAt(latest), h.clock.Now()),
+		Name:          latest.Page,
+		Namespace:     latest.Namespace,
+		Phase:         latest.Phase,
+		Source:        "history",
+		CreatedAt:     historyCreatedAt(latest),
+		StartedAt:     timePtr(latest.Status.StartedAt),
+		TerminalAt:    timePtr(latest.Status.TerminalAt),
+		ObservedAt:    &latest.ObservedAt,
+		Target:        latest.Spec.Target,
+		Trigger:       latest.Spec.Trigger,
+		Hint:          latest.Spec.Hint,
+		PreviousPage:  latest.Spec.PreviousPage,
+		TriggerCount:  latest.Status.TriggerCount,
+		Steps:         recorded,
+		StepCount:     latest.Status.StepCount,
+		ToolCallCount: latest.Status.ToolCallCount,
+		Usage:         latest.Status.Usage,
+		Findings:      nonNilFindings(latest.Status.Findings),
+		Diagnosis:     latest.Status.Diagnosis,
+		Proposal:      latest.Status.Proposal,
+		Decision:      latest.Status.Decision,
+		PullRequest:   latest.Status.PullRequest,
+		Verification:  verificationOf(latest.Status),
+		Narrative:     latest.Status.Narrative,
+		Grafana:       h.grafana.links(&latest.Spec, &latest.Status, historyCreatedAt(latest), h.clock.Now()),
 	}, nil
 }
 
-// detailFromLive renders the Triage resource as the dashboard's record.
-func (h *Handler) detailFromLive(tr *v1alpha1.Triage) *DetailResponse {
+// detailFromLive renders the Page resource as the dashboard's record.
+func (h *Handler) detailFromLive(tr *v1alpha1.Page) *DetailResponse {
 	phase := tr.Status.Phase
 	if phase == "" {
 		phase = v1alpha1.PhasePending
 	}
 	return &DetailResponse{
-		Name:           tr.Name,
-		Namespace:      tr.Namespace,
-		Phase:          phase,
-		Source:         "live",
-		CreatedAt:      liveCreatedAt(tr),
-		StartedAt:      timePtr(tr.Status.StartedAt),
-		TerminalAt:     timePtr(tr.Status.TerminalAt),
-		Workload:       tr.Spec.Workload,
-		Trigger:        tr.Spec.Trigger,
-		Hint:           tr.Spec.Hint,
-		FollowsTriage:  tr.Spec.FollowsTriage,
-		TriggerCount:   tr.Status.TriggerCount,
-		Steps:          nonNilSteps(tr.Status.Steps),
-		StepCount:      tr.Status.StepCount,
-		ToolCallCount:  tr.Status.ToolCallCount,
-		Usage:          tr.Status.Usage,
-		Findings:       nonNilFindings(tr.Status.Findings),
-		Diagnosis:      tr.Status.Diagnosis,
-		Proposal:       tr.Status.Proposal,
-		Decision:       tr.Status.Decision,
-		Execution:      tr.Status.Execution,
-		Verification:   verificationOf(tr.Status),
-		Narrative:      tr.Status.Narrative,
-		FollowUpTriage: tr.Status.FollowUpTriage,
-		Grafana:        h.grafana.links(&tr.Spec, &tr.Status, liveCreatedAt(tr), h.clock.Now()),
+		Name:          tr.Name,
+		Namespace:     tr.Namespace,
+		Phase:         phase,
+		Source:        "live",
+		CreatedAt:     liveCreatedAt(tr),
+		StartedAt:     timePtr(tr.Status.StartedAt),
+		TerminalAt:    timePtr(tr.Status.TerminalAt),
+		Target:        tr.Spec.Target,
+		Trigger:       tr.Spec.Trigger,
+		Hint:          tr.Spec.Hint,
+		PreviousPage:  tr.Spec.PreviousPage,
+		TriggerCount:  tr.Status.TriggerCount,
+		Steps:         nonNilSteps(tr.Status.Steps),
+		StepCount:     tr.Status.StepCount,
+		ToolCallCount: tr.Status.ToolCallCount,
+		Usage:         tr.Status.Usage,
+		Findings:      nonNilFindings(tr.Status.Findings),
+		Diagnosis:     tr.Status.Diagnosis,
+		Proposal:      tr.Status.Proposal,
+		Decision:      tr.Status.Decision,
+		PullRequest:   tr.Status.PullRequest,
+		Verification:  verificationOf(tr.Status),
+		Narrative:     tr.Status.Narrative,
+		Grafana:       h.grafana.links(&tr.Spec, &tr.Status, liveCreatedAt(tr), h.clock.Now()),
 	}
 }
 
 // summarize renders one list row, preferring the live resource over its last history snapshot.
-func (h *Handler) summarize(snapshot *history.Snapshot, tr *v1alpha1.Triage) TriageSummary {
+func (h *Handler) summarize(snapshot *history.Snapshot, tr *v1alpha1.Page) PageSummary {
 	if tr != nil {
 		phase := tr.Status.Phase
 		if phase == "" {
 			phase = v1alpha1.PhasePending
 		}
-		summary := TriageSummary{
-			Name:           tr.Name,
-			Namespace:      tr.Namespace,
-			Phase:          phase,
-			Workload:       tr.Spec.Workload,
-			Trigger:        tr.Spec.Trigger,
-			CreatedAt:      liveCreatedAt(tr),
-			StartedAt:      timePtr(tr.Status.StartedAt),
-			TerminalAt:     timePtr(tr.Status.TerminalAt),
-			FollowUpTriage: tr.Status.FollowUpTriage,
-			Source:         "live",
+		summary := PageSummary{
+			Name:       tr.Name,
+			Namespace:  tr.Namespace,
+			Phase:      phase,
+			Target:     tr.Spec.Target,
+			Trigger:    tr.Spec.Trigger,
+			CreatedAt:  liveCreatedAt(tr),
+			StartedAt:  timePtr(tr.Status.StartedAt),
+			TerminalAt: timePtr(tr.Status.TerminalAt),
+			Source:     "live",
 		}
 		if tr.Status.Proposal != nil {
 			summary.Action = tr.Status.Proposal.Action
 		}
 		return summary
 	}
-	summary := TriageSummary{
-		Name:           snapshot.Triage,
-		Namespace:      snapshot.Namespace,
-		Phase:          snapshot.Phase,
-		Workload:       snapshot.Spec.Workload,
-		Trigger:        snapshot.Spec.Trigger,
-		CreatedAt:      historyCreatedAt(snapshot),
-		StartedAt:      timePtr(snapshot.Status.StartedAt),
-		TerminalAt:     timePtr(snapshot.Status.TerminalAt),
-		FollowUpTriage: snapshot.Status.FollowUpTriage,
-		Source:         "history",
+	summary := PageSummary{
+		Name:       snapshot.Page,
+		Namespace:  snapshot.Namespace,
+		Phase:      snapshot.Phase,
+		Target:     snapshot.Spec.Target,
+		Trigger:    snapshot.Spec.Trigger,
+		CreatedAt:  historyCreatedAt(snapshot),
+		StartedAt:  timePtr(snapshot.Status.StartedAt),
+		TerminalAt: timePtr(snapshot.Status.TerminalAt),
+		Source:     "history",
 	}
 	if snapshot.Status.Proposal != nil {
 		summary.Action = snapshot.Status.Proposal.Action
@@ -547,16 +540,16 @@ func (h *Handler) summarize(snapshot *history.Snapshot, tr *v1alpha1.Triage) Tri
 	return summary
 }
 
-// sortTime is when the Triage started, which orders the list. A Triage that the server has accepted but not yet
+// sortTime is when the Page started, which orders the list. A Page that the server has accepted but not yet
 // started is ordered by its creation time instead, and a history-only row by its recorded creation time.
-func sortTime(summary TriageSummary) time.Time {
+func sortTime(summary PageSummary) time.Time {
 	if summary.StartedAt != nil {
 		return *summary.StartedAt
 	}
 	return summary.CreatedAt
 }
 
-// writeRecordError answers a record read: 404 when neither source knows the Triage, 500 otherwise.
+// writeRecordError answers a record read: 404 when neither source knows the Page, 500 otherwise.
 func (h *Handler) writeRecordError(w http.ResponseWriter, ctx context.Context, err error) {
 	if errors.Is(err, errNotFound) {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -570,8 +563,8 @@ func (h *Handler) internal(w http.ResponseWriter, ctx context.Context, err error
 	writeError(w, http.StatusInternalServerError, "internal error")
 }
 
-// liveCreatedAt returns the Triage's creation time, falling back to when the server started it.
-func liveCreatedAt(tr *v1alpha1.Triage) time.Time {
+// liveCreatedAt returns the Page's creation time, falling back to when the server started it.
+func liveCreatedAt(tr *v1alpha1.Page) time.Time {
 	if !tr.CreationTimestamp.IsZero() {
 		return tr.CreationTimestamp.Time
 	}
@@ -581,7 +574,7 @@ func liveCreatedAt(tr *v1alpha1.Triage) time.Time {
 	return time.Time{}
 }
 
-// historyCreatedAt returns the recorded creation time, falling back to when the server started the Triage and
+// historyCreatedAt returns the recorded creation time, falling back to when the server started the Page and
 // then to when the snapshot was written, so a version 1 row still has an age.
 func historyCreatedAt(snapshot *history.Snapshot) time.Time {
 	if !snapshot.CreatedAt.IsZero() {
@@ -594,7 +587,7 @@ func historyCreatedAt(snapshot *history.Snapshot) time.Time {
 }
 
 // verificationOf renders the Verification timeline, which may have started and recorded no checks yet.
-func verificationOf(status v1alpha1.TriageStatus) *Verification {
+func verificationOf(status v1alpha1.PageStatus) *Verification {
 	if status.VerificationStartedAt == nil && len(status.VerificationChecks) == 0 {
 		return nil
 	}
@@ -630,7 +623,7 @@ func timePtr(t *metav1.Time) *time.Time {
 func knownPhase(phase Phase) bool {
 	switch phase {
 	case v1alpha1.PhasePending, v1alpha1.PhaseInvestigating, v1alpha1.PhaseProposed, v1alpha1.PhaseApproved,
-		v1alpha1.PhaseExecuting, v1alpha1.PhaseVerifying, v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered,
+		v1alpha1.PhasePullRequestOpen, v1alpha1.PhaseVerifying, v1alpha1.PhaseRecovered, v1alpha1.PhaseNotRecovered,
 		v1alpha1.PhaseDiagnosed, v1alpha1.PhaseRejected, v1alpha1.PhaseExpired, v1alpha1.PhaseInvalid,
 		v1alpha1.PhaseFailed:
 		return true
@@ -642,8 +635,9 @@ func knownPhase(phase Phase) bool {
 // knownTrigger reports whether the value names a Trigger source.
 func knownTrigger(trigger v1alpha1.TriggerSource) bool {
 	switch trigger {
-	case v1alpha1.TriggerSourceAlertmanager, v1alpha1.TriggerSourceCLI, v1alpha1.TriggerSourceDashboard,
-		v1alpha1.TriggerSourceFollowUp:
+	case v1alpha1.TriggerSourceEvent, v1alpha1.TriggerSourceCondition, v1alpha1.TriggerSourceAlertmanager,
+		v1alpha1.TriggerSourceGrafana, v1alpha1.TriggerSourceDatadog, v1alpha1.TriggerSourceSNS,
+		v1alpha1.TriggerSourceCLI, v1alpha1.TriggerSourcePortal, v1alpha1.TriggerSourceAPI:
 		return true
 	default:
 		return false

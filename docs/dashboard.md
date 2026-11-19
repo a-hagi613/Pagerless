@@ -1,253 +1,68 @@
-# Dashboard
+# The embedded Portal
 
-`pagerless-server` serves a React dashboard and its HTTP API on the listener given by
-`--dashboard-bind-address`, port 8082 in the supplied manifests. ADR-0013 records why the dashboard is a custom
-application and why its assets are embedded in the server, and ADR-0020 records why dashboard decisions assert the
-approver instead of impersonating the user.
+`pagerless-server` embeds a React single-page application and serves it on its
+dashboard listener. This page documents the Portal as the v2.0 chart shell leaves
+it: the v1 layout, running against the `Page` API. The Variant C Cluster Health
+Matrix Portal is delivered by the Portal slice and replaces this layout; until
+then the layout is stable and the API below is the contract.
 
-The dashboard has three views:
+The Portal is served only when the server is started with a dashboard listener
+and an identity provider. The v2.0 chart shell starts neither, because the
+sign-in and Portal slices own them, so a chart installation exposes the agent
+report API and the metrics API only.
 
-- **Triage list** (`/`) shows Phase, Workload, Trigger and age, most recent first. The list starts from the latest
-  SQLite snapshot of every Triage and overlays the live resource, so a terminal Triage whose resource the retention
-  controller deleted still appears, with the Workload and Trigger recorded in history.
-- **Triage detail** (`/triages/{name}`) shows the live steps, Findings with their sources, the Diagnosis, the
-  Proposal with its rendered change, the Approve and Reject controls while the Triage is Proposed, the decision and
-  execution result, the Verification timeline and checks, the Narrative, and the Workload's Grafana metrics and logs.
-- **Start Triage** (`/start`) starts a Triage for a chosen Deployment or StatefulSet, with an optional Hint.
+## Routes
 
-Both reading views are keyboard accessible and laid out for desktop widths. The list refreshes every five seconds;
-the detail view receives steps and Phase changes over Server-Sent Events.
+- `/` lists Pages, most recent first, and refreshes every few seconds. The list
+  starts from the latest SQLite snapshot of every Page and overlays the live
+  resource, so a terminal Page whose resource the retention controller deleted
+  still appears.
+- `/pages/{name}` shows the live steps, Findings with their sources, the
+  Diagnosis, the Proposal with its rendered change, the pull request, the
+  Verification checks, and the Narrative. While the Page is `Proposed` it shows
+  the Approve and Dismiss controls.
+- `/start` starts a Page for a chosen Deployment or StatefulSet, with an optional
+  Hint. A Page whose Fingerprint already has an Active Page returns that Page
+  instead of starting a second one.
+- `/login`, `/auth/callback`, and `/signed-out` complete the sign-in flow.
 
-## Sign-in
+## API
 
-The dashboard is served only to a signed-in user. `pagerless-server` performs the OpenID Connect authorization-code
-flow with PKCE against the Keycloak realm:
+| Method and path | Meaning |
+| --- | --- |
+| `GET /api/session` | The signed-in user, their groups, and the CSRF token. |
+| `GET /api/pages` | Page summaries, filtered by `phase`, `target`, `trigger`, and `since`. |
+| `GET /api/pages/{name}` | One Page record, from the live resource or from history. |
+| `GET /api/pages/{name}/events` | Server-Sent Events: steps, phase changes, and a final snapshot. |
+| `POST /api/pages` | Start a Page for `{target, hint}`. |
+| `POST /api/pages/{name}/decision` | Record `{decision, reason}` on the current Proposal. |
+| `GET /api/targets` | The Deployments and StatefulSets that Start Page offers. |
 
-1. `GET /login` creates a state, a nonce, and a PKCE verifier, stores them in a short-lived HTTP-only cookie scoped
-   to `/auth`, and redirects the browser to Keycloak.
-2. `GET /auth/callback` checks the state, exchanges the code with the verifier and the client secret, and verifies
-   the ID token's signature, issuer, audience, expiry, and nonce.
-3. The server creates a session and sets `pagerless_session`: an opaque, random identifier, `HttpOnly`,
-   `SameSite=Lax`, `Path=/`, and `Secure` when `--dashboard-cookie-secure` is true. Tokens never leave the server.
-4. `POST /logout` requires the session's CSRF token, deletes the session, and redirects to `/signed-out`.
-
-Sessions live in memory for `DefaultSessionTTL` (eight hours). `pagerless-server` runs one replica (ADR-0001), so a
-restart ends every session; users sign in again.
-
-Every write repeats the session's CSRF token in the `X-CSRF-Token` header. `GET /api/session` returns the signed-in
-username, groups, whether the user may approve, and that token. The sign-in routes, the `/assets/` bundle, and (when
-the realm issuer differs from the browser origin) the proxied `/realms/<realm>/` and `/resources/` paths are the only
-routes served without a session; an unauthenticated API request is answered with `401` and a page request is
-redirected to `/login`.
-
-### Single-port Keycloak realm proxy
-
-In kind and EKS, `pagerless-server` discovers and talks to Keycloak over the cluster DNS name
-`http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless`, which a browser on an operator's laptop cannot
-resolve over `kubectl port-forward` (`http://localhost:8080`) or Tailscale (`http://devbox:8080`). When the origin of
-`--oidc-issuer` differs from `--dashboard-base-url` (or `$PAGERLESS_DASHBOARD_BASE_URL`), `dashboardauth.RealmProxy()`
-proxies `/realms/<realm>/...` and `/resources/...` on the dashboard listener itself:
-
-- `GET /login` rewrites the authorization redirect origin to `--dashboard-base-url` while keeping the PKCE challenge,
-  nonce, and state.
-- Browser requests to `/realms/<realm>/...` and `/resources/...` are forwarded to the issuer origin with `Location`
-  headers and text response bodies rewritten to `--dashboard-base-url`, and `Secure` cookie attributes stripped when
-  `--dashboard-cookie-secure=false`. Administrative routes such as `/admin/` and other realms are refused with `404`.
-- Backchannel OpenID Connect discovery, JWKS retrieval, expected `iss` verification, and authorization-code exchange
-  continue talking directly to `--oidc-issuer` inside the cluster.
-
-`hack/provision-keycloak.py` registers redirect URIs and web origins for `http://localhost:8080/*`,
-`http://127.0.0.1:8080/*`, `http://devbox:8080/*`, and `$PAGERLESS_DASHBOARD_BASE_URL/*`
-(when set), and idempotently provisions the operator user (`$PAGERLESS_DASHBOARD_USER`, default `pagerless-approver`)
-in `pagerless-approvers`, storing the credentials in the `pagerless/pagerless-dashboard-operator` Secret.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--dashboard-base-url` | `http://localhost:8080` | The browser-facing base URL (overridden by `$PAGERLESS_DASHBOARD_BASE_URL`); the callback is this URL plus `/auth/callback`. |
-| `--dashboard-cookie-secure` | `true` | Mark cookies `Secure`. The supplied manifests set it to `false` because the local port-forward is plain HTTP. |
-| `--oidc-issuer` | `http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless` | The realm issuer. |
-| `--oidc-client-id` | `pagerless-dashboard` | The confidential client that completes sign-in. |
-| `--oidc-client-secret-file` | `/var/run/pagerless/keycloak/client-secret` | The client secret, read on every token request. |
-| `--approvers-group` | `pagerless-approvers` | The Keycloak group whose members may approve. |
+Every write repeats the session's CSRF token in `X-CSRF-Token` and is refused
+without it.
 
 ## Decisions
 
-Approve and Reject create a `TriageApproval` under `pagerless-server`'s service account with `spec.approver` set to
-the signed-in user's Keycloak `preferred_username`. Two annotations keep the audit trail complete:
-`pagerless.dev/decision-source: dashboard` and `pagerless.dev/approver-subject` with the Keycloak subject. The
-validating admission webhook accepts an asserted approver only when the requester is that service account and
-Keycloak reports the user as a member of `pagerless-approvers`; every other requester is stamped with its own
-identity, as the CLI always was. The server holds no impersonation permission.
+A dashboard decision patches the Page's decision annotations with the signed-in
+username, the current Proposal hash, and the optional reason:
 
-The decision is bound to the Proposal hash, so a Proposal that changes, expires, or becomes stale before admission
-is refused, and the page shows why. A rejection is final for its Triage.
-
-## Start Triage
-
-`GET /api/workloads` lists the Deployments and StatefulSets in the namespaces given by `--workload-namespaces`.
-`POST /api/triages` creates a Triage for one of them with `spec.trigger.source: Dashboard` and the optional Hint.
-A Workload has at most one Active Triage (ADR-0018), so when one exists the answer is `200` with
-`{"alreadyActive": true, "name": "<existing>"}` and nothing is started; the page links to the existing Triage. A
-Workload that does not exist is refused with `404` before any Triage is created.
-
-## HTTP API
-
-The API is served only for the namespace the server watches and only to a signed-in user. It reads through the
-server's controller-runtime client, so it inherits the server's Role and cannot see a Triage or Workload the server
-cannot see. Writes run as the server's service account and pass through the same admission webhooks as any other
-client. It never writes Triage status, history, or the Sandbox.
-
-| Method | Path | Meaning |
-| --- | --- | --- |
-| `GET` | `/api/session` | The signed-in user, approver status, and CSRF token. |
-| `GET` | `/api/triages` | The Triage list, most recent first. |
-| `GET` | `/api/triages/{name}` | One Triage's complete record. |
-| `GET` | `/api/triages/{name}/events` | The Triage's steps and Phase changes as Server-Sent Events. |
-| `POST` | `/api/triages` | Start a Triage for a chosen Workload. |
-| `POST` | `/api/triages/{name}/decision` | Approve or reject the current Proposal. |
-| `GET` | `/api/workloads` | The Workloads that Start Triage offers. |
-
-Writes require `Content-Type: application/json` and the `X-CSRF-Token` header. An error is
-`{"error": "..."}` with `400` (malformed request), `401` (no session), `403` (no CSRF token or not an approver),
-`404` (unknown Triage or Workload), `409` (the Triage is not Proposed, or a decision already exists), or `422` (the
-admission webhook refused the decision, for example because the Proposal is stale or expired).
-
-### `GET /api/triages`
-
-Query parameters, all optional and exact matches:
-
-| Parameter | Values | Meaning |
-| --- | --- | --- |
-| `phase` | A Phase such as `Proposed` | Only Triages in the Phase. |
-| `workload` | A Workload name | Only Triages for the Workload. |
-| `trigger` | `Alertmanager`, `CLI`, `Dashboard`, `FollowUp` | Only Triages started by the Trigger source. |
-| `since` | RFC 3339 time or a Go duration such as `24h` | Only Triages created at or after the bound. |
-
-The answer is `{"triages": [...]}`. Each row carries `name`, `namespace`, `phase`, `workload`, `trigger`,
-`createdAt`, optional `startedAt`, `terminalAt`, `action` and `followUpTriage`, and `source`, which is `live` when
-the resource exists and `history` when only SQLite retains the Triage. An unknown `phase`, `trigger` or `since`
-value is refused with `400` and `{"error": "..."}`.
-
-### `GET /api/triages/{name}`
-
-The answer is the Triage record: the spec's Workload, Trigger, Hint and Follow-up reference; the Phase and
-lifetime times; the steps; the Findings; the Diagnosis; the Proposal, including `renderedChange.path` and
-`renderedChange.patch`; the Decision; the Execution; the Verification timeline and checks; the Narrative; and
-`grafana`, which carries the embedded panel and deep-link URLs. `source` is `live` or `history`. A name that neither
-the resource nor history knows is answered with `404`.
-
-### `GET /api/triages/{name}/events`
-
-The response is `text/event-stream`. The first event is `snapshot`, whose data is the same record as
-`GET /api/triages/{name}`. Later events are:
-
-| Event | Data | Meaning |
-| --- | --- | --- |
-| `step` | `{"step": {...}, "finding": {...}?, "stepCount": n}` | One step event as the server records it. |
-| `phase` | `{"phase": "...", "terminal": false}` | A Phase change. |
-| `end` | `{"phase": "...", "terminal": true}` | The Triage reached a terminal Phase; the server closes the stream. |
-
-A comment line every fifteen seconds keeps an idle connection open. A slow client may miss an event rather than
-block the server's status write; reconnecting delivers a fresh snapshot. A client should deduplicate a step that
-appears in both the snapshot and a later `step` event. The stream authenticates from the session cookie, which the
-browser sends on the same origin, so no token appears in the URL.
-
-### `POST /api/triages/{name}/decision`
-
-```json
-{"decision": "Approved", "reason": "the memory limit is below the allocation"}
+```
+pagerless.dev/decision=approve
+pagerless.dev/decision-proposal=<status.proposal.hash>
+pagerless.dev/decision-reason=<reason>
+pagerless.dev/decided-by=<username>
+pagerless.dev/decision-source=dashboard
+pagerless.dev/approver-subject=<subject>
 ```
 
-`decision` is `Approved` or `Rejected`; `reason` is optional and at most 1000 characters. The answer is `201` with
-`{"name": "<TriageApproval>", "triage": "...", "decision": "...", "approver": "<Keycloak username>"}`. The Triage's
-Phase changes asynchronously as the server applies the decision, so the page refreshes after a successful answer.
+`pagerless-server` reconciles them into `status.decision`. A decision on a
+Proposal that has changed, expired, or become stale is ignored rather than
+applied, and a Page that already holds a decision cannot be decided twice. Only a
+member of the approvers group may decide. See
+[ADR-0031](../docs/adr/0031-approval-is-a-decision-on-the-page.md).
 
-### `POST /api/triages`
+## Access
 
-```json
-{"workload": {"kind": "Deployment", "namespace": "sandbox", "name": "checkout"}, "hint": "check the database pool"}
-```
-
-`kind` is `Deployment` or `StatefulSet`, the namespace must be one Start Triage offers, and the Hint is at most 1000
-characters. The answer is `201` with `{"name": "<Triage>", "alreadyActive": false}`, or `200` with
-`{"name": "<existing>", "alreadyActive": true}` when the Workload already has an Active Triage.
-
-## Grafana
-
-The detail view embeds two Grafana dashboards in iframes and always shows a deep link beside each panel. When
-embedding is unavailable — Grafana denies framing, or its sign-in is required — the deep link opens the same
-dashboard, Workload variables and time range directly.
-
-| Flag | Default | Meaning |
-| --- | --- | --- |
-| `--grafana-url` | `http://localhost:3000` | The Grafana base URL that the browser can reach. Empty disables the panels. |
-| `--grafana-workload-dashboard-uid` | `pagerless-workload` | The dashboard that charts the Workload's metrics. |
-| `--grafana-logs-dashboard-uid` | `pagerless-workload-logs` | The dashboard that shows the Workload's logs. |
-
-The two workload dashboards are provisioned by the showcase repository
-(`pagerless-sandbox`), because they describe the demonstration workloads rather than the product. They take
-`namespace` and `workload` variables; the API fills those in, with a time window that starts fifteen minutes
-before the Triage and ends five minutes after it, or at the present time while the Triage is active. Grafana must
-allow embedding, because it refuses to be framed otherwise. The Pagerless dashboard itself ships in
-`charts/pagerless/dashboards/pagerless.json`.
-
-Local use assumes the Grafana Service is port-forwarded to `localhost:3000`. The dashboard cannot reach a
-cluster-internal Service URL from the browser.
-
-## Build and run
-
-The stack is Vite, React, TypeScript, Tailwind CSS, and shadcn/ui. Node is pinned to 22.17.1 in
-[`dashboard/.nvmrc`](../dashboard/.nvmrc) and `dashboard/package.json`; every dependency is pinned exactly in
-[`dashboard/package-lock.json`](../dashboard/package-lock.json). TypeScript is pinned to 6.0.3 because
-typescript-eslint 8.73 supports TypeScript below 6.1.
-
-```bash
-make dashboard-check   # npm ci, then tsc --noEmit and eslint
-make dashboard-build   # npm ci, then the production build into dashboard/dist
-```
-
-The Go package `dashboard` embeds `dashboard/dist` with `//go:embed all:dist`. The repository commits a marker in
-that directory so a fresh checkout compiles; a server built without running the build answers the dashboard with
-`503` and the build instruction. `Dockerfile.pagerless-server` builds the application in a `node:22.17.1-bookworm`
-stage and copies its output into the Go build, so the published image contains the dashboard.
-
-During development, run the server's dashboard listener on port 8082 (for example with `--dashboard-bind-address`)
-and `npm run dev` in `dashboard/`; Vite proxies `/api` to `127.0.0.1:8082`. Sign-in still redirects the browser to
-the realm's issuer, so use the local stack's port-forward on port 8080 rather than the Vite dev server when the
-flow itself is what you are testing.
-
-### Live devbox preview
-
-To inspect and interact with the dashboard on the devbox without standing up a full kind or EKS cluster,
-`hack/dashboard-preview.sh` starts a detached Keycloak container on `127.0.0.1:18180`, provisions the `pagerless`
-realm and an approver user, and runs `pagerless-server` via `TestDashboardPreview` (`internal/server/preview_test.go`,
-`//go:build preview`) bound to `0.0.0.0:8080` with `PAGERLESS_PREVIEW_BASE_URL=http://devbox:8080`. It exercises the
-single-port `RealmProxy()` flow and seeds a `Proposed` OOMKilled Triage on `Deployment sandbox/checkout` (with
-Findings, Diagnosis, a `PatchResources` Proposal, and its rendered diff ready for interactive Approval or Rejection)
-alongside a `Recovered` Triage on `Deployment sandbox/cart` (with Verification checks and Narrative).
-
-```bash
-bash hack/dashboard-preview.sh start    # start Keycloak + preview server and print the mode-0600 credentials file path
-bash hack/dashboard-preview.sh status   # report whether the preview server and Keycloak container are running
-bash hack/dashboard-preview.sh stop     # stop the preview server and remove the Keycloak container
-```
-
-All runtime state and generated credentials are kept under `/tmp/pagerless-dashboard-preview` (`chmod 700` directory,
-`chmod 600` files) and never written into the repository or printed to standard output.
-
-## Tests
-
-The API is covered at the envtest seam in `internal/server/dashboard_api_test.go`,
-`internal/server/dashboard_write_test.go`, and `internal/server/approval_asserted_test.go`: list ordering and every
-filter, history fallback after deletion, the detail record after the full Triage loop, live step and Phase delivery
-over the stream, the 404 for an absent Triage, a dashboard Approval and Rejection with the asserted approver, the
-CSRF and approver refusals, Start Triage with its duplicate-active behaviour, and the four approver rules
-(asserted member, non-server requester, non-member, and the unchanged stamped identity). `internal/dashboardapi`
-covers the single-page handler, the Grafana URLs, and the history-less states; `internal/dashboardauth` covers the
-authorization-code flow with PKCE, the state and nonce checks, the cookie flags, expiry, and sign-out against a
-stand-in provider; `internal/keycloak` covers the membership lookup and its cache; `internal/history` covers the
-schema version 2 upgrade and the latest-snapshot query; `dashboard/embed_test.go` checks the embedded build.
-
-The Playwright smoke test signs in through Keycloak, watches live steps, and approves. It needs a realm, a user in
-`pagerless-approvers`, and a dashboard the browser can reach; `dashboard/e2e/run.sh` starts all of them and runs
-`@playwright/test` in Chromium. See [`dashboard/e2e/README.md`](../dashboard/e2e/README.md).
+The Portal reads and writes through the server's controller-runtime client, so it
+inherits the server's Role: Pages in the release namespace, and the read identity
+for evidence. It never writes Page status; only the reconcilers do.

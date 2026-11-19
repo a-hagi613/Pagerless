@@ -1,7 +1,9 @@
 # ADR-0005: Two Go binaries, pagerless-server and pagerless-executor
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0030](0030-one-go-binary-with-a-zero-rbac-agent-job.md), which runs one Go binary and an ephemeral zero-RBAC agent Job.
 - **Date:** 2026-11-16
+
+> Superseded in v2.0: the executor is deleted, and the pull request engine runs inside pagerless-server. See ADR-0030.
 
 ## Context
 

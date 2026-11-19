@@ -14,32 +14,32 @@ import (
 )
 
 const (
-	// DefaultRetention is how long a terminal Triage is kept before it is deleted.
+	// DefaultRetention is how long a terminal Page is kept before it is deleted.
 	DefaultRetention = 7 * 24 * time.Hour
-	// DefaultRetentionPollInterval is how often a terminal Triage is checked before its retention expires.
+	// DefaultRetentionPollInterval is how often a terminal Page is checked before its retention expires.
 	DefaultRetentionPollInterval = time.Minute
 )
 
-// RetentionReconciler deletes a Triage seven days after it reaches a terminal Phase. The history in SQLite is
-// written separately and is never deleted with the resource, so deleting a Triage keeps its permanent record.
+// RetentionReconciler deletes a Page seven days after it reaches a terminal Phase. The history in SQLite is
+// written separately and is never deleted with the resource, so deleting a Page keeps its permanent record.
 type RetentionReconciler struct {
-	// Client deletes the Triage.
+	// Client deletes the Page.
 	Client client.Client
-	// Reader reads the Triage directly from the API server, never from a cache that may be stale.
+	// Reader reads the Page directly from the API server, never from a cache that may be stale.
 	Reader client.Reader
 	// Clock decides whether the retention period has elapsed. It is injectable so the boundary is testable.
 	Clock clock.PassiveClock
-	// Retention is how long a terminal Triage is kept. It defaults to DefaultRetention.
+	// Retention is how long a terminal Page is kept. It defaults to DefaultRetention.
 	Retention time.Duration
-	// PollInterval bounds how long the reconciler waits before it checks a Triage again.
+	// PollInterval bounds how long the reconciler waits before it checks a Page again.
 	// It defaults to DefaultRetentionPollInterval.
 	PollInterval time.Duration
 }
 
-// SetupWithManager registers the reconciler for Triages.
+// SetupWithManager registers the reconciler for Pages.
 func (r *RetentionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1alpha1.Triage{}).
+		For(&v1alpha1.Page{}).
 		Named("retention").
 		// The test harness runs several managers in one process, which
 		// controller-runtime's process-wide name check would refuse.
@@ -47,9 +47,9 @@ func (r *RetentionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// Reconcile deletes a terminal Triage once its retention period has elapsed.
+// Reconcile deletes a terminal Page once its retention period has elapsed.
 func (r *RetentionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var tr v1alpha1.Triage
+	var tr v1alpha1.Page
 	if err := r.Reader.Get(ctx, req.NamespacedName, &tr); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -64,7 +64,7 @@ func (r *RetentionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if now.Before(expires) {
 		return ctrl.Result{RequeueAfter: min(expires.Sub(now), r.pollInterval())}, nil
 	}
-	// The UID precondition keeps a deleted-and-recreated Triage with the same name from being deleted by mistake.
+	// The UID precondition keeps a deleted-and-recreated Page with the same name from being deleted by mistake.
 	err := r.Client.Delete(
 		ctx, &tr,
 		client.Preconditions{UID: &tr.UID},

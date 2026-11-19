@@ -2,7 +2,7 @@
 
 `python -m pagerless_agent` runs one investigation Job. The graph reads evidence through agentgateway, which fronts the four MCP services, then sends step events and its report to `pagerless-server`. The agent never writes Kubernetes resources or the Sandbox.
 
-The Job receives its Triage, Workload and projected report-token settings through the environment defined in `internal/agentapi/contract.go`. Its additional runtime settings are:
+The Job receives its Page, Target and projected report-token settings through the environment defined in `internal/agentapi/contract.go`. Its additional runtime settings are:
 
 - `PAGERLESS_TASK`: `investigate` (the default) or `narrative`. The server sets it explicitly on both kinds of Job.
 
@@ -35,6 +35,6 @@ The deployed Replay artifact must be captured from a live investigation, as requ
 
 ## Narrative
 
-`pagerless-server` starts a second, short-lived Job from the same image once a Triage reaches a terminal Verification outcome. `PAGERLESS_TASK=narrative` selects it. The Job reads the Triage's record from the server's agent API, makes exactly one model call capped at `NARRATIVE_MAX_OUTPUT_TOKENS` (2,000) output tokens, and posts the Narrative back. It has no tools, no Context Bundle, and no MCP endpoints, and it never writes a phase, a check, or a Finding.
+`pagerless-server` starts a second, short-lived Job from the same image once a Page reaches a terminal Verification outcome. `PAGERLESS_TASK=narrative` selects it. The Job reads the Page's record from the server's agent API, makes exactly one model call capped at `NARRATIVE_MAX_OUTPUT_TOKENS` (2,000) output tokens, and posts the Narrative back. It has no tools, no Context Bundle, and no MCP endpoints, and it never writes a phase, a check, or a Finding.
 
 Because the call has no Context Bundle, Replay cannot resolve an identifier in the Narrative's recorded response. The recording therefore carries no placeholders: the prompt asks for prose without pod names, timestamps, commit identifiers, hashes, or alert fingerprints, and the recording format refuses a response that still names a volatile identifier. `PAGERLESS_NARRATIVE_REPLAY_FILE` selects the recording, default `/app/recordings/narrative.json`. A genuine capture uses `PAGERLESS_RECORDING_FILE` exactly as an investigation does.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,12 +16,12 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// newListCommand returns the command that lists the Triages, most recent first.
+// newListCommand returns the command that lists the Pages, most recent first.
 func newListCommand(conn *connection) *cobra.Command {
 	var output string
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List Triages, most recent first",
+		Short: "List Pages, most recent first",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			format, err := parseFormat(output)
@@ -31,14 +32,14 @@ func newListCommand(conn *connection) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var list v1alpha1.TriageList
-			if err := cl.client.List(cmd.Context(), &list, client.InNamespace(TriageNamespace)); err != nil {
-				return fmt.Errorf("list Triages: %w", err)
+			var list v1alpha1.PageList
+			if err := cl.client.List(cmd.Context(), &list, client.InNamespace(PageNamespace)); err != nil {
+				return fmt.Errorf("list Pages: %w", err)
 			}
 			items := list.Items
 			slices.SortFunc(items, newestFirst)
 			for i := range items {
-				items[i].TypeMeta = metaFor("Triage")
+				items[i].TypeMeta = metaFor("Page")
 			}
 			return writeList(cmd.OutOrStdout(), format, items)
 		},
@@ -47,8 +48,8 @@ func newListCommand(conn *connection) *cobra.Command {
 	return cmd
 }
 
-// newestFirst orders Triages by creation time, newest first, then by name.
-func newestFirst(a, b v1alpha1.Triage) int {
+// newestFirst orders Pages by creation time, newest first, then by name.
+func newestFirst(a, b v1alpha1.Page) int {
 	switch {
 	case a.CreationTimestamp.After(b.CreationTimestamp.Time):
 		return -1
@@ -59,13 +60,13 @@ func newestFirst(a, b v1alpha1.Triage) int {
 	}
 }
 
-// writeList writes the Triages as a table, or as JSON or YAML.
-func writeList(w io.Writer, format string, items []v1alpha1.Triage) error {
+// writeList writes the Pages as a table, or as JSON or YAML.
+func writeList(w io.Writer, format string, items []v1alpha1.Page) error {
 	if items == nil {
-		items = []v1alpha1.Triage{}
+		items = []v1alpha1.Page{}
 	}
-	list := v1alpha1.TriageList{
-		TypeMeta: metaFor("TriageList"),
+	list := v1alpha1.PageList{
+		TypeMeta: metaFor("PageList"),
 		Items:    items,
 	}
 	switch format {
@@ -75,24 +76,25 @@ func writeList(w io.Writer, format string, items []v1alpha1.Triage) error {
 		return writeYAML(w, &list)
 	}
 	if len(items) == 0 {
-		_, err := fmt.Fprintf(w, "No Triages found in namespace %q.\n", TriageNamespace)
+		_, err := fmt.Fprintf(w, "No Pages found in namespace %q.\n", PageNamespace)
 		return err
 	}
 	return writeTable(w, items)
 }
 
-// writeTable writes one row per Triage.
-func writeTable(w io.Writer, items []v1alpha1.Triage) error {
+// writeTable writes one row per Page.
+func writeTable(w io.Writer, items []v1alpha1.Page) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
 	p := &printer{w: tw}
-	p.printf("NAME\tPHASE\tWORKLOAD\tTRIGGER\tAGE\n")
+	p.printf("NAME\tTARGET\tPHASE\tTRIGGER\tPR\tAGE\n")
 	for i := range items {
 		tr := &items[i]
-		p.printf("%s\t%s\t%s\t%s\t%s\n",
+		p.printf("%s\t%s\t%s\t%s\t%s\t%s\n",
 			tr.Name,
+			tr.Spec.Target.Name,
 			phaseLabel(tr.Status.Phase),
-			workloadLabel(tr.Spec.Workload),
 			tr.Spec.Trigger.Source,
+			pullRequestNumber(tr.Status.PullRequest),
 			duration.HumanDuration(time.Since(tr.CreationTimestamp.Time)),
 		)
 	}
@@ -102,7 +104,15 @@ func writeTable(w io.Writer, items []v1alpha1.Triage) error {
 	return tw.Flush()
 }
 
-// phaseLabel returns the phase of a Triage, or a dash before the Triage has one.
+// pullRequestNumber returns the pull request number, or a dash before one exists.
+func pullRequestNumber(pullRequest *v1alpha1.PullRequest) string {
+	if pullRequest == nil || pullRequest.Number == 0 {
+		return "-"
+	}
+	return strconv.Itoa(int(pullRequest.Number))
+}
+
+// phaseLabel returns the phase of a Page, or a dash before the Page has one.
 func phaseLabel(phase v1alpha1.Phase) string {
 	if phase == "" {
 		return "-"
@@ -110,7 +120,7 @@ func phaseLabel(phase v1alpha1.Phase) string {
 	return string(phase)
 }
 
-// workloadLabel returns a Workload as kind/namespace/name.
-func workloadLabel(ref v1alpha1.WorkloadReference) string {
+// targetLabel returns a Target as kind/namespace/name.
+func targetLabel(ref v1alpha1.TargetReference) string {
 	return string(ref.Kind) + "/" + ref.Namespace + "/" + ref.Name
 }

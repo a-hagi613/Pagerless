@@ -14,17 +14,17 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-// TestAgentAPIRejectsCallersThatAreNotTheTriagesJob covers the authentication
+// TestAgentAPIRejectsCallersThatAreNotThePagesJob covers the authentication
 // boundary: each caller below holds something that looks like a credential,
-// and none may post to the Triage.
-func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
+// and none may post to the Page.
+func TestAgentAPIRejectsCallersThatAreNotThePagesJob(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
 	ctx := t.Context()
 
-	target := env.CreateTriage(t, testenv.NewTriage(checkout))
+	target := env.CreatePage(t, testenv.NewPage(checkout))
 	targetAgent := env.StartAgent(t, target.Name)
-	other := env.CreateTriage(t, testenv.NewTriage("cart"))
+	other := env.CreatePage(t, testenv.NewPage("cart"))
 	otherAgent := env.StartAgent(t, other.Name)
 
 	intruder := &corev1.ServiceAccount{Name: "intruder", Namespace: testenv.Namespace}
@@ -52,7 +52,7 @@ func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
 		{"token of another service account", env.TokenFor(t, intruderPod, "intruder", agentapi.Audience), http.StatusForbidden},
 		{"agent token not bound to a pod", env.UnboundTokenFor(t, testenv.Namespace, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
 		{"agent token bound to a pod no Job controls", env.TokenFor(t, orphanPod, server.DefaultAgentServiceAccount, agentapi.Audience), http.StatusForbidden},
-		{"token of another Triage's Job", otherAgent.Token, http.StatusForbidden},
+		{"token of another Page's Job", otherAgent.Token, http.StatusForbidden},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -76,13 +76,13 @@ func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
 			}
 			tr := env.Get(t, target.Name)
 			if tr.Status.Phase != v1alpha1.PhaseInvestigating || tr.Status.StepCount != 0 || tr.Status.Diagnosis != "" {
-				t.Errorf("a rejected caller changed the Triage: %+v", tr.Status)
+				t.Errorf("a rejected caller changed the Page: %+v", tr.Status)
 			}
 		})
 	}
 
-	t.Run("unknown Triage", func(t *testing.T) {
-		result, err := env.ClientWithToken("no-such-triage", targetAgent.Token).PostReport(ctx, noActionReport())
+	t.Run("unknown Page", func(t *testing.T) {
+		result, err := env.ClientWithToken("no-such-page", targetAgent.Token).PostReport(ctx, noActionReport())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestAgentAPIRejectsCallersThatAreNotTheTriagesJob(t *testing.T) {
 func TestAgentAPIRefusesMalformedAndOversizedBodies(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 	path := agentapi.ReportPath(created.Name)
 
@@ -130,7 +130,7 @@ func TestAgentAPIRefusesMalformedAndOversizedBodies(t *testing.T) {
 func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 
 	valid := noActionReport()
@@ -162,8 +162,8 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 	}
 	for i, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Every refusal counts toward the two that end a Triage, so each case has its own.
-			own := env.CreateTriage(t, testenv.NewTriage(fmt.Sprintf("%s-%d", checkout, i)))
+			// Every refusal counts toward the two that end a Page, so each case has its own.
+			own := env.CreatePage(t, testenv.NewPage(fmt.Sprintf("%s-%d", checkout, i)))
 			ownAgent := env.StartAgent(t, own.Name)
 			result, err := ownAgent.API.PostReport(t.Context(), tc.report)
 			if err != nil {
@@ -181,7 +181,7 @@ func TestReportsThatFailValidationAreAnsweredSynchronously(t *testing.T) {
 			}
 			tr := env.Get(t, own.Name)
 			if tr.Status.Phase != v1alpha1.PhaseInvestigating || tr.Status.Proposal != nil {
-				t.Errorf("a refused report changed the Triage: phase %s, proposal %+v", tr.Status.Phase, tr.Status.Proposal)
+				t.Errorf("a refused report changed the Page: phase %s, proposal %+v", tr.Status.Phase, tr.Status.Proposal)
 			}
 		})
 	}

@@ -10,14 +10,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// defaultVerificationPoll is how often the harness's server checks a Triage that is being verified.
+// defaultVerificationPoll is how often the harness's server checks a Page that is being verified.
 const defaultVerificationPoll = 100 * time.Millisecond
 
 // appContainer is the name of the one container in the pods that tests create.
 const appContainer = "app"
 
-// WithVerificationPollInterval sets how often pagerless-server checks an Executing Triage for a sync and observes
-// a Verifying Triage.
+// WithVerificationPollInterval sets how often pagerless-server checks an Executing Page for a sync and observes
+// a Verifying Page.
 func WithVerificationPollInterval(d time.Duration) Option {
 	return func(o *options) { o.verificationPoll = d }
 }
@@ -47,7 +47,7 @@ func (e *Env) SetDeploymentReplicas(t testing.TB, namespace, name string, update
 	}
 }
 
-// Termination describes a container's termination for CreateWorkloadPod.
+// Termination describes a container's termination for CreateTargetPod.
 type Termination struct {
 	// Reason is the termination reason, such as OOMKilled.
 	Reason string
@@ -58,9 +58,9 @@ type Termination struct {
 	Last bool
 }
 
-// CreateWorkloadPod creates a pod with the labels in the namespace, and sets the status of its one container,
+// CreateTargetPod creates a pod with the labels in the namespace, and sets the status of its one container,
 // named app. A nil termination means the container runs.
-func (e *Env) CreateWorkloadPod(
+func (e *Env) CreateTargetPod(
 	t testing.TB, namespace, name string, labels map[string]string, termination *Termination,
 ) *corev1.Pod {
 	t.Helper()

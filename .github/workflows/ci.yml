@@ -108,3 +108,34 @@ jobs:
           chmod +x kubectl
           sudo install kubectl /usr/local/bin/kubectl
       - run: make validate
+
+  kind:
+    name: Chart and read-only grant on kind
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Helm, kind, and kubectl
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
+          curl --fail --silent --show-error --location \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
+          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
+          tar -xzf helm.tar.gz linux-amd64/helm
+          sudo install linux-amd64/helm /usr/local/bin/helm
+          curl --fail --silent --show-error --location \
+            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" --output kind
+          echo "${KIND_LINUX_AMD64_SHA256}  kind" | sha256sum --check --status
+          chmod +x kind
+          sudo install kind /usr/local/bin/kind
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
+          curl --fail --silent --show-error --location \
+            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
+          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
+          chmod +x kubectl
+          sudo install kubectl /usr/local/bin/kubectl
+      - run: make verify-chart

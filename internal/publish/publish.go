@@ -56,7 +56,9 @@ type Result struct {
 	// Branch is the branch the Proposal was committed to.
 	Branch string
 	// PullRequestURL is the address of the pull request page.
-	PullRequestURL string
+	// PullRequestNumber is the provider's number for the pull request.
+	PullRequestNumber int
+	PullRequestURL    string
 	// Merged reports whether the pull request has merged, and MergeCommit is the commit the merge produced.
 	Merged      bool
 	MergeCommit string
@@ -64,12 +66,12 @@ type Result struct {
 	Closed bool
 }
 
-// Branch returns the branch that carries the Triage's Proposal. The name is deterministic, so that a repeated
+// Branch returns the branch that carries the Page's Proposal. The name is deterministic, so that a repeated
 // publication updates the same branch rather than opening a second pull request.
-func Branch(tr *v1alpha1.Triage) (string, error) {
+func Branch(tr *v1alpha1.Page) (string, error) {
 	proposal := tr.Status.Proposal
 	if proposal == nil || proposal.Hash == "" {
-		return "", errors.New("the Triage has no Proposal hash")
+		return "", errors.New("the Page has no Proposal hash")
 	}
 	hash := proposal.Hash
 	if len(hash) > 12 {
@@ -80,7 +82,7 @@ func Branch(tr *v1alpha1.Triage) (string, error) {
 
 // Publish commits the Proposal to its branch, opens the pull request if it is not open yet, and reports the pull
 // request's state. A second call for the same Proposal observes the first call's result instead of acting again.
-func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Triage) (Result, error) {
+func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Page) (Result, error) {
 	branch, err := Branch(tr)
 	if err != nil {
 		return Result{}, err
@@ -115,7 +117,7 @@ func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Triage) (Result, e
 			return Result{}, err
 		}
 	}
-	result := Result{Branch: branch, PullRequestURL: pr.HTMLURL}
+	result := Result{Branch: branch, PullRequestURL: pr.HTMLURL, PullRequestNumber: pr.Number}
 	switch {
 	case pr.MergedAt != nil || pr.MergeCommitSHA != "":
 		result.Merged, result.MergeCommit = true, pr.MergeCommitSHA
@@ -127,10 +129,10 @@ func (p *Publisher) Publish(ctx context.Context, tr *v1alpha1.Triage) (Result, e
 
 // push clones the target repository, applies the stored patch on the Proposal's base commit, commits it, and
 // pushes the branch.
-func (p *Publisher) push(ctx context.Context, tr *v1alpha1.Triage, branch string) error {
+func (p *Publisher) push(ctx context.Context, tr *v1alpha1.Page, branch string) error {
 	change := tr.Status.Proposal.RenderedChange
 	if change == nil {
-		return errors.New("the Triage's Proposal holds no rendered change")
+		return errors.New("the Page's Proposal holds no rendered change")
 	}
 	token, err := p.cfg.Token()
 	if err != nil {
@@ -158,7 +160,7 @@ func (p *Publisher) push(ctx context.Context, tr *v1alpha1.Triage, branch string
 		return fmt.Errorf("the stored patch does not apply to %s: %w", base, err)
 	}
 	message := fmt.Sprintf("%s\n\nPagerless-Proposal-Hash: %s\nApproved-By: %s\n",
-		title(tr), tr.Status.Proposal.Hash, tr.Status.Decision.Approver)
+		title(tr), tr.Status.Proposal.Hash, tr.Status.Decision.DecidedBy)
 	if _, err := git(nil, "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
 		"commit", "--quiet", "--no-verify", "--message", message); err != nil {
 		return fmt.Errorf("commit the change: %w", err)
@@ -169,20 +171,20 @@ func (p *Publisher) push(ctx context.Context, tr *v1alpha1.Triage, branch string
 	return nil
 }
 
-func title(tr *v1alpha1.Triage) string {
-	w := tr.Spec.Workload
+func title(tr *v1alpha1.Page) string {
+	w := tr.Spec.Target
 	return fmt.Sprintf("Pagerless %s: %s %s/%s", tr.Status.Proposal.Action, w.Kind, w.Namespace, w.Name)
 }
 
-func body(tr *v1alpha1.Triage) string {
-	current, decision, w := tr.Status.Proposal, tr.Status.Decision, tr.Spec.Workload
+func body(tr *v1alpha1.Page) string {
+	current, decision, w := tr.Status.Proposal, tr.Status.Decision, tr.Spec.Target
 	var b strings.Builder
-	fmt.Fprintf(&b, "Opened by pagerless-server for Triage `%s`.\n\n", tr.Name)
+	fmt.Fprintf(&b, "Opened by pagerless-server for Page `%s`.\n\n", tr.Name)
 	fmt.Fprintf(&b, "- Action: %s\n", current.Action)
-	fmt.Fprintf(&b, "- Workload: %s %s/%s\n", w.Kind, w.Namespace, w.Name)
+	fmt.Fprintf(&b, "- Target: %s %s/%s\n", w.Kind, w.Namespace, w.Name)
 	fmt.Fprintf(&b, "- Base commit: `%s`\n", current.Base.Commit)
 	fmt.Fprintf(&b, "- Proposal hash: `%s`\n", current.Hash)
-	fmt.Fprintf(&b, "- Approved by: %s at %s\n", decision.Approver, decision.DecidedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "- Approved by: %s at %s\n", decision.DecidedBy, decision.DecidedAt.UTC().Format(time.RFC3339))
 	if decision.Reason != "" {
 		fmt.Fprintf(&b, "- Reason: %s\n", decision.Reason)
 	}

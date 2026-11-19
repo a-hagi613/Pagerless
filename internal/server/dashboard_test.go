@@ -9,7 +9,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/metrics"
 )
 
-// The product's own Grafana dashboard ships inside the chart; the workload
+// The product's own Grafana dashboard ships inside the chart; the target
 // dashboards and the ServiceMonitor moved to the showcase repository with the
 // rest of the demonstration environment.
 const dashboardFile = "../../charts/pagerless/dashboards/pagerless.json"
@@ -35,7 +35,7 @@ func TestGrafanaDashboardChartsEveryExportedMetric(t *testing.T) {
 		t.Errorf("dashboard has %d panels, want one for each exported metric", len(dashboard.Panels))
 	}
 	for _, name := range []string{
-		metrics.MetricTriages,
+		metrics.MetricPages,
 		metrics.MetricProposals,
 		metrics.MetricDecisions,
 		metrics.MetricVerifications,

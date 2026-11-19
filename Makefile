@@ -3,13 +3,14 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate preflight dev down install dashboard-preview
+.PHONY: help generate manifests build-cli build-images dashboard-build dashboard-check test test-go test-agent lint lint-go lint-agent validate verify-chart preflight dev down install dashboard-preview
 
 help: ## List the available targets.
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "}; {printf "%-16s %s\n", $$1, $$2}'
 
 CHART_CRD_DIR := charts/pagerless/crds
 ENVTEST_K8S_VERSION := 1.37.0
+GO_TEST_FLAGS ?= -p 1 -parallel 2
 
 generate: ## Generate the deepcopy methods for the API types.
 	go tool controller-gen object paths=./api/...
@@ -18,8 +19,12 @@ manifests: ## Generate the CustomResourceDefinitions into the chart.
 	# Cost is an estimate in USD, so the status carries a bounded JSON number for it.
 	go tool controller-gen crd:allowDangerousTypes=true paths=./api/... output:crd:dir=$(CHART_CRD_DIR)
 
-build-cli: ## Build the kubectl-triage plugin into bin/.
-	go build -o bin/kubectl-triage ./cmd/kubectl-triage
+CLI_VERSION ?= $(shell sed -n 's/^version: //p' charts/pagerless/Chart.yaml)
+CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+CLI_BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+build-cli: ## Build the kubectl-page plugin into bin/.
+	go build -trimpath -ldflags "-X github.com/a-hagi613/pagerless/internal/cli.Version=$(CLI_VERSION) -X github.com/a-hagi613/pagerless/internal/cli.Commit=$(CLI_COMMIT) -X github.com/a-hagi613/pagerless/internal/cli.BuildDate=$(CLI_BUILD_DATE)" -o bin/kubectl-page ./cmd/kubectl-page
 
 dashboard-build: ## Build the dashboard into dashboard/dist for the Go embed.
 	cd dashboard && npm ci && npm run build
@@ -33,8 +38,8 @@ build-images: ## Build the server and agent container images locally.
 
 test: test-go test-agent ## Run the Go and Python test suites.
 
-test-go: ## Run the Go test suite, including the envtest suites.
-	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" go test ./...
+test-go: ## Run the Go test suite, including the envtest and chart suites.
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use -p path $(ENVTEST_K8S_VERSION))" go test $(GO_TEST_FLAGS) ./...
 
 test-agent: ## Run the Python test suite.
 	cd agent && uv run --locked pytest -c pyproject.toml tests
@@ -53,6 +58,9 @@ lint-agent: ## Run ruff (lint and format check) and mypy.
 
 validate: ## Render the chart and validate it with the pinned kubeconform.
 	bash hack/validate-manifests.sh
+
+verify-chart: ## Install the chart on a throwaway kind cluster and prove the read-only grant.
+	bash hack/verify-chart.sh
 
 preflight: ## Check the local prerequisites of make dev.
 	bash hack/preflight.sh

@@ -15,25 +15,25 @@ import (
 // Narrative prompt.
 const maxNarrativeRecordChars = 12_000
 
-// noValue stands for a section that the Triage does not have.
+// noValue stands for a section that the Page does not have.
 const noValue = "none"
 
-// narrativeRecordText renders a Triage for its Narrative Job. It describes what
-// the Triage concluded and what was decided, so that the Narrative can be a
+// narrativeRecordText renders a Page for its Narrative Job. It describes what
+// the Page concluded and what was decided, so that the Narrative can be a
 // complete account. It is untrusted data for the model, and the Narrative prompt
 // forbids quoting the volatile identifiers that some of it contains.
-func narrativeRecordText(t *v1alpha1.Triage) string {
+func narrativeRecordText(t *v1alpha1.Page) string {
 	var b strings.Builder
 	status := &t.Status
-	workload := t.Spec.Workload
-	b.WriteString("Workload: " + string(workload.Kind) + " " + workload.Namespace + "/" + workload.Name + "\n")
+	target := t.Spec.Target
+	b.WriteString("Target: " + string(target.Kind) + " " + target.Namespace + "/" + target.Name + "\n")
 	b.WriteString("Trigger: " + string(t.Spec.Trigger.Source) + "\n")
 	b.WriteString("Phase: " + string(status.Phase) + "\n")
 	if t.Spec.Hint != "" {
 		b.WriteString("Hint from the engineer: " + t.Spec.Hint + "\n")
 	}
-	if t.Spec.FollowsTriage != "" {
-		b.WriteString("Follows Triage: " + t.Spec.FollowsTriage + "\n")
+	if t.Spec.PreviousPage != "" {
+		b.WriteString("Previous Page: " + t.Spec.PreviousPage + "\n")
 	}
 
 	b.WriteString("\nDiagnosis:\n" + orNone(status.Diagnosis) + "\n")
@@ -69,22 +69,23 @@ func narrativeRecordText(t *v1alpha1.Triage) string {
 	} else {
 		decision := status.Decision
 		b.WriteString("Outcome: " + string(decision.Outcome) + "\n")
-		b.WriteString("Decided by: " + decision.Approver + "\n")
+		b.WriteString("Decided by: " + decision.DecidedBy + "\n")
 		if decision.Reason != "" {
 			b.WriteString("Reason: " + decision.Reason + "\n")
 		}
 	}
 
-	b.WriteString("\nExecution:\n")
-	if status.Execution == nil {
+	b.WriteString("\nPull request:\n")
+	if status.PullRequest == nil {
 		b.WriteString(noValue + "\n")
 	} else {
-		execution := status.Execution
-		if execution.PullRequestURL != "" {
-			b.WriteString("A pull request was opened and merged\n")
+		pullRequest := status.PullRequest
+		if pullRequest.URL != "" {
+			b.WriteString("URL: " + pullRequest.URL + "\n")
+			b.WriteString("State: " + string(pullRequest.State) + "\n")
 		}
-		if len(execution.RestartedPods) > 0 {
-			b.WriteString("Restarted pods: " + strconv.Itoa(len(execution.RestartedPods)) + "\n")
+		if pullRequest.MergeCommit != "" {
+			b.WriteString("Merge commit: " + pullRequest.MergeCommit + "\n")
 		}
 	}
 
@@ -104,9 +105,6 @@ func narrativeRecordText(t *v1alpha1.Triage) string {
 		b.WriteString("\n")
 	}
 
-	if status.FollowUpTriage != "" {
-		b.WriteString("\nFollow-up Triage: " + status.FollowUpTriage + "\n")
-	}
 	return truncateRecord(b.String())
 }
 

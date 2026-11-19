@@ -16,22 +16,15 @@ limitations under the License.
 
 package v1alpha1
 
-// Names of the deterministic Verification checks recorded in a Triage's status (ADR-0006).
+// Names of the deterministic Verification checks recorded in a Page's status (ADR-0006).
 const (
 	// CheckArgoCDSynced passes once Argo CD reports the application Synced and Healthy at the merge commit.
 	CheckArgoCDSynced = "ArgoCDSynced"
-	// CheckRolloutAvailable passes when the Workload's rollout is complete and available.
+	// CheckRolloutAvailable passes when the Target's rollout is complete and available.
 	CheckRolloutAvailable = "RolloutAvailable"
-	// CheckNoNewRestarts passes when no container of the Workload restarted or was OOMKilled during the window.
+	// CheckNoNewRestarts passes when no container of the Target restarted or was OOMKilled during the window.
 	CheckNoNewRestarts = "NoNewRestarts"
 	// CheckAlertResolved passes when the triggering alert has resolved in Alertmanager. It is skipped for human
 	// Triggers.
 	CheckAlertResolved = "AlertResolved"
 )
-
-// ConditionFollowUpSkipped is set on a NotRecovered Triage whose Follow-up Triage could not be started.
-const ConditionFollowUpSkipped = "FollowUpSkipped"
-
-// ReasonActiveTriageExists means the Workload already had an Active Triage when Verification ended in NotRecovered,
-// so the duplicate refusal stopped the Follow-up Triage. Triggers attach to the Active Triage instead.
-const ReasonActiveTriageExists = "ActiveTriageExists"

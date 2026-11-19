@@ -1,6 +1,6 @@
 // Package patchresources performs Validation for the PatchResources Action:
 // the namespace allowlist, the bounds on requests and limits, a server-side
-// dry run of the patched Workload, and the rendering of the exact git patch
+// dry run of the patched Target, and the rendering of the exact git patch
 // against the Sandbox (ADR-0002, ADR-0008). It also decides when a rendered
 // Proposal has become a Stale Proposal.
 package patchresources
@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -27,7 +25,6 @@ import (
 )
 
 // maxMessageLength bounds a message that is copied from another system into a Validation error.
-const maxMessageLength = 1000
 
 const fieldPrefix = "proposal.parameters.patchResources"
 
@@ -49,13 +46,11 @@ func DefaultBounds() map[corev1.ResourceName]Bounds {
 
 // Config configures the PatchResources validator.
 type Config struct {
-	// Reader reads Workloads directly from the API server, not from a cache.
+	// Reader reads Targets directly from the API server, not from a cache.
 	Reader client.Reader
-	// Writer sends the dry-run update. Nothing is ever persisted by it.
-	Writer client.Writer
-	// Sandbox is the repository that holds the Workloads' manifests.
+	// Sandbox is the repository that holds the Targets' manifests.
 	Sandbox sandbox.Repository
-	// AllowedNamespaces are the namespaces whose Workloads may be patched. None are allowed when it is empty.
+	// AllowedNamespaces are the namespaces whose Targets may be patched. None are allowed when it is empty.
 	AllowedNamespaces []string
 	// Bounds are the permitted range for each resource a Proposal may set. A resource without bounds is refused.
 	Bounds map[corev1.ResourceName]Bounds
@@ -95,7 +90,6 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 	return v.change.Validate(ctx, req, &renderer{
 		params:  params,
 		bounds:  v.cfg.Bounds,
-		writer:  v.cfg.Writer,
 		reader:  v.cfg.Reader,
 		sandbox: v.cfg.Sandbox,
 	})
@@ -103,7 +97,7 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 
 // Stale reports why the Proposal's base no longer holds, or an empty string
 // when it still does.
-func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error) {
+func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Page) (string, error) {
 	return v.change.Stale(ctx, t)
 }
 
@@ -111,7 +105,6 @@ func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, erro
 type renderer struct {
 	params  v1alpha1.PatchResourcesParameters
 	bounds  map[corev1.ResourceName]Bounds
-	writer  client.Writer
 	reader  client.Reader
 	sandbox sandbox.Repository
 }
@@ -126,73 +119,41 @@ func (r *renderer) CheckParameters() []agentapi.ValidationError {
 	return checkParameters(r.params, r.bounds)
 }
 
-func (r *renderer) Check(live *change.LiveWorkload) []agentapi.ValidationError {
+func (r *renderer) Check(live *change.LiveTarget) []agentapi.ValidationError {
 	if findLiveContainer(live.PodSpec, r.params.Container) != nil {
 		return nil
 	}
 	return []agentapi.ValidationError{{
 		Field:   fieldPrefix + ".container",
-		Message: fmt.Sprintf("the Workload has no container named %s", r.params.Container),
+		Message: fmt.Sprintf("the Target has no container named %s", r.params.Container),
 	}}
 }
 
 func (r *renderer) Render(
-	ctx context.Context, src []byte, workload v1alpha1.WorkloadReference,
-	live *change.LiveWorkload, sourcePath string,
+	ctx context.Context, src []byte, target v1alpha1.TargetReference,
+	live *change.LiveTarget, sourcePath string,
 ) ([]byte, []agentapi.ValidationError, error) {
-	rendered, merged, err := render(src, workload, r.params.Container, r.params.Requests, r.params.Limits)
+	rendered, merged, err := render(src, target, r.params.Container, r.params.Requests, r.params.Limits)
 	if err != nil {
 		return nil, nil, err
 	}
 	if errs := checkMerged(merged); len(errs) > 0 {
 		return nil, errs, nil
 	}
+	// The live Target can differ from the Sandbox copy while a GitOps controller
+	// has not applied a change yet, so the resources the API server will see are
+	// checked as well. It is an in-process check: the product holds no update
+	// grant, so there is no server-side dry run (ADR-0037).
+	if container := findLiveContainer(live.PodSpec, r.params.Container); container != nil {
+		if errs := checkMerged(overlay(container.Resources, r.params.Requests, r.params.Limits)); len(errs) > 0 {
+			return nil, errs, nil
+		}
+	}
 	if errs, err := r.checkUnschedulable(
-		ctx, live, workload, sourcePath, r.params.Container, merged); err != nil || len(errs) > 0 {
+		ctx, live, target, sourcePath, r.params.Container, merged); err != nil || len(errs) > 0 {
 		return nil, errs, err
 	}
 	return rendered, nil, nil
-}
-
-// DryRun applies the patched resources to the live Workload with a server-side
-// dry run, which runs the API server's own validation and admission. A refusal
-// by the API server is a Validation error; any other failure means Validation
-// could not run.
-func (r *renderer) DryRun(
-	ctx context.Context, live *change.LiveWorkload,
-) ([]agentapi.ValidationError, error) {
-	container := findLiveContainer(live.PodSpec, r.params.Container)
-	if container == nil {
-		return []agentapi.ValidationError{{
-			Field:   fieldPrefix + ".container",
-			Message: fmt.Sprintf("the Workload has no container named %s", r.params.Container),
-		}}, nil
-	}
-	merged := overlay(container.Resources, r.params.Requests, r.params.Limits)
-	// checkMerged validated the Sandbox's copy of the manifest. The API server
-	// validates the live Workload instead, and the two can differ while Argo CD
-	// has not applied a change yet. Checking the live merge here reports the
-	// precise rule the Proposal breaks, instead of the dry run's less useful
-	// refusal.
-	if errs := checkMerged(merged); len(errs) > 0 {
-		return errs, nil
-	}
-	container.Resources = merged
-	// The dry run asks whether the patched object is acceptable, not whether nothing changed since it was read;
-	// a later change makes the Proposal stale, which is checked separately.
-	live.Object.SetResourceVersion("")
-	err := r.writer.Update(ctx, live.Object, client.DryRunAll)
-	switch {
-	case err == nil:
-		return nil, nil
-	case apierrors.IsInvalid(err), apierrors.IsForbidden(err), apierrors.IsBadRequest(err):
-		return []agentapi.ValidationError{{
-			Field:   "workload",
-			Message: truncate("the server-side dry run was refused: "+err.Error(), maxMessageLength),
-		}}, nil
-	default:
-		return nil, fmt.Errorf("dry-run the patched Workload: %w", err)
-	}
 }
 
 func refuse(field, message string) proposal.Outcome {
@@ -254,13 +215,13 @@ func checkMerged(r corev1.ResourceRequirements) []agentapi.ValidationError {
 // declare the container's resources, so only node allocatable bounds apply.
 var errNoKnownGood = errors.New("the Unschedulable bound cannot be checked against the Sandbox's known-good state")
 
-// checkUnschedulable enforces the bound that applies when the live Workload's
+// checkUnschedulable enforces the bound that applies when the live Target's
 // requests cannot fit any node: the Proposal must set each such request within
 // the largest value that any node reports as allocatable, and, when the
 // Sandbox's known-good tag declares a request for that resource, no higher
 // than that known-good value.
 func (r *renderer) checkUnschedulable(
-	ctx context.Context, live *change.LiveWorkload, workload v1alpha1.WorkloadReference,
+	ctx context.Context, live *change.LiveTarget, target v1alpha1.TargetReference,
 	sourcePath, container string, merged corev1.ResourceRequirements,
 ) ([]agentapi.ValidationError, error) {
 	var nodes corev1.NodeList
@@ -282,7 +243,7 @@ func (r *renderer) checkUnschedulable(
 	if len(constrained) == 0 {
 		return nil, nil
 	}
-	knownGood, err := r.knownGoodRequests(ctx, workload, sourcePath, container)
+	knownGood, err := r.knownGoodRequests(ctx, target, sourcePath, container)
 	if err != nil && !errors.Is(err, errNoKnownGood) {
 		return nil, err
 	}
@@ -298,7 +259,7 @@ func (r *renderer) checkUnschedulable(
 				"no node reports allocatable %s, so a %s request cannot fit one", name, name)})
 		case reach.Cmp(requested) < 0:
 			errs = append(errs, agentapi.ValidationError{Field: field, Message: fmt.Sprintf(
-				"the Workload is unschedulable because its %s request %s fits no node; "+
+				"the Target is unschedulable because its %s request %s fits no node; "+
 					"the request must not exceed the largest node's allocatable %s",
 				name, requested.String(), reach.String())})
 		case declared && bound.Cmp(requested) < 0:
@@ -328,7 +289,7 @@ func largestAllocatable(nodes []corev1.Node) corev1.ResourceList {
 // declares for the container. It reports errNoKnownGood when that tag or
 // container declaration is absent.
 func (r *renderer) knownGoodRequests(
-	ctx context.Context, workload v1alpha1.WorkloadReference, sourcePath, container string,
+	ctx context.Context, target v1alpha1.TargetReference, sourcePath, container string,
 ) (corev1.ResourceList, error) {
 	history, err := r.sandbox.History(ctx)
 	if err != nil {
@@ -346,7 +307,7 @@ func (r *renderer) knownGoodRequests(
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
 	}
-	index, err := sandboxyaml.FindWorkload(docs, workload)
+	index, err := sandboxyaml.FindTarget(docs, target)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s at tag %s: %v", errNoKnownGood, sourcePath, sandbox.KnownGoodTag, err)
 	}
@@ -388,11 +349,4 @@ func findLiveContainer(spec *corev1.PodSpec, name string) *corev1.Container {
 		}
 	}
 	return nil
-}
-
-func truncate(s string, limit int) string {
-	if r := []rune(s); len(r) > limit {
-		return strings.TrimSpace(string(r[:limit]))
-	}
-	return s
 }

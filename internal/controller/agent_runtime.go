@@ -59,12 +59,18 @@ func validateRecording(file, pvc, provider, fileVariable string) error {
 }
 
 // ValidateGateway refuses configurations that cannot authenticate the agent to
-// Keycloak or cannot address the gateway that fronts the MCP servers. The
-// issuer and the token endpoint must describe the same realm, because the
-// issuer is also the audience of the projected service account token.
+// an identity provider or cannot address the gateway that fronts the MCP
+// servers. Both are optional: a deployment that configures neither gives the
+// agent Job no tool gateway and no identity-provider token, which is the
+// standalone default. When one is configured, every field it needs is required,
+// and the issuer and the token endpoint must describe the same realm, because
+// the issuer is also the audience of the projected service account token.
 func (c AgentRuntimeConfig) ValidateGateway() error {
+	if c.GatewayURL == "" && c.KeycloakIssuer == "" && c.KeycloakTokenURL == "" && c.KeycloakClientID == "" {
+		return nil
+	}
 	if c.GatewayURL == "" {
-		return errors.New("PAGERLESS_MCP_GATEWAY_URL is required")
+		return errors.New("PAGERLESS_MCP_GATEWAY_URL is required when an MCP gateway is used")
 	}
 	gateway, err := url.Parse(c.GatewayURL)
 	if err != nil || gateway.Host == "" || (gateway.Scheme != "http" && gateway.Scheme != "https") ||

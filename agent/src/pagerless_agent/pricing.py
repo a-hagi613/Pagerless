@@ -1,4 +1,4 @@
-"""The published model prices used to estimate one Triage's cost.
+"""The published model prices used to estimate one Page's cost.
 
 Claude Haiku 5.5 prices a request by its prompt length: up to 100,000 input
 tokens costs $0.10 per million input tokens and $0.50 per million output tokens;
@@ -14,7 +14,7 @@ tier, verified on 2026-11-17.
 writes, which are billed at their own rates: cache reads below the base input
 rate and cache writes at or above it. Pricing every input token at the base rate
 therefore overstates cached reads and can understate cached writes. The figure is
-an estimate for the Triage record and the dashboard, not an invoice.
+an estimate for the Page record and the dashboard, not an invoice.
 """
 
 from __future__ import annotations

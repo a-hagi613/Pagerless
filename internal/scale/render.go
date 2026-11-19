@@ -25,9 +25,9 @@ func unsupported(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errUnsupported, fmt.Sprintf(format, args...))
 }
 
-// render edits the Workload's replica count in the Sandbox file and returns the
+// render edits the Target's replica count in the Sandbox file and returns the
 // new content, changing only the replica count.
-func render(src []byte, workload v1alpha1.WorkloadReference, replicas int32) ([]byte, error) {
+func render(src []byte, target v1alpha1.TargetReference, replicas int32) ([]byte, error) {
 	if bytes.Contains(src, []byte("\r")) {
 		return nil, unsupported("the file has carriage returns; use LF line endings")
 	}
@@ -35,7 +35,7 @@ func render(src []byte, workload v1alpha1.WorkloadReference, replicas int32) ([]
 	if err != nil {
 		return nil, err
 	}
-	index, err := sandboxyaml.FindWorkload(docs, workload)
+	index, err := sandboxyaml.FindTarget(docs, target)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func replaceScalar(line string, column int, old, replacement string) (string, er
 	return line[:start] + replacement + line[start+len(old):], nil
 }
 
-// verify proves that the edit changed nothing but the Workload's replica count:
+// verify proves that the edit changed nothing but the Target's replica count:
 // it decodes both files and compares every document, with the replica count
 // held out of the comparison and checked against the requested count.
 func verify(before, after []byte, index int, replicas int32) error {

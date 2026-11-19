@@ -11,7 +11,7 @@ import (
 )
 
 // KnownGoodTag is the Sandbox tag that marks the last state in which every
-// Workload was healthy. `make reset` points the branch at it, and the
+// Target was healthy. `make reset` points the branch at it, and the
 // Unschedulable bound of PatchResources reads the requests it declares.
 const KnownGoodTag = "known-good"
 

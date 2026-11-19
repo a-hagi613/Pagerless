@@ -19,7 +19,7 @@ import (
 
 const (
 	sandboxNamespace = "sandbox"
-	optInLabel       = "pagerless_triage"
+	optInLabel       = "pagerless_page"
 )
 
 // webhookBody is the Alertmanager webhook payload, version 4, that the receiver accepts.
@@ -42,7 +42,7 @@ type webhookAlert struct {
 }
 
 // optedInAlert returns a firing alert that carries the opt-in label and the
-// given labels, as a rule for a Workload's OOMKilled containers would.
+// given labels, as a rule for a Target's OOMKilled containers would.
 func optedInAlert(fingerprint string, labels map[string]string) webhookAlert {
 	all := map[string]string{
 		"alertname": "OOMKilled",
@@ -96,12 +96,12 @@ func postAlertsWithToken(t *testing.T, env *testenv.Env, token string, items ...
 	return resp.StatusCode
 }
 
-// triagesInNamespace lists the Triages of the harness namespace.
-func triagesInNamespace(t *testing.T, env *testenv.Env) []v1alpha1.Triage {
+// pagesInNamespace lists the Pages of the harness namespace.
+func pagesInNamespace(t *testing.T, env *testenv.Env) []v1alpha1.Page {
 	t.Helper()
-	var list v1alpha1.TriageList
+	var list v1alpha1.PageList
 	if err := env.Client.List(t.Context(), &list, client.InNamespace(testenv.Namespace)); err != nil {
-		t.Fatalf("list Triages: %v", err)
+		t.Fatalf("list Pages: %v", err)
 	}
 	return list.Items
 }
@@ -129,8 +129,8 @@ func TestAlertReceiverRefusesUnauthenticatedTriggers(t *testing.T) {
 			t.Errorf("authorization %q: status = %d, want 401", authorization, resp.StatusCode)
 		}
 	}
-	if count := len(triagesInNamespace(t, env)); count != 0 {
-		t.Errorf("unauthenticated requests created %d Triages", count)
+	if count := len(pagesInNamespace(t, env)); count != 0 {
+		t.Errorf("unauthenticated requests created %d Pages", count)
 	}
 }
 
@@ -147,9 +147,9 @@ func TestAlertReceiverReadsTheRotatedTokenForEveryDelivery(t *testing.T) {
 	if code := postAlerts(t, env, checkoutAlert("fp-after", "checkout-1")); code != http.StatusUnauthorized {
 		t.Fatalf("old token after rotation: status = %d, want 401", code)
 	}
-	items := triagesInNamespace(t, env)
+	items := pagesInNamespace(t, env)
 	if len(items) != 1 {
-		t.Fatalf("Triages = %d, want only the authenticated delivery", len(items))
+		t.Fatalf("Pages = %d, want only the authenticated delivery", len(items))
 	}
 	tr := env.WaitForPhase(t, items[0].Name, v1alpha1.PhaseInvestigating)
 	if tr.Status.TriggerCount != 1 {
@@ -159,7 +159,7 @@ func TestAlertReceiverReadsTheRotatedTokenForEveryDelivery(t *testing.T) {
 	if code != http.StatusOK {
 		t.Errorf("new token after rotation: status = %d, want 200", code)
 	}
-	env.WaitFor(t, tr.Name, "the rotated token's delivery is recorded", func(latest *v1alpha1.Triage) bool {
+	env.WaitFor(t, tr.Name, "the rotated token's delivery is recorded", func(latest *v1alpha1.Page) bool {
 		return latest.Status.TriggerCount == 2
 	})
 	// A Secret that is momentarily empty must fail closed rather than accepting an empty bearer token.
@@ -176,12 +176,12 @@ func TestAlertReceiverFailsClosedWhenTheSecretCannotBeRead(t *testing.T) {
 	if code := postAlerts(t, env, checkoutAlert("fp-unavailable", "checkout-1")); code != http.StatusServiceUnavailable {
 		t.Errorf("unreadable token: status = %d, want 503", code)
 	}
-	if items := triagesInNamespace(t, env); len(items) != 0 {
-		t.Errorf("a request without a readable expected token created %d Triages", len(items))
+	if items := pagesInNamespace(t, env); len(items) != 0 {
+		t.Errorf("a request without a readable expected token created %d Pages", len(items))
 	}
 }
 
-func TestOptedInAlertStartsATriageForItsWorkload(t *testing.T) {
+func TestOptedInAlertStartsAPageForItsTarget(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace))
 
@@ -189,14 +189,14 @@ func TestOptedInAlertStartsATriageForItsWorkload(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 
-	items := triagesInNamespace(t, env)
+	items := pagesInNamespace(t, env)
 	if len(items) != 1 {
-		t.Fatalf("Triages = %d, want 1", len(items))
+		t.Fatalf("Pages = %d, want 1", len(items))
 	}
 	tr := env.WaitForPhase(t, items[0].Name, v1alpha1.PhaseInvestigating)
-	want := v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindDeployment, Namespace: sandboxNamespace, Name: checkout}
-	if tr.Spec.Workload != want {
-		t.Errorf("workload = %+v, want %+v", tr.Spec.Workload, want)
+	want := v1alpha1.TargetReference{Kind: v1alpha1.TargetKindDeployment, Namespace: sandboxNamespace, Name: checkout}
+	if tr.Spec.Target != want {
+		t.Errorf("target = %+v, want %+v", tr.Spec.Target, want)
 	}
 	if tr.Spec.Trigger.Source != v1alpha1.TriggerSourceAlertmanager {
 		t.Errorf("trigger source = %q, want Alertmanager", tr.Spec.Trigger.Source)
@@ -218,14 +218,14 @@ func TestStatefulSetAlertTargetsAStatefulSet(t *testing.T) {
 		t.Fatalf("status = %d, want 200", code)
 	}
 
-	items := triagesInNamespace(t, env)
+	items := pagesInNamespace(t, env)
 	if len(items) != 1 {
-		t.Fatalf("Triages = %d, want 1", len(items))
+		t.Fatalf("Pages = %d, want 1", len(items))
 	}
 	tr := env.WaitForPhase(t, items[0].Name, v1alpha1.PhaseInvestigating)
-	want := v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: sandboxNamespace, Name: "ledger"}
-	if tr.Spec.Workload != want {
-		t.Errorf("workload = %+v, want %+v", tr.Spec.Workload, want)
+	want := v1alpha1.TargetReference{Kind: v1alpha1.TargetKindStatefulSet, Namespace: sandboxNamespace, Name: "ledger"}
+	if tr.Spec.Target != want {
+		t.Errorf("target = %+v, want %+v", tr.Spec.Target, want)
 	}
 }
 
@@ -252,18 +252,18 @@ func TestAlertsThatAreNotOptedInOrOutsideTheAllowlistAreIgnored(t *testing.T) {
 		if code := postAlerts(t, env, item); code != http.StatusOK {
 			t.Errorf("%s: status = %d, want 200", name, code)
 		}
-		if n := len(triagesInNamespace(t, env)); n != 0 {
-			t.Errorf("%s: %d Triages were created, want none", name, n)
+		if n := len(pagesInNamespace(t, env)); n != 0 {
+			t.Errorf("%s: %d Pages were created, want none", name, n)
 		}
 	}
 }
 
-func TestRepeatAlertJoinsTheActiveTriage(t *testing.T) {
+func TestRepeatAlertJoinsTheActivePage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace))
 
 	// The two posts are not separated by a wait, so the second may arrive before
-	// the reconciler has initialized the Triage. Its count must still reach 2.
+	// the reconciler has initialized the Page. Its count must still reach 2.
 	if code := postAlerts(t, env, checkoutAlert("fp-1", "checkout-a")); code != http.StatusOK {
 		t.Fatalf("first alert: status = %d, want 200", code)
 	}
@@ -271,36 +271,36 @@ func TestRepeatAlertJoinsTheActiveTriage(t *testing.T) {
 		t.Fatalf("repeat alert: status = %d, want 200", code)
 	}
 
-	items := triagesInNamespace(t, env)
+	items := pagesInNamespace(t, env)
 	if len(items) != 1 {
-		t.Fatalf("Triages = %d, want 1: a repeat alert must not start another Triage", len(items))
+		t.Fatalf("Pages = %d, want 1: a repeat alert must not start another Page", len(items))
 	}
-	tr := env.WaitFor(t, items[0].Name, "trigger count is 2", func(tr *v1alpha1.Triage) bool {
+	tr := env.WaitFor(t, items[0].Name, "trigger count is 2", func(tr *v1alpha1.Page) bool {
 		return tr.Status.TriggerCount == 2
 	})
 	if tr.Spec.Trigger.AlertFingerprint != "fp-1" {
-		t.Errorf("fingerprint = %q, want the fingerprint of the alert that started the Triage",
+		t.Errorf("fingerprint = %q, want the fingerprint of the alert that started the Page",
 			tr.Spec.Trigger.AlertFingerprint)
 	}
 }
 
-func TestRepeatAlertAfterTheActiveTriageEndedStartsANewTriage(t *testing.T) {
+func TestRepeatAlertAfterTheActivePageEndedStartsANewPage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, testenv.WithAlertNamespaces(sandboxNamespace))
 
 	if code := postAlerts(t, env, checkoutAlert("fp-1", "checkout-a")); code != http.StatusOK {
 		t.Fatalf("first alert: status = %d, want 200", code)
 	}
-	first := env.WaitForPhase(t, triagesInNamespace(t, env)[0].Name, v1alpha1.PhaseInvestigating)
-	env.EndJob(t, first.Status.JobName, testenv.JobFailed)
+	first := env.WaitForPhase(t, pagesInNamespace(t, env)[0].Name, v1alpha1.PhaseInvestigating)
+	env.EndJob(t, first.Status.AgentJobName, testenv.JobFailed)
 	env.WaitForPhase(t, first.Name, v1alpha1.PhaseFailed)
 
 	if code := postAlerts(t, env, checkoutAlert("fp-2", "checkout-b")); code != http.StatusOK {
 		t.Fatalf("repeat alert: status = %d, want 200", code)
 	}
-	items := triagesInNamespace(t, env)
+	items := pagesInNamespace(t, env)
 	if len(items) != 2 {
-		t.Fatalf("Triages = %d, want 2: a new alert after the Active Triage ended starts a Triage", len(items))
+		t.Fatalf("Pages = %d, want 2: a new alert after the Active Page ended starts a Page", len(items))
 	}
 	for i := range items {
 		if items[i].Name != first.Name {
@@ -340,7 +340,7 @@ func TestAlertReceiverRefusesMalformedBodiesAndOtherMethods(t *testing.T) {
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET: status = %d, want 405", resp.StatusCode)
 	}
-	if n := len(triagesInNamespace(t, env)); n != 0 {
-		t.Errorf("%d Triages were created by refused requests, want none", n)
+	if n := len(pagesInNamespace(t, env)); n != 0 {
+		t.Errorf("%d Pages were created by refused requests, want none", n)
 	}
 }
