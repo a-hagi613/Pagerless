@@ -25,10 +25,15 @@ echo, from standard input, from a file, or from an env file, so it never reaches
 shell history or a process listing.`,
 		Args: noArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return usagef("use config get, config set, or config unset")
+			return usagef("use config get, config set, config test, or config unset")
 		},
 	}
-	cmd.AddCommand(newConfigGetCommand(opts), newConfigSetCommand(opts), newConfigUnsetCommand(opts))
+	cmd.AddCommand(
+		newConfigGetCommand(opts),
+		newConfigSetCommand(opts),
+		newConfigTestCommand(opts),
+		newConfigUnsetCommand(opts),
+	)
 	return cmd
 }
 
@@ -221,6 +226,50 @@ from standard input, from a file, or from an env file.`,
 	cmd.Flags().StringVar(&githubRepo, "github-repo", "", "Target Repository as owner/name")
 	cmd.Flags().StringVar(&githubAPIURL, "github-api-url", "", "GitHub API base URL, for GitHub Enterprise")
 	cmd.Flags().StringVar(&connector, "name", "", "connector name whose token is written")
+	return cmd
+}
+
+// newConfigTestCommand returns the command that probes one configured dependency.
+func newConfigTestCommand(opts *options) *cobra.Command {
+	var target string
+	cmd := &cobra.Command{
+		Use:   "test",
+		Short: "Probe the AI endpoint, the Target Repository, or one Connector token",
+		Long: `Run the same connection test the settings route's buttons run.
+
+The probe runs in the server's network with the credentials the Secret holds,
+so it needs --server. "connector:<name>" checks the token the runtime will read;
+a Connector's endpoint is deployment configuration, not a credential.`,
+		Args: noArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if opts.mode != "server" {
+				return usagef(
+					"config test needs --server: the probe runs in the server's network with the stored credentials")
+			}
+			value := strings.TrimSpace(target)
+			switch {
+			case value == "ai", value == "github":
+			case strings.HasPrefix(value, "connector:") && strings.TrimPrefix(value, "connector:") != "":
+			default:
+				return usagef(`--target must be "ai", "github", or "connector:<name>"`)
+			}
+			s, err := openSession(cmd, opts)
+			if err != nil {
+				return err
+			}
+			result, err := s.testSetting(cmd.Context(), value)
+			if err != nil {
+				return err
+			}
+			if !result.OK {
+				return fmt.Errorf("the %s test failed: %s", value, result.Detail)
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n", value, result.Detail)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&target, "target", "", `what to test: "ai", "github", or "connector:<name>"`)
+	_ = cmd.MarkFlagRequired("target")
 	return cmd
 }
 

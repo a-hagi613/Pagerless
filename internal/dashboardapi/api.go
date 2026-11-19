@@ -77,8 +77,6 @@ type Auth interface {
 	// ValidateCSRF reports whether a state-changing request carries that
 	// session's CSRF token. It is true in disabled mode and for a Bearer request.
 	ValidateCSRF(r *http.Request, user *User) bool
-	// SignIn serves the browser sign-in route.
-	SignIn() http.Handler
 	// Login exchanges the bootstrap token for a signed session cookie.
 	Login() http.Handler
 	// Logout revokes the session and clears the cookie.
@@ -133,7 +131,6 @@ func New(cfg Config) *Handler {
 		h.clock = clock.RealClock{}
 	}
 	h.mux = http.NewServeMux()
-	h.mux.Handle("GET /login", h.auth.SignIn())
 	h.mux.Handle("POST /api/auth/login", h.auth.Login())
 	h.mux.Handle("POST /api/auth/logout", h.auth.Logout())
 	h.mux.Handle("POST /logout", h.auth.Logout())
@@ -147,6 +144,7 @@ func New(cfg Config) *Handler {
 	h.mux.HandleFunc("POST /api/pages/{name}/decision", h.decide)
 	h.mux.HandleFunc("GET /api/targets", h.targetList)
 	h.mux.HandleFunc("GET /api/settings", h.settings)
+	h.mux.HandleFunc("POST /api/settings/test", h.testSettings)
 	h.mux.HandleFunc("PATCH /api/settings", h.updateSettings)
 	h.mux.HandleFunc("DELETE /api/settings/{key}", h.unsetSetting)
 	h.mux.HandleFunc("GET /api/version", h.version)
@@ -180,8 +178,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // publicPath reports whether the request may proceed without a session. The
 // built assets are public because the browser fetches them before rendering
-// anything, and they contain no data; the sign-in and token exchange routes are
-// public so a browser can establish a session.
+// anything, and they contain no data; the sign-in route the application renders
+// at /login and the token exchange are public so a browser can establish a
+// session.
 func (h *Handler) publicPath(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/login", "/api/auth/login", "/api/version":
@@ -195,6 +194,8 @@ type PageSummary struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Phase     Phase  `json:"phase"`
+	// Severity ranks the Page for the operator. A Page the server has not ranked yet carries none.
+	Severity v1alpha1.Severity `json:"severity,omitempty"`
 
 	Target  v1alpha1.TargetReference `json:"target"`
 	Trigger v1alpha1.Trigger         `json:"trigger"`
@@ -205,6 +206,10 @@ type PageSummary struct {
 
 	// Action is the current Proposal's Action, when there is one.
 	Action v1alpha1.Action `json:"action,omitempty"`
+	// ProposalHash is the current Proposal's hash, so the inbox can bind a decision without a detail read.
+	ProposalHash string `json:"proposalHash,omitempty"`
+	// PullRequest is the pull request that carries the approved Proposal, when there is one.
+	PullRequest *v1alpha1.PullRequest `json:"pullRequest,omitempty"`
 	// Source reports whether the row came from the live Page resource or only from history.
 	Source string `json:"source"`
 }
@@ -225,7 +230,9 @@ type DetailResponse struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
 	Phase     Phase  `json:"phase"`
-	Source    string `json:"source"`
+	// Severity ranks the Page for the operator. A Page the server has not ranked yet carries none.
+	Severity v1alpha1.Severity `json:"severity,omitempty"`
+	Source   string            `json:"source"`
 
 	CreatedAt  time.Time  `json:"createdAt"`
 	StartedAt  *time.Time `json:"startedAt,omitempty"`
@@ -453,6 +460,7 @@ func (h *Handler) record(ctx context.Context, name string) (*DetailResponse, err
 		Name:          latest.Page,
 		Namespace:     latest.Namespace,
 		Phase:         latest.Phase,
+		Severity:      latest.Status.Severity,
 		Source:        "history",
 		CreatedAt:     historyCreatedAt(latest),
 		StartedAt:     timePtr(latest.Status.StartedAt),
@@ -488,6 +496,7 @@ func (h *Handler) detailFromLive(tr *v1alpha1.Page) *DetailResponse {
 		Name:          tr.Name,
 		Namespace:     tr.Namespace,
 		Phase:         phase,
+		Severity:      tr.Status.Severity,
 		Source:        "live",
 		CreatedAt:     liveCreatedAt(tr),
 		StartedAt:     timePtr(tr.Status.StartedAt),
@@ -520,34 +529,40 @@ func (h *Handler) summarize(snapshot *history.Snapshot, tr *v1alpha1.Page) PageS
 			phase = v1alpha1.PhasePending
 		}
 		summary := PageSummary{
-			Name:       tr.Name,
-			Namespace:  tr.Namespace,
-			Phase:      phase,
-			Target:     tr.Spec.Target,
-			Trigger:    tr.Spec.Trigger,
-			CreatedAt:  liveCreatedAt(tr),
-			StartedAt:  timePtr(tr.Status.StartedAt),
-			TerminalAt: timePtr(tr.Status.TerminalAt),
-			Source:     "live",
+			Name:        tr.Name,
+			Namespace:   tr.Namespace,
+			Phase:       phase,
+			Severity:    tr.Status.Severity,
+			Target:      tr.Spec.Target,
+			Trigger:     tr.Spec.Trigger,
+			CreatedAt:   liveCreatedAt(tr),
+			StartedAt:   timePtr(tr.Status.StartedAt),
+			TerminalAt:  timePtr(tr.Status.TerminalAt),
+			PullRequest: tr.Status.PullRequest,
+			Source:      "live",
 		}
 		if tr.Status.Proposal != nil {
 			summary.Action = tr.Status.Proposal.Action
+			summary.ProposalHash = tr.Status.Proposal.Hash
 		}
 		return summary
 	}
 	summary := PageSummary{
-		Name:       snapshot.Page,
-		Namespace:  snapshot.Namespace,
-		Phase:      snapshot.Phase,
-		Target:     snapshot.Spec.Target,
-		Trigger:    snapshot.Spec.Trigger,
-		CreatedAt:  historyCreatedAt(snapshot),
-		StartedAt:  timePtr(snapshot.Status.StartedAt),
-		TerminalAt: timePtr(snapshot.Status.TerminalAt),
-		Source:     "history",
+		Name:        snapshot.Page,
+		Namespace:   snapshot.Namespace,
+		Phase:       snapshot.Phase,
+		Severity:    snapshot.Status.Severity,
+		Target:      snapshot.Spec.Target,
+		Trigger:     snapshot.Spec.Trigger,
+		CreatedAt:   historyCreatedAt(snapshot),
+		StartedAt:   timePtr(snapshot.Status.StartedAt),
+		TerminalAt:  timePtr(snapshot.Status.TerminalAt),
+		PullRequest: snapshot.Status.PullRequest,
+		Source:      "history",
 	}
 	if snapshot.Status.Proposal != nil {
 		summary.Action = snapshot.Status.Proposal.Action
+		summary.ProposalHash = snapshot.Status.Proposal.Hash
 	}
 	return summary
 }

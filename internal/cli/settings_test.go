@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -298,5 +299,71 @@ func TestApproveInServerModeBindsTheDisplayedHash(t *testing.T) {
 	}
 	if decision["decision"] != "Approved" {
 		t.Errorf("decision = %q, want Approved", decision["decision"])
+	}
+}
+
+func TestConfigTestProbesTheSelectedTarget(t *testing.T) {
+	t.Parallel()
+	cookie := sessionCookie(t)
+	var targets []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/settings/test" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("X-CSRF-Token") != testCSRF {
+			http.Error(w, "csrf", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Target string `json:"target"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		targets = append(targets, body.Target)
+		if body.Target == "connector:prometheus" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok": false, "detail": "CONNECTOR_PROMETHEUS_TOKEN is not configured",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "detail": "the endpoint answered 200 OK"})
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	content := "server: " + server.URL + "\nsessionToken: " + cookie + "\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errOut, err := runCLI(t, "", "--config", configPath, "config", "test", "--target", "ai", "--mode", "server")
+	if err != nil {
+		t.Fatalf("config test: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "ai: the endpoint answered 200 OK") {
+		t.Errorf("output = %q, want the successful probe", out)
+	}
+
+	_, _, err = runCLI(t, "", "--config", configPath, "config", "test", "--target", "connector:prometheus", "--mode", "server")
+	if err == nil || !strings.Contains(err.Error(), "CONNECTOR_PROMETHEUS_TOKEN is not configured") {
+		t.Fatalf("error = %v, want the failed probe", err)
+	}
+	if code := cli.ExitCode(err); code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+
+	if !slices.Equal(targets, []string{"ai", "connector:prometheus"}) {
+		t.Errorf("targets = %v, want the two requested probes", targets)
+	}
+}
+
+func TestConfigTestNeedsServerMode(t *testing.T) {
+	t.Parallel()
+	_, _, err := runCLI(t, "", "config", "test", "--target", "ai")
+	if err == nil || !strings.Contains(err.Error(), "needs --server") {
+		t.Fatalf("error = %v, want the server-mode requirement", err)
+	}
+	if code := cli.ExitCode(err); code != cli.ExitUsage {
+		t.Errorf("exit code = %d, want %d", code, cli.ExitUsage)
 	}
 }

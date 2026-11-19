@@ -57,7 +57,7 @@ func (h *Handler) decide(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !user.Approver {
-		writeError(w, http.StatusForbidden, "only a member of the approvers group may decide a Proposal")
+		writeError(w, http.StatusForbidden, "this session cannot decide a Proposal")
 		return
 	}
 	switch normalizeDecision(request.Decision) {
