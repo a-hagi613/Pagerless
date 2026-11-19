@@ -16,6 +16,7 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/cooldown"
 	"github.com/a-hagi613/pagerless/internal/page"
+	"github.com/a-hagi613/pagerless/internal/verification"
 )
 
 // AvailabilityReader reports the replica health of a resolved Subject. It is how
@@ -348,7 +349,7 @@ func (p *Pipeline) createPage(ctx context.Context, subject Subject, subjectKey, 
 	entry Entry, signal Signal, severity v1alpha1.Severity, occurrences int64, opened cooldown.Window,
 	verdict Verdict, now time.Time,
 ) error {
-	previous, err := p.previousPage(ctx, subjectKey)
+	previous, excluded, err := p.previousPage(ctx, subjectKey)
 	if err != nil {
 		return err
 	}
@@ -361,10 +362,11 @@ func (p *Pipeline) createPage(ctx context.Context, subject Subject, subjectKey, 
 		Namespace:    p.Namespace,
 		Labels:       map[string]string{v1alpha1.LabelSubjectKey: subjectKey},
 		Spec: v1alpha1.PageSpec{
-			Target:       subject.Target(),
-			Fingerprint:  fingerprint,
-			Trigger:      signal.Trigger(),
-			PreviousPage: previous,
+			Target:                 subject.Target(),
+			Fingerprint:            fingerprint,
+			Trigger:                signal.Trigger(),
+			PreviousPage:           previous,
+			ExcludedProposalHashes: excluded,
 		},
 	}
 	if err := p.Client.Create(ctx, created); err != nil {
@@ -521,16 +523,19 @@ func (p *Pipeline) activePage(ctx context.Context, subjectKey, uid string) (*v1a
 }
 
 // previousPage returns the most recent Page for a Subject, so a Recurrence links
-// to the Page that recorded the previous outcome.
-func (p *Pipeline) previousPage(ctx context.Context, subjectKey string) (string, error) {
+// to the Page that recorded the previous outcome and does not propose the change
+// that failed there again.
+func (p *Pipeline) previousPage(ctx context.Context, subjectKey string) (string, []string, error) {
 	pages, err := p.pagesForSubject(ctx, subjectKey)
 	if err != nil || len(pages) == 0 {
-		return "", err
+		return "", nil, err
 	}
 	slices.SortFunc(pages, func(a, b v1alpha1.Page) int {
 		return a.CreationTimestamp.Compare(b.CreationTimestamp.Time)
 	})
-	return pages[len(pages)-1].Name, nil
+	previous := pages[len(pages)-1]
+	name, excluded := verification.RecurrenceFor(&previous)
+	return name, excluded, nil
 }
 
 // MarkFingerprintState mirrors an observation state onto every Active Page of a
