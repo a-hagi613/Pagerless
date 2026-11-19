@@ -94,21 +94,22 @@ See [ADR-0031](docs/adr/0031-approval-is-a-decision-on-the-page.md) and
 
 This tree is the v2.0 product, and it is a visible break from v1.0:
 
-- **Landed:** the `Page` API (`pages.pagerless.dev/v1alpha1`), the strictly
-  read-only cluster identity, the standalone single-namespace chart, the
-  decision-on-the-Page approval path, the `kubectl page` CLI, and the release
-  channel that publishes the plugin, the images, and the chart at one version.
-- **Delivered by the remaining v2.0 slices:** the dual-API error watcher and
-  cooldowns, the read-only observability connectors and alert webhooks, the
-  OpenAI-compatible agent and tool broker, the GitOps provenance and pull
-  request engine, the onboarding flow and Portal settings route, and the
-  Variant C Portal.
+- **Landed:** the `Page` API (`pages.pagerless.dev/v1alpha1`), the dual-API
+  error watcher, canonical Target resolution, the SQLite Cooldown store, the
+  strictly read-only cluster identity, the standalone single-namespace chart,
+  the decision-on-the-Page approval path, the `kubectl page` CLI, and the
+  release channel that publishes the plugin, the images, and the chart at one
+  version.
+- **Delivered by the remaining v2.0 slices:** the read-only observability
+  connectors and alert webhooks, the OpenAI-compatible agent and tool broker,
+  the GitOps provenance and pull request engine, the onboarding flow and Portal
+  settings route, and the Variant C Portal.
 
-Until those slices land, an installation runs the API, the reconcilers, and the
-report and metrics endpoints; it does not yet watch failures or serve the
-Portal. `Triage` and `TriageApproval` are removed with no alias and no
-migration: v1 objects are not converted. [`docs/upgrade.md`](docs/upgrade.md)
-lists every removed value and the replacement path.
+Until those slices land, an installation watches for failures and opens Pages,
+but it does not yet diagnose them or serve the Portal. `Triage` and
+`TriageApproval` are removed with no alias and no migration: v1 objects are not
+converted. [`docs/upgrade.md`](docs/upgrade.md) lists every removed value and the
+replacement path.
 
 ## Repository layout
 
