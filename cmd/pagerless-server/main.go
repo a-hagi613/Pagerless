@@ -28,6 +28,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/verification"
+	"github.com/a-hagi613/pagerless/internal/watcher"
 )
 
 func main() {
@@ -160,6 +161,22 @@ func run() error {
 			"realm group whose members may approve through the dashboard")
 		dashboardCookieSecure = flag.Bool("dashboard-cookie-secure", true,
 			"mark dashboard session cookies Secure; set false only when the browser reaches the dashboard over HTTP")
+		watcherEnabled = flag.Bool("watcher", true,
+			"watch the cluster for failing Targets, open Pages, and enforce the guardrails")
+		watcherInclude = flag.String("watcher-namespaces-include", "",
+			"comma-separated namespaces to watch; empty watches every namespace")
+		watcherExclude = flag.String("watcher-namespaces-exclude", "",
+			"comma-separated namespaces to ignore in addition to the release, kube-public, and kube-node-lease namespaces")
+		kubeSystemMode = flag.String("watcher-kube-system-mode", "warn-only",
+			"how kube-system is treated: warn-only, watch, or ignore")
+		nodePagesMode = flag.String("watcher-node-pages-mode", "watch",
+			"how Node faults are treated: watch, warn-only, or ignore")
+		clusterID = flag.String("cluster-id", os.Getenv("PAGERLESS_CLUSTER_ID"),
+			"stable cluster identifier that every Fingerprint hashes; empty derives it from the kube-system namespace UID")
+		maxConcurrent = flag.Int("max-concurrent-investigations", watcher.DefaultMaxConcurrentPages,
+			"the number of investigations that may run at once; the rest are queued with a visible reason")
+		maxPerHour = flag.Int("max-investigations-per-hour", watcher.DefaultMaxPagesPerHour,
+			"the number of investigations that may start per sliding hour")
 	)
 	zapOptions := zap.Options{}
 	zapOptions.BindFlags(flag.CommandLine)
@@ -263,6 +280,14 @@ func run() error {
 		cfg.DashboardAuth = dashboardAuth
 		cfg.DashboardListener = dashboardListener
 	}
+	if *watcherEnabled {
+		watchConfig, err := watcherConfig(*watcherInclude, *watcherExclude, *kubeSystemMode, *nodePagesMode,
+			*clusterID, *namespace, *maxConcurrent, *maxPerHour)
+		if err != nil {
+			return err
+		}
+		cfg.Watcher = &watchConfig
+	}
 
 	mgr, err := server.New(restConfig, cfg)
 	if err != nil {
@@ -352,4 +377,52 @@ func parseNamespaces(list string) ([]string, error) {
 		namespaces = append(namespaces, name)
 	}
 	return namespaces, nil
+}
+
+// watcherConfig validates the watcher flags into a configuration.
+func watcherConfig(include, exclude, kubeSystem, nodePages, clusterID, namespace string,
+	maxConcurrent, maxPerHour int,
+) (watcher.Config, error) {
+	included, err := parseNamespaces(include)
+	if err != nil {
+		return watcher.Config{}, fmt.Errorf("watcher include list: %w", err)
+	}
+	excluded, err := parseNamespaces(exclude)
+	if err != nil {
+		return watcher.Config{}, fmt.Errorf("watcher exclude list: %w", err)
+	}
+	kubeSystemMode, err := parseNamespaceMode(kubeSystem)
+	if err != nil {
+		return watcher.Config{}, fmt.Errorf("--watcher-kube-system-mode: %w", err)
+	}
+	nodeMode, err := parseNamespaceMode(nodePages)
+	if err != nil {
+		return watcher.Config{}, fmt.Errorf("--watcher-node-pages-mode: %w", err)
+	}
+	if maxConcurrent < 1 {
+		return watcher.Config{}, errors.New("--max-concurrent-investigations must be at least 1")
+	}
+	if maxPerHour < 0 {
+		return watcher.Config{}, errors.New("--max-investigations-per-hour must not be negative")
+	}
+	return watcher.Config{
+		Namespace:          namespace,
+		ClusterID:          clusterID,
+		IncludeNamespaces:  included,
+		ExcludeNamespaces:  excluded,
+		KubeSystemMode:     kubeSystemMode,
+		NodePagesMode:      nodeMode,
+		MaxConcurrentPages: maxConcurrent,
+		MaxPagesPerHour:    maxPerHour,
+	}, nil
+}
+
+// parseNamespaceMode validates one watcher mode flag.
+func parseNamespaceMode(mode string) (watcher.NamespaceMode, error) {
+	switch parsed := watcher.NamespaceMode(strings.TrimSpace(mode)); parsed {
+	case watcher.ModeWatch, watcher.ModeWarnOnly, watcher.ModeIgnore:
+		return parsed, nil
+	default:
+		return "", fmt.Errorf("%q is not one of watch, warn-only, or ignore", mode)
+	}
 }

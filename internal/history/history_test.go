@@ -175,3 +175,83 @@ func TestAppendedSnapshotsCarryTheSpecAndCreationTime(t *testing.T) {
 		t.Errorf("createdAt = %v, want %v", latest[1].CreatedAt, startTime.Add(time.Minute))
 	}
 }
+
+// TestOpenAddsTheRuntimeTablesToAVersion2Database proves the version 3 change is
+// strictly additive: a file written by a version 2 server keeps every row and
+// gains the Cooldown tables on the next start, without a rewrite.
+func TestOpenAddsTheRuntimeTablesToAVersion2Database(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "history.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open the history: %v", err)
+	}
+	if err := store.AppendSnapshot(context.Background(), newPage("page-old", startTime), startTime); err != nil {
+		t.Fatalf("append a snapshot: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close the history: %v", err)
+	}
+	// Rewind the file to the version 2 shape: the two append-only tables with
+	// their rows, and no runtime tables.
+	db, err := sql.Open("sqlite", dataSourceName(path, false))
+	if err != nil {
+		t.Fatalf("open the raw database: %v", err)
+	}
+	for _, statement := range []string{
+		`DROP TABLE failure_cooldowns`,
+		`DROP TABLE failure_observations`,
+		`PRAGMA user_version = 2`,
+	} {
+		if _, err := db.ExecContext(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close the raw database: %v", err)
+	}
+
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatalf("open a version 2 history: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := upgraded.Close(); err != nil {
+			t.Errorf("close the history: %v", err)
+		}
+	})
+	snapshots, err := upgraded.Snapshots(context.Background(), "page-old")
+	if err != nil {
+		t.Fatalf("read the version 2 snapshot: %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].Phase != v1alpha1.PhasePending {
+		t.Fatalf("snapshots = %+v, want the version 2 row unchanged", snapshots)
+	}
+	for _, table := range []string{"failure_cooldowns", "failure_observations"} {
+		if !tableExists(t, upgraded.db, table) {
+			t.Errorf("%s is missing after the version 2 upgrade", table)
+		}
+	}
+	var version int
+	if err := upgraded.db.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Errorf("schema version = %d, want %d", version, SchemaVersion)
+	}
+	// A second open is a no-op rather than an error, so a restart is safe.
+	if err := upgraded.migrate(context.Background()); err != nil {
+		t.Fatalf("re-running the migration: %v", err)
+	}
+}
+
+// tableExists reports whether a table is present.
+func tableExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		t.Fatalf("read the schema: %v", err)
+	}
+	return count == 1
+}

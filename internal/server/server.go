@@ -42,6 +42,7 @@ import (
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/verification"
+	"github.com/a-hagi613/pagerless/internal/watcher"
 )
 
 const (
@@ -163,6 +164,10 @@ type Config struct {
 	RetentionPollInterval time.Duration
 	// HealthProbeAddress is the address of the health probes, or empty to disable them.
 	HealthProbeAddress string
+	// Watcher enables the cluster watcher. A nil Watcher leaves the server a pure
+	// Page controller, which is what the unit suites want; pagerless-server always
+	// configures it.
+	Watcher *watcher.Config
 }
 
 // Scheme returns the scheme that pagerless-server uses.
@@ -282,7 +287,7 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: cfg.HealthProbeAddress,
-		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}}},
+		Cache:                  cacheOptions(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create manager: %w", err)
@@ -330,6 +335,15 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Reader:   mgr.GetAPIReader(),
 		Clock:    cfg.Clock,
 		Recorder: recorder,
+	}
+	if cfg.Watcher != nil {
+		clusterWatcher, err := watcher.New(mgr, historyStore.DB(), *cfg.Watcher)
+		if err != nil {
+			return nil, fmt.Errorf("create the cluster watcher: %w", err)
+		}
+		if err := clusterWatcher.Setup(mgr, store); err != nil {
+			return nil, fmt.Errorf("set up the cluster watcher: %w", err)
+		}
 	}
 	pages := &controller.PageReconciler{
 		Client: mgr.GetClient(),
@@ -476,6 +490,19 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		}
 	}
 	return mgr, nil
+}
+
+// cacheOptions returns the manager's cache configuration. Pages and the objects
+// the page lifecycle reads stay in the release namespace, while the watcher's
+// observed kinds are cached across the namespaces the installation may read: a
+// watcher scoped to its own namespace would see no workload worth paging on.
+func cacheOptions(cfg Config) cache.Options {
+	options := cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}}}
+	if cfg.Watcher == nil {
+		return options
+	}
+	options.ByObject = watcher.CacheByObject(cfg.Watcher.IncludeNamespaces, cfg.Watcher.NodePagesMode)
+	return options
 }
 
 // serve returns a runnable that serves handler on listener until the manager stops.

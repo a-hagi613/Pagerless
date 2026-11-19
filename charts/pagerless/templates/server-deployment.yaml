@@ -61,6 +61,14 @@ spec:
             - --target-namespaces={{ include "pagerless.allowlist" . }}
             - --patch-namespaces={{ include "pagerless.allowlist" . }}
             - --alert-namespaces={{ include "pagerless.allowlist" . }}
+            # The watcher reads the same namespaces the read Role grants. Mode B
+            # renders a namespaced Role with no cluster-scoped rules, so Node
+            # faults are out of reach there and the observer is switched off
+            # rather than left to fail its informer sync.
+            - --watcher-namespaces-include={{ include "pagerless.allowlist" . }}
+            {{- if not .Values.rbac.watchAllNamespaces }}
+            - --watcher-node-pages-mode=ignore
+            {{- end }}
             - --sandbox-url=
             - --argocd-url=
             - --alertmanager-url=
