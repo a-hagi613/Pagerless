@@ -21,22 +21,33 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Action is one kind of remediation on the fixed menu (ADR-0002).
-// +kubebuilder:validation:Enum=RestartWorkload;Scale;PatchResources;Rollback;NoAction
+// Action is one kind of remediation that a Proposal can recommend. Every
+// remaining Action is delivered as a pull request: Pagerless never mutates the
+// cluster.
+// +kubebuilder:validation:Enum=Scale;PatchResources;Rollback;NoAction
 type Action string
 
 const (
-	// ActionRestartWorkload deletes the Workload's pods one at a time. It executes live.
-	ActionRestartWorkload Action = "RestartWorkload"
-	// ActionScale changes the Workload's replica count through a pull request.
+	// ActionScale changes the Target's replica count through a pull request.
 	ActionScale Action = "Scale"
 	// ActionPatchResources changes a container's requests and limits through a pull request.
 	ActionPatchResources Action = "PatchResources"
-	// ActionRollback reverts one Sandbox commit through a pull request.
+	// ActionRollback reverts one Target Repository commit through a pull request.
 	ActionRollback Action = "Rollback"
 	// ActionNoAction records a Diagnosis without a remediation.
 	ActionNoAction Action = "NoAction"
 )
+
+// DeliveredByPullRequest reports whether the remediation reaches the cluster as
+// a pull request against the Target Repository. NoAction changes nothing.
+func (a Action) DeliveredByPullRequest() bool {
+	switch a {
+	case ActionScale, ActionPatchResources, ActionRollback:
+		return true
+	default:
+		return false
+	}
+}
 
 // ScaleParameters are the parameters of the Scale Action.
 type ScaleParameters struct {
@@ -65,7 +76,8 @@ type PatchResourcesParameters struct {
 
 // RollbackParameters are the parameters of the Rollback Action.
 type RollbackParameters struct {
-	// Commit is the Sandbox commit to revert. It must be among the last 20 commits touching the Workload's path or a declared dependency path.
+	// Commit is the Target Repository commit to revert. It must be among the last
+	// 20 commits touching the Target's path or a declared dependency path.
 	// +required
 	// +kubebuilder:validation:MinLength=7
 	// +kubebuilder:validation:MaxLength=64
@@ -74,7 +86,7 @@ type RollbackParameters struct {
 }
 
 // ActionParameters holds the typed parameters of an Action. At most one field is set, and it must match the Action.
-// RestartWorkload and NoAction have no parameters.
+// NoAction has no parameters.
 // +kubebuilder:validation:MaxProperties=1
 type ActionParameters struct {
 	// Scale holds the parameters of the Scale Action.
@@ -104,32 +116,35 @@ type ProposedAction struct {
 	Parameters *ActionParameters `json:"parameters,omitempty"`
 }
 
-// RenderedChange is the exact change that Validation rendered, which the approver reviews and the Executor applies.
+// RenderedChange is the exact change that Validation rendered, which the approver reviews and the publisher
+// commits.
 type RenderedChange struct {
-	// Path is the Sandbox path that the patch changes.
+	// Path is the Target Repository path that the patch changes.
 	// +optional
 	// +kubebuilder:validation:MaxLength=500
 	Path string `json:"path,omitempty"`
 
-	// Patch is the git patch against the recorded base commit, for pull request Actions.
+	// Patch is the git patch against the recorded base commit.
 	// +optional
 	// +kubebuilder:validation:MaxLength=32768
 	Patch string `json:"patch,omitempty"`
 }
 
-// ProposalBase records the state a Proposal was rendered against. A Proposal whose base changed is a Stale Proposal.
+// ProposalBase records the state a Proposal was rendered against. A Proposal
+// whose base changed is a Stale Proposal.
 type ProposalBase struct {
-	// Commit is the Sandbox commit the patch applies to.
+	// Commit is the Target Repository commit the patch applies to.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	Commit string `json:"commit,omitempty"`
 
-	// WorkloadGeneration is the Workload's metadata.generation when the Proposal was rendered.
+	// TargetGeneration is the Target's metadata.generation when the Proposal was rendered.
 	// +optional
-	WorkloadGeneration int64 `json:"workloadGeneration,omitempty"`
+	TargetGeneration int64 `json:"targetGeneration,omitempty"`
 }
 
-// Proposal is the single typed remediation recommended for a Triage. It is the unit that is validated, hashed, and approved.
+// Proposal is the single typed remediation recommended for a Page. It is the unit that is validated, hashed,
+// and approved.
 type Proposal struct {
 	// ProposedAction is the Action and its parameters, as supplied by the agent.
 	ProposedAction `json:",inline"`

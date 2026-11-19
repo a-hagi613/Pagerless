@@ -38,7 +38,7 @@ var (
 
 // addKnownTypes registers the API types and the common meta types for this group version.
 func addKnownTypes(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(GroupVersion, &Triage{}, &TriageList{}, &TriageApproval{}, &TriageApprovalList{})
+	scheme.AddKnownTypes(GroupVersion, &Page{}, &PageList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }

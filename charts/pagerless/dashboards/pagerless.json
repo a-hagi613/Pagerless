@@ -59,13 +59,13 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (phase) (pagerless_triages)",
+          "expr": "sum by (phase) (pagerless_pages)",
           "legendFormat": "{{phase}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Triages by Phase",
+      "title": "Pages by Phase",
       "type": "timeseries"
     },
     {
@@ -272,14 +272,14 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(pagerless_triage_cost_usd)",
+          "expr": "sum(pagerless_page_cost_usd)",
           "instant": true,
           "legendFormat": "total",
           "range": false,
           "refId": "A"
         }
       ],
-      "title": "Model Cost of Retained Triages",
+      "title": "Model Cost of Retained Pages",
       "type": "stat"
     },
     {
@@ -398,7 +398,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "pagerless_triage_input_tokens",
+          "expr": "pagerless_page_input_tokens",
           "format": "table",
           "instant": true,
           "legendFormat": "input",
@@ -411,7 +411,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "pagerless_triage_output_tokens",
+          "expr": "pagerless_page_output_tokens",
           "format": "table",
           "instant": true,
           "legendFormat": "output",
@@ -424,7 +424,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "pagerless_triage_cost_usd",
+          "expr": "pagerless_page_cost_usd",
           "format": "table",
           "instant": true,
           "legendFormat": "cost",
@@ -432,12 +432,12 @@
           "refId": "C"
         }
       ],
-      "title": "Tokens and Cost per Triage",
+      "title": "Tokens and Cost per Page",
       "transformations": [
         {
           "id": "joinByField",
           "options": {
-            "byField": "triage",
+            "byField": "page",
             "mode": "outer"
           }
         },
@@ -448,7 +448,7 @@
               "Time": true
             },
             "renameByName": {
-              "triage": "Triage",
+              "page": "Page",
               "Value #A": "Input tokens",
               "Value #B": "Output tokens",
               "Value #C": "Cost (USD)"

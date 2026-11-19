@@ -74,7 +74,7 @@ async def run(
                 stack.push_async_callback(gateway.aclose)
             server = ServerClient(
                 investigation.server_url,
-                investigation.target.triage,
+                investigation.target.page,
                 investigation.token_file,
                 http=server_http,
             )

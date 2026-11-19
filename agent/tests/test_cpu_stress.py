@@ -56,10 +56,10 @@ async def run(
     tmp_path.mkdir(parents=True, exist_ok=True)
     token_file = tmp_path / "token"
     token_file.write_text("token-1")
-    client = ServerClient("http://pagerless-server", server.triage, token_file, http=http, sleep=no_sleep)
+    client = ServerClient("http://pagerless-server", server.page, token_file, http=http, sleep=no_sleep)
     model = Spy(provider)
     outcome = await Agent(
-        target=Target(server.triage, "Deployment", "sandbox", "payment", bundle.triggering_pod),
+        target=Target(server.page, "Deployment", "sandbox", "payment", bundle.triggering_pod),
         provider=model,
         tools=RecordedTools([], {}),
         source=FixedSource(bundle),

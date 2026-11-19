@@ -17,15 +17,15 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-// triageLabel is the label that names one Triage on the per-Triage usage gauges.
-const triageLabel = "triage"
+// pageLabel is the label that names one Page on the per-Page usage gauges.
+const pageLabel = "page"
 
 func TestMetricsAfterAFullPhaseSequence(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
 	name := recovered(t, env)
 
-	waitForMetric(t, env, metrics.MetricTriages, map[string]string{"phase": string(v1alpha1.PhaseRecovered)}, 1)
+	waitForMetric(t, env, metrics.MetricPages, map[string]string{"phase": string(v1alpha1.PhaseRecovered)}, 1)
 	waitForMetric(t, env, metrics.MetricProposals, map[string]string{
 		"action": string(v1alpha1.ActionPatchResources),
 	}, 1)
@@ -35,11 +35,11 @@ func TestMetricsAfterAFullPhaseSequence(t *testing.T) {
 	waitForMetric(t, env, metrics.MetricVerifications, map[string]string{
 		"outcome": string(v1alpha1.PhaseRecovered),
 	}, 1)
-	waitForMetric(t, env, metrics.MetricInputTokens, map[string]string{triageLabel: name},
+	waitForMetric(t, env, metrics.MetricInputTokens, map[string]string{pageLabel: name},
 		float64(reportUsage.InputTokens))
-	waitForMetric(t, env, metrics.MetricOutputTokens, map[string]string{triageLabel: name},
+	waitForMetric(t, env, metrics.MetricOutputTokens, map[string]string{pageLabel: name},
 		float64(reportUsage.OutputTokens))
-	waitForMetric(t, env, metrics.MetricCostUSD, map[string]string{triageLabel: name}, reportUsage.CostUSD)
+	waitForMetric(t, env, metrics.MetricCostUSD, map[string]string{pageLabel: name}, reportUsage.CostUSD)
 	waitForMetric(t, env, metrics.MetricTimeToRecovered, nil, 1)
 
 	histogram := metricFamily(t, scrape(t, env), metrics.MetricTimeToRecovered).Metric[0].GetHistogram()

@@ -20,8 +20,8 @@ import (
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	"github.com/a-hagi613/pagerless/internal/agentapi"
+	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/proposal"
-	"github.com/a-hagi613/pagerless/internal/triage"
 )
 
 // maxBodyBytes bounds a request body. Agent output is untrusted.
@@ -29,61 +29,61 @@ const maxBodyBytes = 1 << 20
 
 // Handler serves the agent API.
 type Handler struct {
-	// Auth verifies that the caller is the Triage's Job.
+	// Auth verifies that the caller is the Page's Job.
 	Auth *Authenticator
-	// Status is the only writer of Triage status.
-	Status *triage.StatusStore
+	// Status is the only writer of Page status.
+	Status *page.StatusStore
 	// Proposals validates Proposals.
 	Proposals *proposal.Pipeline
 	// Clock timestamps steps.
 	Clock clock.PassiveClock
 }
 
-// errNotInvestigating is returned when a request needs an Investigating Triage and the Triage is in another phase.
-var errNotInvestigating = errors.New("the Triage is not Investigating")
+// errNotInvestigating is returned when a request needs an Investigating Page and the Page is in another phase.
+var errNotInvestigating = errors.New("the Page is not Investigating")
 
-// errReportRaced is returned when another report for the same Triage was recorded while this one was validated.
-var errReportRaced = errors.New("another report for the Triage was recorded first")
+// errReportRaced is returned when another report for the same Page was recorded while this one was validated.
+var errReportRaced = errors.New("another report for the Page was recorded first")
 
 // errNoFindings is returned when a report would leave the Diagnosis without a cited Finding.
 var errNoFindings = errors.New("the report must carry at least one finding")
 
 // errNotVerified is returned when a Narrative request arrives before Verification has reached a terminal outcome.
-var errNotVerified = errors.New("the Triage has not reached a terminal Verification outcome")
+var errNotVerified = errors.New("the Page has not reached a terminal Verification outcome")
 
-// errNarrativeRecorded is returned when the Triage already stores a different Narrative.
-var errNarrativeRecorded = errors.New("the Triage already records a different Narrative")
+// errNarrativeRecorded is returned when the Page already stores a different Narrative.
+var errNarrativeRecorded = errors.New("the Page already records a different Narrative")
 
 // ServeHTTP routes requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /v1/triages/{name}/events", h.handle(h.events))
-	mux.HandleFunc("POST /v1/triages/{name}/report", h.handle(h.report))
-	mux.HandleFunc("GET /v1/triages/{name}/narrative", h.handleNarrative(h.narrativeRecord))
-	mux.HandleFunc("POST /v1/triages/{name}/narrative", h.handleNarrative(h.narrative))
+	mux.HandleFunc("POST /v1/pages/{name}/events", h.handle(h.events))
+	mux.HandleFunc("POST /v1/pages/{name}/report", h.handle(h.report))
+	mux.HandleFunc("GET /v1/pages/{name}/narrative", h.handleNarrative(h.narrativeRecord))
+	mux.HandleFunc("POST /v1/pages/{name}/narrative", h.handleNarrative(h.narrative))
 	mux.ServeHTTP(w, r)
 }
 
-type endpoint func(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage)
+type endpoint func(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Page)
 
-// authorizer checks that the authenticated caller may act on the Triage.
-type authorizer func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error
+// authorizer checks that the authenticated caller may act on the Page.
+type authorizer func(ctx context.Context, caller *Caller, t *v1alpha1.Page) error
 
-// handle authenticates the caller as the Triage's investigation Job, then runs the endpoint.
+// handle authenticates the caller as the Page's investigation Job, then runs the endpoint.
 func (h *Handler) handle(next endpoint) http.HandlerFunc {
-	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Page) error {
 		return h.Auth.Authorize(ctx, caller, t)
 	}, next)
 }
 
-// handleNarrative authenticates the caller as the Triage's Narrative Job, then runs the endpoint.
+// handleNarrative authenticates the caller as the Page's Narrative Job, then runs the endpoint.
 func (h *Handler) handleNarrative(next endpoint) http.HandlerFunc {
-	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+	return h.serve(func(ctx context.Context, caller *Caller, t *v1alpha1.Page) error {
 		return h.Auth.AuthorizeNarrative(ctx, caller, t)
 	}, next)
 }
 
-// serve authenticates the caller, finds the Triage, authorizes the caller for it, and runs the endpoint.
+// serve authenticates the caller, finds the Page, authorizes the caller for it, and runs the endpoint.
 func (h *Handler) serve(authorize authorizer, next endpoint) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -96,11 +96,11 @@ func (h *Handler) serve(authorize authorizer, next endpoint) http.HandlerFunc {
 			h.writeAuthError(ctx, w, err)
 			return
 		}
-		var t v1alpha1.Triage
+		var t v1alpha1.Page
 		key := types.NamespacedName{Namespace: h.Auth.Namespace, Name: r.PathValue("name")}
 		if err := h.Status.Reader.Get(ctx, key, &t); err != nil {
 			if apierrors.IsNotFound(err) {
-				// An authenticated agent learns nothing from a missing Triage that it could not learn from a forbidden one.
+				// An authenticated agent learns nothing from a missing Page that it could not learn from a forbidden one.
 				writeJSON(w, http.StatusForbidden, agentapi.ErrorResponse{Message: "forbidden"})
 				return
 			}
@@ -152,7 +152,7 @@ func decode(w http.ResponseWriter, body io.Reader, into any) bool {
 }
 
 // events records one step in the bounded step summary.
-func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage) {
+func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Page) {
 	var event agentapi.StepEvent
 	if !decode(w, body, &event) {
 		return
@@ -164,7 +164,7 @@ func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Rea
 	event = event.Bounded()
 	now := metav1.NewTime(h.Clock.Now())
 	step := v1alpha1.Step{Time: now, Kind: event.Kind, Tool: event.Tool, Summary: event.Summary}
-	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Page) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
 			return errNotInvestigating
 		}
@@ -192,8 +192,8 @@ func (h *Handler) events(ctx context.Context, w http.ResponseWriter, body io.Rea
 }
 
 // report validates the report and, if it passes, records the Diagnosis,
-// Findings, and Proposal and moves the Triage to Proposed.
-func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage) {
+// Findings, and Proposal and moves the Page to Proposed.
+func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Page) {
 	var report agentapi.Report
 	if !decode(w, body, &report) {
 		return
@@ -212,7 +212,7 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
 		return
 	}
-	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Triage: t, Action: report.Proposal}, attempt)
+	built, errs, err := h.Proposals.Build(ctx, proposal.Request{Page: t, Action: report.Proposal}, attempt)
 	if err != nil {
 		h.writeInternal(ctx, w, err)
 		return
@@ -221,7 +221,7 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 		h.refuse(ctx, w, t, attempt, report.Proposal, errs)
 		return
 	}
-	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Page) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
 			return errNotInvestigating
 		}
@@ -239,6 +239,13 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 			latest.Status.Usage = report.Usage
 		}
 		latest.Status.Phase = v1alpha1.PhaseProposed
+		meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
+			Type:               v1alpha1.ConditionInvestigated,
+			Status:             metav1.ConditionTrue,
+			Reason:             v1alpha1.ReasonAgentReported,
+			Message:            "the agent reported a validated Proposal",
+			ObservedGeneration: latest.Generation,
+		})
 		return nil
 	})
 	if err != nil {
@@ -253,13 +260,13 @@ func (h *Handler) report(ctx context.Context, w http.ResponseWriter, body io.Rea
 const maxRefusalMessageRunes = 3000
 
 // refuse records a Proposal that failed Validation and answers with its errors.
-// The answer names the Triage's phase: Investigating means the agent may
-// submit a revised Proposal, and Invalid means the second failure ended the Triage.
+// The answer names the Page's phase: Investigating means the agent may
+// submit a revised Proposal, and Invalid means the second failure ended the Page.
 func (h *Handler) refuse(
-	ctx context.Context, w http.ResponseWriter, t *v1alpha1.Triage, attempt int32,
+	ctx context.Context, w http.ResponseWriter, t *v1alpha1.Page, attempt int32,
 	action v1alpha1.ProposedAction, errs []agentapi.ValidationError,
 ) {
-	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	updated, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Page) error {
 		if latest.Status.Phase != v1alpha1.PhaseInvestigating {
 			return errNotInvestigating
 		}
@@ -271,7 +278,7 @@ func (h *Handler) refuse(
 		if attempt >= v1alpha1.MaxValidationAttempts {
 			latest.Status.Phase = v1alpha1.PhaseInvalid
 			meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-				Type:               v1alpha1.ConditionInvalid,
+				Type:               v1alpha1.ConditionFailed,
 				Status:             metav1.ConditionTrue,
 				Reason:             v1alpha1.ReasonValidationFailedTwice,
 				Message:            "the second Proposal also failed Validation: " + proposal.Summary(errs),
@@ -287,23 +294,22 @@ func (h *Handler) refuse(
 	writeJSON(w, http.StatusUnprocessableEntity, agentapi.ReportResponse{Errors: errs, Phase: updated.Status.Phase})
 }
 
-// recordRefusal appends one line per refused attempt to the ProposalRefused
-// condition: the Action, the parameters the agent proposed, and the Validation
-// errors. Keeping both attempts means a Triage records what the agent first
-// got wrong as well as the Proposal it replaced, which the status no longer
-// holds after a revision is accepted.
+// recordRefusal records a refused attempt on the Investigated condition: the
+// Action, the parameters the agent proposed, and the Validation errors. The
+// condition stays False until a report passes Validation, so a Page keeps the
+// newest refusal visible while the agent revises its Proposal.
 func recordRefusal(
-	latest *v1alpha1.Triage, attempt int32, action v1alpha1.ProposedAction, errs []agentapi.ValidationError,
+	latest *v1alpha1.Page, attempt int32, action v1alpha1.ProposedAction, errs []agentapi.ValidationError,
 ) {
 	line := fmt.Sprintf("attempt %d: %s refused: %s", attempt, proposal.Describe(action), proposal.Summary(errs))
 	message := line
-	if existing := meta.FindStatusCondition(latest.Status.Conditions, v1alpha1.ConditionProposalRefused); existing != nil &&
-		existing.Message != "" {
+	if existing := meta.FindStatusCondition(latest.Status.Conditions, v1alpha1.ConditionInvestigated); existing != nil &&
+		existing.Status == metav1.ConditionFalse && existing.Message != "" {
 		message = existing.Message + "\n" + line
 	}
 	meta.SetStatusCondition(&latest.Status.Conditions, metav1.Condition{
-		Type:               v1alpha1.ConditionProposalRefused,
-		Status:             metav1.ConditionTrue,
+		Type:               v1alpha1.ConditionInvestigated,
+		Status:             metav1.ConditionFalse,
 		Reason:             v1alpha1.ReasonValidationRefused,
 		Message:            boundRefusalMessage(message),
 		ObservedGeneration: latest.Generation,
@@ -339,22 +345,22 @@ func (h *Handler) writeUpdateError(ctx context.Context, w http.ResponseWriter, e
 	}
 }
 
-// narrativeRecord answers the Narrative Job with the Triage rendered for description.
-func (h *Handler) narrativeRecord(_ context.Context, w http.ResponseWriter, _ io.Reader, t *v1alpha1.Triage) {
+// narrativeRecord answers the Narrative Job with the Page rendered for description.
+func (h *Handler) narrativeRecord(_ context.Context, w http.ResponseWriter, _ io.Reader, t *v1alpha1.Page) {
 	if !verificationConcluded(t.Status.Phase) {
 		writeJSON(w, http.StatusConflict, agentapi.ErrorResponse{Message: errNotVerified.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, agentapi.NarrativeRecord{
-		Workload: t.Spec.Workload,
-		Text:     narrativeRecordText(t),
+		Target: t.Spec.Target,
+		Text:   narrativeRecordText(t),
 	})
 }
 
 // narrative stores the Narrative that the Job wrote. It is the only place the
 // Narrative is written, and it changes nothing else in the status: a Job that
 // fails or times out never reaches it.
-func (h *Handler) narrative(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Triage) {
+func (h *Handler) narrative(ctx context.Context, w http.ResponseWriter, body io.Reader, t *v1alpha1.Page) {
 	var report agentapi.NarrativeReport
 	if !decode(w, body, &report) {
 		return
@@ -364,7 +370,7 @@ func (h *Handler) narrative(ctx context.Context, w http.ResponseWriter, body io.
 		return
 	}
 	narrative := strings.TrimSpace(report.Narrative)
-	_, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Triage) error {
+	_, err := h.Status.Update(ctx, client.ObjectKeyFromObject(t), func(latest *v1alpha1.Page) error {
 		if !verificationConcluded(latest.Status.Phase) {
 			return errNotVerified
 		}

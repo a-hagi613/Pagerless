@@ -36,36 +36,36 @@ func withSandboxActions() testenv.Option {
 	})
 }
 
-// workload describes one Workload in the cluster and its manifest in the Sandbox.
-type workload struct {
+// target describes one Target in the cluster and its manifest in the Sandbox.
+type target struct {
 	name string
 	// replicas is the manifest's replica count. It defaults to one.
 	replicas int32
 	// annotation overrides the source path annotation. noAnnotation leaves it out.
 	annotation   string
 	noAnnotation bool
-	// dependsOn are the dependency paths declared in the Workload's annotations.
+	// dependsOn are the dependency paths declared in the Target's annotations.
 	dependsOn []string
 	// requests and limits replace the manifest's container resources when set.
 	requests, limits map[string]string
-	// noLive leaves the Workload out of the cluster. noManifest leaves it out of the Sandbox.
+	// noLive leaves the Target out of the cluster. noManifest leaves it out of the Sandbox.
 	noLive, noManifest bool
 	// mutateLive changes the Deployment in the cluster, so that it differs from its manifest.
 	mutateLive func(*appsv1.Deployment)
 }
 
-// sourcePath is where the Workload's manifest lives in the Sandbox.
-func (w workload) sourcePath() string { return "apps/" + w.name + "/deployment.yaml" }
+// sourcePath is where the Target's manifest lives in the Sandbox.
+func (w target) sourcePath() string { return "apps/" + w.name + "/deployment.yaml" }
 
 // replicaCount is the manifest's replica count, one when it is unset.
-func (w workload) replicaCount() int32 {
+func (w target) replicaCount() int32 {
 	if w.replicas == 0 {
 		return 1
 	}
 	return w.replicas
 }
 
-func (w workload) manifest() string {
+func (w target) manifest() string {
 	annotations := ""
 	if !w.noAnnotation {
 		path := w.annotation
@@ -98,7 +98,7 @@ metadata:
 %[4]s`, w.name, annotations, w.replicaCount(), w.resources())
 }
 
-// const requests that every Workload in the harness declares.
+// const requests that every Target in the harness declares.
 const (
 	requestCPU     = "100m"
 	memoryResource = "memory"
@@ -107,8 +107,8 @@ const (
 )
 
 // resources renders the container's resources, defaulting to the values that
-// every Workload in the harness starts with.
-func (w workload) resources() string {
+// every Target in the harness starts with.
+func (w target) resources() string {
 	requests := w.requests
 	if requests == nil {
 		requests = map[string]string{"cpu": requestCPU, memoryResource: requestMemory}
@@ -136,9 +136,9 @@ func (w workload) resources() string {
 	return b.String()
 }
 
-// deploy commits the Workload's manifest to the Sandbox and creates the Workload in the cluster.
+// deploy commits the Target's manifest to the Sandbox and creates the Target in the cluster.
 // It must not run concurrently with another call, because the Sandbox's working copy is shared.
-func deploy(t *testing.T, env *testenv.Env, w workload) {
+func deploy(t *testing.T, env *testenv.Env, w target) {
 	t.Helper()
 	ns := &corev1.Namespace{Name: sandboxNamespace}
 	if err := env.Client.Create(t.Context(), ns); err != nil && !errors.IsAlreadyExists(err) {
@@ -203,17 +203,17 @@ func withUsage(report agentapi.Report, usage v1alpha1.Usage) agentapi.Report {
 	return report
 }
 
-// startTriage creates a Triage for the Workload and returns its stand-in agent.
-func startTriage(t *testing.T, env *testenv.Env, name string) (string, *testenv.StandInAgent) {
+// startPage creates a Page for the Target and returns its stand-in agent.
+func startPage(t *testing.T, env *testenv.Env, name string) (string, *testenv.StandInAgent) {
 	t.Helper()
-	created := env.CreateTriage(t, testenv.NewTriage(name))
+	created := env.CreatePage(t, testenv.NewPage(name))
 	return created.Name, env.StartAgent(t, created.Name)
 }
 
 // rollbackReport is a report whose Proposal reverts one Sandbox commit.
 func rollbackReport(commit string) agentapi.Report {
 	return agentapi.Report{
-		Diagnosis: "The last change to the file the Workload reads broke it, so that change should be reverted.",
+		Diagnosis: "The last change to the file the Target reads broke it, so that change should be reverted.",
 		Findings:  []v1alpha1.Finding{logFinding},
 		Proposal: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionRollback,

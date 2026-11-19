@@ -1,4 +1,4 @@
-"""The published prices that turn one model call's usage into the Triage's cost estimate."""
+"""The published prices that turn one model call's usage into the Page's cost estimate."""
 
 from __future__ import annotations
 

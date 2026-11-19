@@ -19,7 +19,7 @@ func list(pairs ...string) corev1.ResourceList {
 	return l
 }
 
-var checkout = v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindDeployment, Namespace: "sandbox", Name: "checkout"}
+var checkout = v1alpha1.TargetReference{Kind: v1alpha1.TargetKindDeployment, Namespace: "sandbox", Name: "checkout"}
 
 const header = `apiVersion: apps/v1
 kind: Deployment
@@ -37,7 +37,7 @@ func TestRenderChangesOnlyTheResourcesBlock(t *testing.T) {
 	tests := []struct {
 		name     string
 		src      string
-		workload v1alpha1.WorkloadReference
+		target   v1alpha1.TargetReference
 		requests corev1.ResourceList
 		limits   corev1.ResourceList
 		want     string
@@ -49,8 +49,8 @@ func TestRenderChangesOnlyTheResourcesBlock(t *testing.T) {
           image: registry.invalid/checkout:1.0 # pinned
           args: ["--port", "8080"]
 `,
-			workload: checkout,
-			limits:   list("memory", "512Mi"),
+			target: checkout,
+			limits: list("memory", "512Mi"),
 			want: header + `        # the checkout service
         - name: app
           image: registry.invalid/checkout:1.0 # pinned
@@ -77,8 +77,8 @@ func TestRenderChangesOnlyTheResourcesBlock(t *testing.T) {
             - name: MODE
               value: prod
 `,
-			workload: checkout,
-			limits:   list("memory", "1Gi"),
+			target: checkout,
+			limits: list("memory", "1Gi"),
 			want: header + `        - name: sidecar
           image: registry.invalid/sidecar:1.0
         - name: app
@@ -101,7 +101,7 @@ func TestRenderChangesOnlyTheResourcesBlock(t *testing.T) {
           image: registry.invalid/checkout:1.0
           resources: {}
 `,
-			workload: checkout,
+			target:   checkout,
 			requests: list("cpu", "250m"),
 			want: header + `        - name: app
           image: registry.invalid/checkout:1.0
@@ -123,8 +123,8 @@ spec:
             -   name: db
                 image: registry.invalid/db:1.0
 `,
-			workload: v1alpha1.WorkloadReference{Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: "sandbox", Name: "db"},
-			limits:   list("memory", "2Gi"),
+			target: v1alpha1.TargetReference{Kind: v1alpha1.TargetKindStatefulSet, Namespace: "sandbox", Name: "db"},
+			limits: list("memory", "2Gi"),
 			want: `apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -141,7 +141,7 @@ spec:
 `,
 		},
 		{
-			name: "edits the one document of several that defines the Workload",
+			name: "edits the one document of several that defines the Target",
 			src: `apiVersion: v1
 kind: Service
 metadata:
@@ -161,8 +161,8 @@ spec:
         - name: app
           image: registry.invalid/cart:1.0
 `,
-			workload: checkout,
-			limits:   list("memory", "512Mi"),
+			target: checkout,
+			limits: list("memory", "512Mi"),
 			want: `apiVersion: v1
 kind: Service
 metadata:
@@ -187,10 +187,10 @@ spec:
 `,
 		},
 		{
-			name:     "handles a file without a final newline",
-			src:      header + "        - name: app\n          image: registry.invalid/checkout:1.0",
-			workload: checkout,
-			limits:   list("memory", "512Mi"),
+			name:   "handles a file without a final newline",
+			src:    header + "        - name: app\n          image: registry.invalid/checkout:1.0",
+			target: checkout,
+			limits: list("memory", "512Mi"),
 			want: header + `        - name: app
           image: registry.invalid/checkout:1.0
           resources:
@@ -202,7 +202,7 @@ spec:
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, _, err := render([]byte(tc.src), tc.workload, containerApp(tc.workload), tc.requests, tc.limits)
+			got, _, err := render([]byte(tc.src), tc.target, containerApp(tc.target), tc.requests, tc.limits)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -213,7 +213,7 @@ spec:
 	}
 }
 
-func containerApp(w v1alpha1.WorkloadReference) string {
+func containerApp(w v1alpha1.TargetReference) string {
 	if w.Name == "db" {
 		return "db"
 	}
@@ -236,7 +236,7 @@ func TestRenderRefusesManifestsItCannotEditSafely(t *testing.T) {
 	}{
 		{"not YAML", "a: [unclosed\n", appName, "not valid YAML", false},
 		{
-			"no such Workload",
+			"no such Target",
 			"apiVersion: v1\nkind: Service\nmetadata:\n  name: checkout\n",
 			appName, "does not define", false,
 		},

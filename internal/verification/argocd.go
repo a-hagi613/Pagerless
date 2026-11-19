@@ -1,4 +1,4 @@
-// Package verification holds the deterministic checks that decide whether a Workload recovered after its
+// Package verification holds the deterministic checks that decide whether a Target recovered after its
 // remediation was executed (ADR-0006), and the clients of the Argo CD and Alertmanager APIs that they read.
 package verification
 

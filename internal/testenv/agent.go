@@ -31,13 +31,13 @@ type StandInAgent struct {
 }
 
 // StartAgent creates the pod that the Job controller would create for the
-// Triage's agent Job, and a token for it, as the kubelet would project it.
-// The Triage must be Investigating.
-func (e *Env) StartAgent(t testing.TB, triageName string) *StandInAgent {
+// Page's agent Job, and a token for it, as the kubelet would project it.
+// The Page must be Investigating.
+func (e *Env) StartAgent(t testing.TB, pageName string) *StandInAgent {
 	t.Helper()
-	tr := e.WaitForPhase(t, triageName, v1alpha1.PhaseInvestigating)
+	tr := e.WaitForPhase(t, pageName, v1alpha1.PhaseInvestigating)
 	var job batchv1.Job
-	jobKey := types.NamespacedName{Namespace: Namespace, Name: tr.Status.JobName}
+	jobKey := types.NamespacedName{Namespace: Namespace, Name: tr.Status.AgentJobName}
 	if err := e.Client.Get(t.Context(), jobKey, &job); err != nil {
 		t.Fatalf("get agent Job: %v", err)
 	}
@@ -48,7 +48,7 @@ func (e *Env) StartAgent(t testing.TB, triageName string) *StandInAgent {
 		Token: token,
 		API: &agentapi.Client{
 			BaseURL: e.ReportURL,
-			Triage:  triageName,
+			Page:    pageName,
 			Token:   func() (string, error) { return token, nil },
 		},
 	}
@@ -141,11 +141,11 @@ func (e *Env) UnboundTokenFor(t testing.TB, namespace, serviceAccount, audience 
 	return issued.Status.Token
 }
 
-// ClientWithToken returns an agent API client for the Triage that presents the token.
-func (e *Env) ClientWithToken(triageName, token string) *agentapi.Client {
+// ClientWithToken returns an agent API client for the Page that presents the token.
+func (e *Env) ClientWithToken(pageName, token string) *agentapi.Client {
 	return &agentapi.Client{
 		BaseURL: e.ReportURL,
-		Triage:  triageName,
+		Page:    pageName,
 		Token:   func() (string, error) { return token, nil },
 	}
 }

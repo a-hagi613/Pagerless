@@ -42,24 +42,24 @@ test("an approver signs in, watches live steps, and approves", async ({ page }) 
   await page.locator("#password").fill(user.password);
   await page.locator("#kc-login").click();
 
-  await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Triage" }))
+  await expect(page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Page" }))
     .toBeVisible();
   await expect(page.getByText(user.username, { exact: true })).toBeVisible();
 
-  // Start a Triage for the checkout Deployment through the dashboard.
-  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Triage" }).click();
-  await page.locator("#workload").click();
+  // Start a Page for the checkout Deployment through the dashboard.
+  await page.getByRole("navigation", { name: "Primary" }).getByRole("link", { name: "Start Page" }).click();
+  await page.locator("#target").click();
   await page.getByRole("option", { name: /sandbox\/checkout/ }).click();
-  await capture(page, "start-triage");
-  await page.getByRole("button", { name: "Start Triage" }).click();
-  await expect(page).toHaveURL(/\/triages\/[^/]+$/);
+  await capture(page, "start-page");
+  await page.getByRole("button", { name: "Start Page" }).click();
+  await expect(page).toHaveURL(/\/pages\/[^/]+$/);
 
   // The detail view receives the agent's steps over Server-Sent Events; the
   // count must grow while the page is open, not only in the first snapshot.
   await expect(page.getByTestId("step").first()).toBeVisible();
   const arrival = await page.getByTestId("step").count();
   await expect.poll(async () => page.getByTestId("step").count()).toBeGreaterThan(arrival);
-  await capture(page, "triage-detail");
+  await capture(page, "page-detail");
 
   // The Proposal arrives after the steps; approving records the Keycloak user.
   await page.locator("#decision-reason").fill("smoke test approval");
@@ -67,5 +67,5 @@ test("an approver signs in, watches live steps, and approves", async ({ page }) 
 
   await expect(page.getByTestId("decision-approver")).toHaveText(user.username);
   await expect(page.getByText("Approved", { exact: true })).toBeVisible();
-  await capture(page, "triage-approved");
+  await capture(page, "page-approved");
 });

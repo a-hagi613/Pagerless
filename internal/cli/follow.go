@@ -12,8 +12,8 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// follower prints the step events of one Triage, and its phase changes, as
-// the status of the Triage shows them.
+// follower prints the step events of one Page, and its phase changes, as
+// the status of the Page shows them.
 type follower struct {
 	cl  client.WithWatch
 	key client.ObjectKey
@@ -24,15 +24,15 @@ type follower struct {
 	phase v1alpha1.Phase
 }
 
-// follow watches the status of a Triage and prints each new step and phase
-// change. It returns the Triage once the Triage is Proposed, which is when the
+// follow watches the status of a Page and prints each new step and phase
+// change. It returns the Page once the Page is Proposed, which is when the
 // agent has finished and a human decision is next, or once it has ended.
-func follow(ctx context.Context, cl client.WithWatch, key client.ObjectKey, w io.Writer) (*v1alpha1.Triage, error) {
+func follow(ctx context.Context, cl client.WithWatch, key client.ObjectKey, w io.Writer) (*v1alpha1.Page, error) {
 	f := &follower{cl: cl, key: key, out: &printer{w: w}}
 	for {
-		var tr v1alpha1.Triage
+		var tr v1alpha1.Page
 		if err := cl.Get(ctx, key, &tr); err != nil {
-			return nil, triageError(err, key.Name)
+			return nil, pageError(err, key.Name)
 		}
 		if f.observe(&tr) {
 			return &tr, nil
@@ -44,19 +44,19 @@ func follow(ctx context.Context, cl client.WithWatch, key client.ObjectKey, w io
 		if done != nil {
 			return done, nil
 		}
-		// The watch ended without a verdict, so the loop reads the Triage again and resumes from there.
+		// The watch ended without a verdict, so the loop reads the Page again and resumes from there.
 	}
 }
 
 // watch consumes the events of one watch that starts after resourceVersion. It
-// returns the Triage once it is done, or nil when the watch ended first.
-func (f *follower) watch(ctx context.Context, resourceVersion string) (*v1alpha1.Triage, error) {
-	events, err := f.cl.Watch(ctx, &v1alpha1.TriageList{},
+// returns the Page once it is done, or nil when the watch ended first.
+func (f *follower) watch(ctx context.Context, resourceVersion string) (*v1alpha1.Page, error) {
+	events, err := f.cl.Watch(ctx, &v1alpha1.PageList{},
 		client.InNamespace(f.key.Namespace),
 		client.MatchingFields{"metadata.name": f.key.Name},
 		&client.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: resourceVersion}})
 	if err != nil {
-		return nil, fmt.Errorf("watch Triage %q: %w", f.key.Name, err)
+		return nil, fmt.Errorf("watch Page %q: %w", f.key.Name, err)
 	}
 	defer events.Stop()
 	for {
@@ -69,12 +69,12 @@ func (f *follower) watch(ctx context.Context, resourceVersion string) (*v1alpha1
 			}
 			switch event.Type {
 			case watch.Added, watch.Modified:
-				tr, ok := event.Object.(*v1alpha1.Triage)
+				tr, ok := event.Object.(*v1alpha1.Page)
 				if ok && f.observe(tr) {
 					return tr, nil
 				}
 			case watch.Deleted:
-				return nil, fmt.Errorf("triage %q was deleted while it was followed", f.key.Name)
+				return nil, fmt.Errorf("page %q was deleted while it was followed", f.key.Name)
 			case watch.Error:
 				return nil, nil
 			}
@@ -83,8 +83,8 @@ func (f *follower) watch(ctx context.Context, resourceVersion string) (*v1alpha1
 }
 
 // observe prints what has changed since the previous observation. It reports
-// whether the Triage has reached a point where the watch ends.
-func (f *follower) observe(tr *v1alpha1.Triage) bool {
+// whether the Page has reached a point where the watch ends.
+func (f *follower) observe(tr *v1alpha1.Page) bool {
 	f.printNewSteps(tr)
 	if tr.Status.Phase != f.phase {
 		f.phase = tr.Status.Phase
@@ -93,8 +93,8 @@ func (f *follower) observe(tr *v1alpha1.Triage) bool {
 	return tr.Status.Phase == v1alpha1.PhaseProposed || tr.Status.Phase.IsTerminal()
 }
 
-// printNewSteps prints the steps that the Triage has recorded since the previous observation.
-func (f *follower) printNewSteps(tr *v1alpha1.Triage) {
+// printNewSteps prints the steps that the Page has recorded since the previous observation.
+func (f *follower) printNewSteps(tr *v1alpha1.Page) {
 	fresh := tr.Status.StepCount - f.seenSteps
 	if fresh <= 0 {
 		return

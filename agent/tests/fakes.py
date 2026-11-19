@@ -106,14 +106,14 @@ class FixedSource:
 class StandInServer:
     """A stand-in for pagerless-server's agent API, with the contract's status codes.
 
-    It authenticates the bearer token, accepts events while the Triage is
+    It authenticates the bearer token, accepts events while the Page is
     Investigating, answers a report with acceptance or Validation errors
     that the test scripts, and serves and accepts the Narrative.
     """
 
-    def __init__(self, token: str = "token-1", triage: str = "triage-1") -> None:
+    def __init__(self, token: str = "token-1", page: str = "page-1") -> None:
         self.token = token
-        self.triage = triage
+        self.page = page
         self.investigating = True
         self.events: list[dict[str, Any]] = []
         self.reports: list[dict[str, Any]] = []
@@ -138,7 +138,7 @@ class StandInServer:
             return httpx.Response(503, json={"message": "unavailable"})
         if request.headers.get("Authorization") != f"Bearer {self.token}":
             return httpx.Response(401, json={"message": "unauthenticated"})
-        base = f"/v1/triages/{self.triage}"
+        base = f"/v1/pages/{self.page}"
         if request.method == "GET" and request.url.path == f"{base}/narrative":
             return httpx.Response(200, json=self.narrative)
         if request.method != "POST":
@@ -146,12 +146,12 @@ class StandInServer:
         body = json.loads(request.content)
         if request.url.path == f"{base}/events":
             if not self.investigating:
-                return httpx.Response(409, json={"message": "the Triage is not Investigating"})
+                return httpx.Response(409, json={"message": "the Page is not Investigating"})
             self.events.append(body)
             return httpx.Response(202)
         if request.url.path == f"{base}/report":
             if not self.investigating:
-                return httpx.Response(409, json={"message": "the Triage is not Investigating"})
+                return httpx.Response(409, json={"message": "the Page is not Investigating"})
             self.reports.append(body)
             if self.report_answers:
                 answer = self.report_answers.pop(0)

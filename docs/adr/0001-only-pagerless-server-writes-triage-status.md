@@ -1,17 +1,17 @@
-# ADR-0001: Only pagerless-server writes Triage status
+# ADR-0001: Only pagerless-server writes Page status
 
-- **Status:** Accepted
+- **Status:** Accepted; the resource was renamed from Triage to Page by [ADR-0028](0028-pages-replace-triages.md)
 - **Date:** 2026-11-16
 
 ## Context
 
-The agent must be read-only, yet its Diagnosis and Proposal have to reach the Triage, and the dashboard needs a live stream of agent steps. Humans and the Alertmanager receiver also create Triages.
+The agent must be read-only, yet its Diagnosis and Proposal have to reach the Triage, and the dashboard needs a live stream of agent steps. Humans, alert receivers, and the watcher also create Pages.
 
 ## Decision
 
 The agent holds no Kubernetes write permissions. It sends step events and its final report over HTTP to `pagerless-server`, which authenticates the agent with its projected service account token.
 
-Humans (through the CLI or dashboard) and the Alertmanager receiver may only create a Triage, setting its target Workload and an optional Hint. The spec is immutable after creation, enforced by a CEL validation rule. Only `pagerless-server` writes Triage status.
+Humans (through the CLI or dashboard) and the Alertmanager receiver may only create a Page, setting its Target, Fingerprint, first Trigger, and an optional Hint. The spec is immutable after creation, enforced by a CEL validation rule. Only `pagerless-server` writes Page status.
 
 ## Consequences
 
@@ -21,5 +21,5 @@ Humans (through the CLI or dashboard) and the Alertmanager receiver may only cre
 
 ## Alternatives considered
 
-- **Agent patches `triages/status`.** Simplest, but the agent could rewrite its own validated Proposal.
-- **Agent creates an immutable `TriageReport` resource.** Safe, but live step streaming would require a second channel.
+- **Agent patches `pages/status`.** Simplest, but the agent could rewrite its own validated Proposal.
+- **Agent creates an immutable `PageReport` resource.** Safe, but live step streaming would require a second channel.

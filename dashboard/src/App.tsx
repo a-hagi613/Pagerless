@@ -4,9 +4,9 @@ import { Link, Route, Routes } from "react-router-dom";
 import { Button } from "./components/ui/button";
 import { signOut } from "./lib/api";
 import { useSession } from "./lib/use-session";
-import { StartTriagePage } from "./pages/start-triage";
-import { TriageDetailPage } from "./pages/triage-detail";
-import { TriageListPage } from "./pages/triage-list";
+import { StartPage } from "./pages/start-page";
+import { PageDetailPage } from "./pages/page-detail";
+import { PageListPage } from "./pages/page-list";
 
 export function App() {
   const session = useSession();
@@ -22,14 +22,14 @@ export function App() {
         <div className="mx-auto flex h-12 max-w-[1500px] items-center gap-6 px-4">
           <Link to="/" className="flex items-baseline gap-2 text-slate-100">
             <span className="text-base font-semibold tracking-tight">Pagerless</span>
-            <span className="hidden text-xs text-slate-400 sm:inline">Triage console</span>
+            <span className="hidden text-xs text-slate-400 sm:inline">Pages</span>
           </Link>
           <nav aria-label="Primary" className="flex items-center gap-4 text-sm">
             <Link to="/" className="text-slate-300 hover:text-white">
-              Triages
+              Pages
             </Link>
             <Link to="/start" className="text-slate-300 hover:text-white">
-              Start Triage
+              Start Page
             </Link>
           </nav>
           <div className="ml-auto flex items-center gap-3 text-xs text-slate-300">
@@ -52,9 +52,9 @@ export function App() {
       </header>
       <main id="content" className="mx-auto max-w-[1500px] px-4 py-6">
         <Routes>
-          <Route path="/" element={<TriageListPage />} />
-          <Route path="/start" element={<StartTriagePage />} />
-          <Route path="/triages/:name" element={<TriageDetailPage />} />
+          <Route path="/" element={<PageListPage />} />
+          <Route path="/start" element={<StartPage />} />
+          <Route path="/pages/:name" element={<PageDetailPage />} />
           <Route
             path="*"
             element={
@@ -64,7 +64,7 @@ export function App() {
                   to="/"
                   className="inline-flex items-center gap-1 text-sm text-sky-700 hover:underline"
                 >
-                  <ArrowLeft aria-hidden="true" className="size-4" /> Back to Triages
+                  <ArrowLeft aria-hidden="true" className="size-4" /> Back to Pages
                 </Link>
               </div>
             }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds the Pagerless runtime images, loads them into a local kind cluster, and
-# installs the chart from the checkout. The portal is then reachable with
-# `kubectl port-forward` on port 8080.
+# installs the chart from the checkout. The chart shell serves the agent report
+# API and the metrics API; the Portal arrives with its own slice.
 set -euo pipefail
 
 # shellcheck source=hack/lib.sh
@@ -20,10 +20,9 @@ kind load docker-image --name "$KIND_CLUSTER_NAME" \
 	"$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_AGENT_IMAGE"
 
 bash "$REPO_ROOT/hack/install.sh" --context "kind-${KIND_CLUSTER_NAME}" \
-	--namespaces "${WORKLOAD_NAMESPACES:-default}" \
-	--provider "${MODEL_PROVIDER:-replay}" --yes
+	--namespaces "${WORKLOAD_NAMESPACES:-default}" --yes
 
 echo
 echo "Pagerless is installed in kind cluster '$KIND_CLUSTER_NAME'."
-echo "Open the dashboard with:"
-echo "  kubectl --context kind-${KIND_CLUSTER_NAME} -n pagerless port-forward svc/pagerless-server 8080:8082"
+echo "Reach the agent report API and metrics with:"
+echo "  kubectl --context kind-${KIND_CLUSTER_NAME} -n pagerless port-forward svc/pagerless-server 8080:8080"

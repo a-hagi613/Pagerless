@@ -49,8 +49,8 @@ func TestDescribeNamesTheActionAndItsParameters(t *testing.T) {
 		},
 		{
 			name:   "an action without parameters",
-			action: v1alpha1.ProposedAction{Action: v1alpha1.ActionRestartWorkload},
-			want:   "RestartWorkload",
+			action: v1alpha1.ProposedAction{Action: v1alpha1.ActionScale},
+			want:   "Scale",
 		},
 		{
 			name:   "an action outside the menu",

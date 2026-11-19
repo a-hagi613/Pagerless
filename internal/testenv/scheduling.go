@@ -7,7 +7,7 @@ import (
 )
 
 // CreateNode creates a node that reports the allocatable resources, so that a
-// test can exercise the bounds that apply to an unschedulable Workload. Envtest
+// test can exercise the bounds that apply to an unschedulable Target. Envtest
 // runs no scheduler and no kubelet, so the node never hosts a pod.
 func (e *Env) CreateNode(t testing.TB, name string, allocatable corev1.ResourceList) *corev1.Node {
 	t.Helper()

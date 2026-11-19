@@ -15,54 +15,58 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// startRequest is the body of POST /api/triages.
+// humanRequestReason is the reason class that a human request contributes to the
+// Fingerprint.
+const humanRequestReason = "ManualRequest"
+
+// startRequest is the body of POST /api/pages.
 type startRequest struct {
-	// Workload is the Deployment or StatefulSet to investigate.
-	Workload v1alpha1.WorkloadReference `json:"workload"`
+	// Target is the Deployment or StatefulSet to investigate.
+	Target v1alpha1.TargetReference `json:"target"`
 	// Hint is optional guidance for the agent.
 	Hint string `json:"hint"`
 }
 
-// startResponse names the Triage that now covers the Workload. AlreadyActive
-// is true when an Active Triage existed, in which case this request started
-// nothing and Name is that Triage.
+// startResponse names the Page that now covers the Target. AlreadyActive
+// is true when an Active Page existed, in which case this request started
+// nothing and Name is that Page.
 type startResponse struct {
 	Name          string `json:"name"`
 	AlreadyActive bool   `json:"alreadyActive"`
 }
 
-// workloadListResponse is the body of GET /api/workloads.
-type workloadListResponse struct {
-	Workloads []v1alpha1.WorkloadReference `json:"workloads"`
+// targetListResponse is the body of GET /api/targets.
+type targetListResponse struct {
+	Targets []v1alpha1.TargetReference `json:"targets"`
 }
 
-// workloadList answers with the Deployments and StatefulSets that Start Triage
+// targetList answers with the Deployments and StatefulSets that Start Page
 // may target, so the browser offers a choice instead of a free-text name.
-func (h *Handler) workloadList(w http.ResponseWriter, r *http.Request) {
-	var workloads []v1alpha1.WorkloadReference
+func (h *Handler) targetList(w http.ResponseWriter, r *http.Request) {
+	var targets []v1alpha1.TargetReference
 	for _, namespace := range h.namespaces {
 		var deployments appsv1.DeploymentList
-		if err := h.workloads.List(r.Context(), &deployments, client.InNamespace(namespace)); err != nil {
+		if err := h.targets.List(r.Context(), &deployments, client.InNamespace(namespace)); err != nil {
 			h.internal(w, r.Context(), fmt.Errorf("list Deployments in %s: %w", namespace, err))
 			return
 		}
 		for i := range deployments.Items {
-			workloads = append(workloads, v1alpha1.WorkloadReference{
-				Kind: v1alpha1.WorkloadKindDeployment, Namespace: namespace, Name: deployments.Items[i].Name,
+			targets = append(targets, v1alpha1.TargetReference{
+				Kind: v1alpha1.TargetKindDeployment, Namespace: namespace, Name: deployments.Items[i].Name,
 			})
 		}
 		var statefulSets appsv1.StatefulSetList
-		if err := h.workloads.List(r.Context(), &statefulSets, client.InNamespace(namespace)); err != nil {
+		if err := h.targets.List(r.Context(), &statefulSets, client.InNamespace(namespace)); err != nil {
 			h.internal(w, r.Context(), fmt.Errorf("list StatefulSets in %s: %w", namespace, err))
 			return
 		}
 		for i := range statefulSets.Items {
-			workloads = append(workloads, v1alpha1.WorkloadReference{
-				Kind: v1alpha1.WorkloadKindStatefulSet, Namespace: namespace, Name: statefulSets.Items[i].Name,
+			targets = append(targets, v1alpha1.TargetReference{
+				Kind: v1alpha1.TargetKindStatefulSet, Namespace: namespace, Name: statefulSets.Items[i].Name,
 			})
 		}
 	}
-	slices.SortFunc(workloads, func(a, b v1alpha1.WorkloadReference) int {
+	slices.SortFunc(targets, func(a, b v1alpha1.TargetReference) int {
 		if order := strings.Compare(a.Namespace, b.Namespace); order != 0 {
 			return order
 		}
@@ -71,14 +75,14 @@ func (h *Handler) workloadList(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.Compare(a.Name, b.Name)
 	})
-	if workloads == nil {
-		workloads = []v1alpha1.WorkloadReference{}
+	if targets == nil {
+		targets = []v1alpha1.TargetReference{}
 	}
-	writeJSON(w, http.StatusOK, workloadListResponse{Workloads: workloads})
+	writeJSON(w, http.StatusOK, targetListResponse{Targets: targets})
 }
 
-// start creates a Triage for the chosen Workload with the optional Hint, from
-// the Dashboard Trigger. A Workload has at most one Active Triage, so when one
+// start creates a Page for the chosen Target with the optional Hint, from
+// the Dashboard Trigger. A Target has at most one Active Page, so when one
 // exists the answer names it and reports that nothing was started, which is the
 // same behaviour as the CLI (ADR-0018).
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
@@ -94,43 +98,48 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	if err := h.confirmWorkload(ctx, request.Workload); err != nil {
+	if err := h.confirmTarget(ctx, &request.Target); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
-	tr := &v1alpha1.Triage{
-		GenerateName: request.Workload.Name + "-",
+	fingerprint := v1alpha1.Fingerprint(request.Target, humanRequestReason)
+	if name, ok, err := h.activePage(ctx, fingerprint); err != nil {
+		h.internal(w, ctx, err)
+		return
+	} else if ok {
+		writeJSON(w, http.StatusOK, startResponse{Name: name, AlreadyActive: true})
+		return
+	}
+	page := &v1alpha1.Page{
+		GenerateName: request.Target.Name + "-",
 		Namespace:    h.namespace,
-		Spec: v1alpha1.TriageSpec{
-			Workload: request.Workload,
-			Hint:     strings.TrimSpace(request.Hint),
-			Trigger:  v1alpha1.Trigger{Source: v1alpha1.TriggerSourceDashboard},
+		Spec: v1alpha1.PageSpec{
+			Target:      request.Target,
+			Fingerprint: fingerprint,
+			Hint:        strings.TrimSpace(request.Hint),
+			Trigger:     v1alpha1.Trigger{Source: v1alpha1.TriggerSourcePortal, Reason: humanRequestReason},
 		},
 	}
-	if err := h.writer.Create(ctx, tr); err != nil {
-		if name, ok := h.activeTriage(ctx, err, request.Workload); ok {
-			writeJSON(w, http.StatusOK, startResponse{Name: name, AlreadyActive: true})
-			return
-		}
+	if err := h.writer.Create(ctx, page); err != nil {
 		h.writeWriteError(w, ctx, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, startResponse{Name: tr.Name})
+	writeJSON(w, http.StatusCreated, startResponse{Name: page.Name})
 }
 
 // validateStart checks the request before anything reaches the API server.
 func (h *Handler) validateStart(request startRequest) error {
-	switch request.Workload.Kind {
-	case v1alpha1.WorkloadKindDeployment, v1alpha1.WorkloadKindStatefulSet:
+	switch request.Target.Kind {
+	case v1alpha1.TargetKindDeployment, v1alpha1.TargetKindStatefulSet:
 	default:
-		return fmt.Errorf("workload.kind must be Deployment or StatefulSet")
+		return fmt.Errorf("target.kind must be Deployment or StatefulSet")
 	}
-	if request.Workload.Name == "" {
-		return errors.New("workload.name is required")
+	if request.Target.Name == "" {
+		return errors.New("target.name is required")
 	}
-	if !slices.Contains(h.namespaces, request.Workload.Namespace) {
-		return fmt.Errorf("start Triage does not offer Workloads in namespace %q", request.Workload.Namespace)
+	if !slices.Contains(h.namespaces, request.Target.Namespace) {
+		return fmt.Errorf("start Page does not offer Targets in namespace %q", request.Target.Namespace)
 	}
 	if len(request.Hint) > 1000 {
 		return fmt.Errorf("the hint is %d characters long; at most 1000 are allowed", len(request.Hint))
@@ -138,45 +147,39 @@ func (h *Handler) validateStart(request startRequest) error {
 	return nil
 }
 
-// confirmWorkload checks that the Workload exists, so a typo cannot start a
-// Triage that can never gather a Context Bundle.
-func (h *Handler) confirmWorkload(ctx context.Context, ref v1alpha1.WorkloadReference) error {
+// confirmTarget checks that the Target exists, so a typo cannot start a
+// Page that can never gather a Context Bundle.
+func (h *Handler) confirmTarget(ctx context.Context, ref *v1alpha1.TargetReference) error {
 	var obj client.Object = &appsv1.Deployment{}
-	if ref.Kind == v1alpha1.WorkloadKindStatefulSet {
+	if ref.Kind == v1alpha1.TargetKindStatefulSet {
 		obj = &appsv1.StatefulSet{}
 	}
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
-	if err := h.workloads.Get(ctx, key, obj); err != nil {
+	if err := h.targets.Get(ctx, key, obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			return fmt.Errorf("%s %q not found in namespace %q", strings.ToLower(string(ref.Kind)), ref.Name, ref.Namespace)
 		}
 		return fmt.Errorf("read %s %s/%s: %w", strings.ToLower(string(ref.Kind)), ref.Namespace, ref.Name, err)
 	}
+	// The UID is part of the Fingerprint, so a recreated Target is a new failure
+	// rather than a continuation of the old Page.
+	ref.APIVersion = "apps/v1"
+	ref.UID = string(obj.GetUID())
 	return nil
 }
 
-// activeTriage returns the name of the Active Triage that a refused creation
-// names. The create webhook refuses a second Active Triage for a Workload with
-// a conflict that carries the existing Triage's name; the name is confirmed
-// before it is trusted.
-func (h *Handler) activeTriage(
-	ctx context.Context, createErr error, workload v1alpha1.WorkloadReference,
-) (string, bool) {
-	var status apierrors.APIStatus
-	if !errors.As(createErr, &status) || !apierrors.IsAlreadyExists(createErr) {
-		return "", false
+// activePage returns the canonical Active Page for the Fingerprint, if any.
+// The chart installs no admission webhook, so the Portal checks before it
+// creates and the controller supersedes a duplicate that races with it.
+func (h *Handler) activePage(ctx context.Context, fingerprint string) (string, bool, error) {
+	var list v1alpha1.PageList
+	if err := h.reader.List(ctx, &list, client.InNamespace(h.namespace)); err != nil {
+		return "", false, fmt.Errorf("list Pages: %w", err)
 	}
-	details := status.Status().Details
-	if details == nil || details.Name == "" {
-		return "", false
+	for i := range list.Items {
+		if list.Items[i].Spec.Fingerprint == fingerprint && list.Items[i].Status.Phase.IsActive() {
+			return list.Items[i].Name, true, nil
+		}
 	}
-	var existing v1alpha1.Triage
-	key := client.ObjectKey{Namespace: h.namespace, Name: details.Name}
-	if err := h.reader.Get(ctx, key, &existing); err != nil {
-		return "", false
-	}
-	if existing.Spec.Workload != workload || !existing.Status.Phase.IsActive() {
-		return "", false
-	}
-	return existing.Name, true
+	return "", false, nil
 }

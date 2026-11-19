@@ -19,8 +19,8 @@ const ExpiryAfter = time.Hour
 
 // Request is one Proposal submitted for Validation.
 type Request struct {
-	// Triage is the Triage the Proposal belongs to.
-	Triage *v1alpha1.Triage
+	// Page is the Page the Proposal belongs to.
+	Page *v1alpha1.Page
 	// Action is the Action and parameters the agent proposed.
 	Action v1alpha1.ProposedAction
 }
@@ -77,15 +77,15 @@ func DefaultValidators() map[v1alpha1.Action]ActionValidator {
 // StalenessChecker is implemented by an ActionValidator whose Proposals are
 // rendered against a base that can change.
 type StalenessChecker interface {
-	// Stale returns the reason the Triage's current Proposal is a Stale
+	// Stale returns the reason the Page's current Proposal is a Stale
 	// Proposal, or an empty string when its base still holds.
-	Stale(ctx context.Context, t *v1alpha1.Triage) (string, error)
+	Stale(ctx context.Context, t *v1alpha1.Page) (string, error)
 }
 
-// Stale reports why the Triage's current Proposal is a Stale Proposal, or an
+// Stale reports why the Page's current Proposal is a Stale Proposal, or an
 // empty string when it is not. A Proposal whose Action has nothing to render
 // against is never stale.
-func (p *Pipeline) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error) {
+func (p *Pipeline) Stale(ctx context.Context, t *v1alpha1.Page) (string, error) {
 	current := t.Status.Proposal
 	if current == nil {
 		return "", nil
@@ -101,19 +101,19 @@ func (p *Pipeline) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error
 	return reason, nil
 }
 
-// Revalidate validates the Triage's current Proposal again against the
+// Revalidate validates the Page's current Proposal again against the
 // present state and returns it under a new hash. The attempt and the expiry
 // are kept, because re-validation neither gives the agent another try nor
 // gives the approver more time. When Validation now finds errors it returns
 // them and no Proposal.
 func (p *Pipeline) Revalidate(
-	ctx context.Context, t *v1alpha1.Triage,
+	ctx context.Context, t *v1alpha1.Page,
 ) (*v1alpha1.Proposal, []agentapi.ValidationError, error) {
 	current := t.Status.Proposal
 	if current == nil {
-		return nil, nil, errors.New("the Triage has no Proposal to re-validate")
+		return nil, nil, errors.New("the Page has no Proposal to re-validate")
 	}
-	rebuilt, errs, err := p.Build(ctx, Request{Triage: t, Action: current.ProposedAction}, current.Attempt)
+	rebuilt, errs, err := p.Build(ctx, Request{Page: t, Action: current.ProposedAction}, current.Attempt)
 	if err != nil || len(errs) > 0 {
 		return nil, errs, err
 	}
@@ -141,7 +141,7 @@ func (p *Pipeline) Build(
 	if len(outcome.Errors) > 0 {
 		return nil, outcome.Errors, nil
 	}
-	hash, err := Hash(req.Triage, req.Action, outcome.Change, outcome.Base)
+	hash, err := Hash(req.Page, req.Action, outcome.Change, outcome.Base)
 	if err != nil {
 		return nil, nil, err
 	}

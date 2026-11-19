@@ -19,24 +19,24 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-// recovered runs the whole loop and returns the Triage once Verification has ended Recovered and its Narrative
+// recovered runs the whole loop and returns the Page once Verification has ended Recovered and its Narrative
 // Job is recorded.
-func recoveredTriage(t *testing.T, env *testenv.Env) *v1alpha1.Triage {
+func recoveredPage(t *testing.T, env *testenv.Env) *v1alpha1.Page {
 	t.Helper()
 	tr, commit := merged(t, env, humanTrigger)
 	verifying(t, env, tr, commit)
 	env.Clock.Step(5 * time.Minute)
-	return env.WaitFor(t, tr.Name, "the Triage is Recovered with a Narrative Job", func(tr *v1alpha1.Triage) bool {
+	return env.WaitFor(t, tr.Name, "the Page is Recovered with a Narrative Job", func(tr *v1alpha1.Page) bool {
 		return tr.Status.Phase == v1alpha1.PhaseRecovered && tr.Status.NarrativeJobName != ""
 	})
 }
 
-// jobsForTriage lists the Jobs that the Triage owns.
-func jobsForTriage(t *testing.T, env *testenv.Env, name string) []string {
+// jobsForPage lists the Jobs that the Page owns.
+func jobsForPage(t *testing.T, env *testenv.Env, name string) []string {
 	t.Helper()
 	var jobs batchv1.JobList
 	if err := env.Client.List(t.Context(), &jobs, client.InNamespace(testenv.Namespace),
-		client.MatchingLabels{controller.TriageLabel: name}); err != nil {
+		client.MatchingLabels{controller.PageLabel: name}); err != nil {
 		t.Fatal(err)
 	}
 	names := make([]string, 0, len(jobs.Items))
@@ -46,10 +46,10 @@ func jobsForTriage(t *testing.T, env *testenv.Env, name string) []string {
 	return names
 }
 
-func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
+func TestNarrativeJobDescribesTheVerifiedPage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recoveredTriage(t, env)
+	tr := recoveredPage(t, env)
 
 	narrative := env.StartNarrative(t, tr.Name)
 	if deadline := narrative.Job.Spec.ActiveDeadlineSeconds; deadline == nil ||
@@ -57,10 +57,10 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 		t.Errorf("Narrative Job deadline = %v, want %d seconds", deadline, int64(server.DefaultNarrativeDeadline.Seconds()))
 	}
 	if !metav1.IsControlledBy(narrative.Job, tr) {
-		t.Error("the Narrative Job is not controlled by its Triage")
+		t.Error("the Narrative Job is not controlled by its Page")
 	}
-	if jobs := jobsForTriage(t, env, tr.Name); len(jobs) != 2 {
-		t.Errorf("Jobs for Triage %s = %v, want the investigation Job and one Narrative Job", tr.Name, jobs)
+	if jobs := jobsForPage(t, env, tr.Name); len(jobs) != 2 {
+		t.Errorf("Jobs for Page %s = %v, want the investigation Job and one Narrative Job", tr.Name, jobs)
 	}
 	variables := map[string]string{}
 	for _, variable := range narrative.Job.Spec.Template.Spec.Containers[0].Env {
@@ -68,7 +68,7 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		agentapi.EnvTask:      agentapi.TaskNarrative,
-		agentapi.EnvTriage:    tr.Name,
+		agentapi.EnvPage:      tr.Name,
 		agentapi.EnvServerURL: env.ReportURL,
 	} {
 		if variables[name] != want {
@@ -82,7 +82,7 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 	for _, name := range []string{
 		agentapi.EnvMCPGatewayURL, agentapi.EnvKeycloakIssuer, agentapi.EnvKeycloakTokenURL,
 		agentapi.EnvKeycloakClientID, agentapi.EnvKeycloakTokenFile,
-		agentapi.EnvWorkloadName, agentapi.EnvWorkloadNamespace, agentapi.EnvSandboxOwner, agentapi.EnvReplayFile,
+		agentapi.EnvTargetName, agentapi.EnvTargetNamespace, agentapi.EnvSandboxOwner, agentapi.EnvReplayFile,
 	} {
 		if _, exists := variables[name]; exists {
 			t.Errorf("the Narrative Job received %s, which it does not need", name)
@@ -93,8 +93,8 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("read the Narrative record: %+v, %v, want 200", result, err)
 	}
-	if record.Workload != tr.Spec.Workload {
-		t.Errorf("record Workload = %+v, want %+v", record.Workload, tr.Spec.Workload)
+	if record.Target != tr.Spec.Target {
+		t.Errorf("record Target = %+v, want %+v", record.Target, tr.Spec.Target)
 	}
 	for _, want := range []string{
 		tr.Status.Diagnosis,
@@ -110,7 +110,7 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 	}
 
 	written := "The checkout Deployment was failing because its memory limit was too low. " +
-		"The approved PatchResources change raised the limit, and Verification found the Workload recovered."
+		"The approved PatchResources change raised the limit, and Verification found the Target recovered."
 	result, err = narrative.API.PostNarrative(t.Context(), agentapi.NarrativeReport{Narrative: written})
 	if err != nil || result.StatusCode != http.StatusAccepted {
 		t.Fatalf("post the Narrative: %+v, %v, want 202", result, err)
@@ -134,10 +134,10 @@ func TestNarrativeJobDescribesTheVerifiedTriage(t *testing.T) {
 func TestOnlyTheNarrativeJobMayWriteTheNarrative(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recoveredTriage(t, env)
+	tr := recoveredPage(t, env)
 	env.StartNarrative(t, tr.Name)
 
-	investigation, err := env.GetJob(t.Context(), tr.Status.JobName)
+	investigation, err := env.GetJob(t.Context(), tr.Status.AgentJobName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestOnlyTheNarrativeJobMayWriteTheNarrative(t *testing.T) {
 func TestNarrativeIsWrittenOnceAndIsBounded(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withPatchResources())
-	tr := recoveredTriage(t, env)
+	tr := recoveredPage(t, env)
 	narrative := env.StartNarrative(t, tr.Name)
 
 	written := "The checkout Deployment recovered after the approved change."
@@ -176,7 +176,7 @@ func TestNarrativeIsWrittenOnceAndIsBounded(t *testing.T) {
 		}
 	}
 	result, err := narrative.API.PostNarrative(t.Context(),
-		agentapi.NarrativeReport{Narrative: "A different account of the same Triage."})
+		agentapi.NarrativeReport{Narrative: "A different account of the same Page."})
 	if err != nil || result.StatusCode != http.StatusConflict {
 		t.Errorf("a second, different Narrative was accepted: %+v, %v, want 409", result, err)
 	}
@@ -198,7 +198,7 @@ func TestNarrativeRecordingIsMountedForALiveCapture(t *testing.T) {
 		RecordingPVC:           recordingClaimName,
 		NarrativeRecordingFile: "/recordings/narrative.json",
 	}))
-	tr := recoveredTriage(t, env)
+	tr := recoveredPage(t, env)
 	narrative := env.StartNarrative(t, tr.Name)
 
 	pod := narrative.Job.Spec.Template.Spec
@@ -241,11 +241,11 @@ func TestFailedNarrativeJobLeavesTheVerificationOutcomeUnchanged(t *testing.T) {
 		t.Run(end.name, func(t *testing.T) {
 			t.Parallel()
 			env := testenv.Start(t, withPatchResources())
-			tr := recoveredTriage(t, env)
+			tr := recoveredPage(t, env)
 			before := env.Get(t, tr.Name)
 			narrativeJob := before.Status.NarrativeJobName
 			if narrativeJob == "" {
-				t.Fatal("the Triage records no Narrative Job")
+				t.Fatal("the Page records no Narrative Job")
 			}
 
 			env.EndJob(t, narrativeJob, end.kind)
@@ -267,8 +267,8 @@ func TestFailedNarrativeJobLeavesTheVerificationOutcomeUnchanged(t *testing.T) {
 				t.Errorf("the %s Narrative Job changed the status:\nbefore %+v\nafter  %+v",
 					end.name, before.Status, after.Status)
 			}
-			if jobs := jobsForTriage(t, env, tr.Name); len(jobs) != 2 {
-				t.Errorf("Jobs for Triage %s = %v, want no replacement Narrative Job", tr.Name, jobs)
+			if jobs := jobsForPage(t, env, tr.Name); len(jobs) != 2 {
+				t.Errorf("Jobs for Page %s = %v, want no replacement Narrative Job", tr.Name, jobs)
 			}
 		})
 	}

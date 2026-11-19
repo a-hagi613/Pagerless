@@ -1,5 +1,7 @@
-// Command pagerless-server runs the Pagerless control plane: the Triage
-// reconciler, the agent report endpoint, and the admission webhooks.
+// Command pagerless-server runs the Pagerless control plane: the Page
+// reconcilers, the agent report endpoint, and — when it is configured — the
+// embedded dashboard. It installs no admission webhook, so it needs no serving
+// certificate and holds no cluster-scoped admission permission (ADR-0037).
 package main
 
 import (
@@ -8,29 +10,24 @@ import (
 	"fmt"
 	"math"
 	"net"
-	"net/url"
 	"os"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/a-hagi613/pagerless/internal/agentapi"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 	"github.com/a-hagi613/pagerless/internal/github"
-	"github.com/a-hagi613/pagerless/internal/keycloak"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
 	"github.com/a-hagi613/pagerless/internal/server"
 	"github.com/a-hagi613/pagerless/internal/verification"
-	"github.com/a-hagi613/pagerless/internal/webhooktls"
 )
 
 func main() {
@@ -41,7 +38,7 @@ func main() {
 }
 
 // defaultGitHubTokenFile is where the Deployment mounts the write-scoped GitHub token.
-const defaultGitHubTokenFile = "/var/run/secrets/pagerless/github/token"
+const defaultGitHubTokenFile = "/var/run/pagerless/credentials/GITHUB_TOKEN"
 
 // defaultArgoCDTokenFile is where the Argo CD API token is mounted.
 const defaultArgoCDTokenFile = "/var/run/secrets/pagerless/argocd/token"
@@ -76,40 +73,30 @@ func run() error {
 	defaults := patchresources.DefaultBounds()
 	defaultCPU, defaultMemory := defaults[corev1.ResourceCPU], defaults[corev1.ResourceMemory]
 	defaultScale := scale.DefaultBounds()
-	// The observation window is five minutes unless the environment shortens it,
-	// which only the credential-free CI Replay jobs do (ADR-0006).
+	// The observation window is five minutes unless the environment shortens it.
 	defaultVerificationWindow, err := verification.WindowFromEnvironment(os.Getenv)
 	if err != nil {
 		return err
 	}
 	var (
 		namespace = flag.String("namespace", os.Getenv("POD_NAMESPACE"),
-			"namespace that holds Triages and agent Jobs (default: $POD_NAMESPACE)")
+			"namespace that holds Pages and agent Jobs (default: $POD_NAMESPACE)")
 		agentImage    = flag.String("agent-image", "", "agent container image")
 		reportURL     = flag.String("report-url", "", "base URL that agent Jobs use to reach the report API")
 		reportBind    = flag.String("report-bind-address", ":8080", "address the agent report API listens on")
 		metricsBind   = flag.String("metrics-bind-address", ":9090", "address the Prometheus metrics API listens on")
-		dashboardBind = flag.String("dashboard-bind-address", ":8082",
-			"address the dashboard and its read-only API listen on")
-		grafanaURL = flag.String("grafana-url", "http://localhost:3000",
+		dashboardBind = flag.String("dashboard-bind-address", "",
+			"address the dashboard and its read-only API listen on; empty disables the dashboard")
+		grafanaURL = flag.String("grafana-url", "",
 			"Grafana base URL that the browser can reach, for example while the Service is port-forwarded; "+
 				"empty disables the embedded panels")
-		grafanaMetricsDashboard = flag.String("grafana-workload-dashboard-uid", server.DefaultMetricsDashboardUID,
-			"Grafana dashboard that charts a Workload's metrics")
+		grafanaMetricsDashboard = flag.String("grafana-target-dashboard-uid", server.DefaultMetricsDashboardUID,
+			"Grafana dashboard that charts a Target's metrics")
 		grafanaLogsDashboard = flag.String("grafana-logs-dashboard-uid", server.DefaultLogsDashboardUID,
-			"Grafana dashboard that shows a Workload's logs")
+			"Grafana dashboard that shows a Target's logs")
 		historyPath = flag.String("history-path", "/var/lib/pagerless/history.db",
-			"SQLite file that records Triage snapshots and steps")
-		healthBind     = flag.String("health-probe-bind-address", ":8081", "address the health probes listen on")
-		webhookPort    = flag.Int("webhook-port", 9443, "port the admission webhooks listen on")
-		webhookCertDir = flag.String("webhook-cert-dir", "/var/run/pagerless/webhook-certs",
-			"directory that receives the generated webhook serving certificate")
-		webhookService = flag.String("webhook-service", "pagerless-server",
-			"name of the Service that fronts the admission webhooks")
-		webhookConfig = flag.String("webhook-config", "pagerless-server",
-			"name of the ValidatingWebhookConfiguration that receives the certificate authority")
-		mutatingWebhookConfig = flag.String("mutating-webhook-config", "pagerless-server",
-			"name of the MutatingWebhookConfiguration that receives the certificate authority")
+			"SQLite file that records Page snapshots and steps")
+		healthBind   = flag.String("health-probe-bind-address", ":8081", "address the health probes listen on")
 		agentAccount = flag.String("agent-service-account", server.DefaultAgentServiceAccount,
 			"service account that agent Jobs run as")
 		serverAccount = flag.String("server-service-account", server.DefaultServerServiceAccount,
@@ -117,13 +104,14 @@ func run() error {
 		agentDeadline     = flag.Duration("agent-deadline", server.DefaultAgentDeadline, "active deadline of an agent Job")
 		narrativeDeadline = flag.Duration("narrative-deadline", server.DefaultNarrativeDeadline,
 			"active deadline of a Narrative Job")
-		sandboxURL = flag.String("sandbox-url", os.Getenv("PAGERLESS_SANDBOX_URL"),
-			"git URL of the Sandbox; PatchResources and Rollback are accepted only when it is set")
-		sandboxBranch        = flag.String("sandbox-branch", "main", "branch of the Sandbox that Argo CD deploys")
+		sandboxURL = flag.String("sandbox-url", os.Getenv("PAGERLESS_TARGET_REPOSITORY_URL"),
+			"git URL of the Target Repository; the git-backed Actions are accepted only when it is set")
+		sandboxBranch = flag.String("sandbox-branch", "main",
+			"branch of the Target Repository that pull requests target")
 		sandboxReadTokenFile = flag.String("sandbox-read-token-file", "",
-			"optional file that holds the read-only token for the HTTPS Sandbox repository")
+			"optional file that holds the read-only token for the HTTPS Target Repository")
 		patchable = flag.String("patch-namespaces", os.Getenv(agentapi.EnvAllowedNamespaces),
-			"comma-separated namespaces whose Workloads PatchResources and Rollback may change")
+			"comma-separated namespaces whose Targets PatchResources and Rollback may change")
 		patchMinCPU = flag.String("patch-min-cpu", defaultCPU.Min.String(),
 			"minimum CPU request or limit in PatchResources")
 		patchMaxCPU = flag.String("patch-max-cpu", defaultCPU.Max.String(),
@@ -137,45 +125,39 @@ func run() error {
 		scaleMax = flag.Int("scale-max-replicas", int(defaultScale.Max),
 			"maximum replica count in Scale")
 		githubAPIURL = flag.String("github-api-url", github.DefaultGitHubAPI,
-			"base URL of the target repository's GitHub API")
+			"base URL of the Target Repository's GitHub API")
 		githubRepository = flag.String("github-repository", os.Getenv("PAGERLESS_GITHUB_REPOSITORY"),
-			"owner/name of the target repository; empty derives it from --sandbox-url")
+			"owner/name of the Target Repository; empty derives it from --sandbox-url")
 		githubTokenFile = flag.String("github-token-file", defaultGitHubTokenFile,
 			"file that holds the write-scoped token that publishes a Proposal")
-		argoCDURL = flag.String("argocd-url", "http://argocd-server.argocd.svc",
-			"base URL of the Argo CD API server, which Verification asks whether the merged change is synced")
+		argoCDURL = flag.String("argocd-url", "",
+			"base URL of the Argo CD API server, which Verification asks whether the merged change is synced; "+
+				"empty skips the GitOps check")
 		argoCDTokenFile = flag.String("argocd-token-file", defaultArgoCDTokenFile,
 			"file that holds the bearer token that authenticates to the Argo CD API")
 		argoCDApplication = flag.String("argocd-application", verification.DefaultApplication,
-			"Argo CD application that deploys the Sandbox")
-		alertmanagerURL = flag.String("alertmanager-url", "http://alertmanager.monitoring.svc:9093",
-			"base URL of Alertmanager, which Verification asks whether the triggering alert has resolved")
+			"Argo CD application that deploys the Target Repository")
+		alertmanagerURL = flag.String("alertmanager-url", "",
+			"base URL of Alertmanager; empty disables the alert receiver and the alert-resolution check")
 		alertmanagerTokenFile = flag.String("alertmanager-token-file", defaultAlertmanagerTokenFile,
 			"file that holds the required bearer token for Alertmanager webhook deliveries")
 		verificationWindow = flag.Duration("verification-window", defaultVerificationWindow,
-			"how long Verification observes the Workload for new restarts and OOMKills")
+			"how long Verification observes the Target for new restarts and OOMKills")
 		alertNamespaces = flag.String("alert-namespaces", "",
-			"comma-separated namespaces whose opted-in alerts start Triages (empty: none)")
-		workloadNamespaces = flag.String("workload-namespaces", "sandbox",
-			"comma-separated namespaces whose Workloads the dashboard's Start Triage offers")
+			"comma-separated namespaces whose opted-in alerts open Pages (empty: none)")
+		targetNamespaces = flag.String("target-namespaces", "default",
+			"comma-separated namespaces whose Targets the dashboard's Start request offers")
 		dashboardBaseURL = flag.String("dashboard-base-url", "http://localhost:8080",
 			"browser-facing base URL of the dashboard, used to build the OIDC redirect URI "+
 				"(overridden by $PAGERLESS_DASHBOARD_BASE_URL)")
-		oidcIssuer = flag.String("oidc-issuer", "http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless",
-			"Keycloak realm issuer that signs dashboard users in")
+		oidcIssuer = flag.String("oidc-issuer", "",
+			"realm issuer that signs dashboard users in; empty leaves the dashboard disabled")
 		oidcClientID = flag.String("oidc-client-id", "pagerless-dashboard",
-			"confidential Keycloak client for dashboard sign-in")
+			"confidential OIDC client for dashboard sign-in")
 		oidcClientSecretFile = flag.String("oidc-client-secret-file", "/var/run/pagerless/keycloak/client-secret",
 			"file that holds the dashboard client secret")
-		keycloakBaseURL = flag.String("keycloak-base-url", "http://keycloak.keycloak.svc.cluster.local:8080",
-			"base URL of the Keycloak admin API used to check approver group membership")
-		keycloakAdminClientID = flag.String("keycloak-admin-client-id", "pagerless-server",
-			"Keycloak client that reads user group membership")
-		keycloakAdminClientSecretFile = flag.String("keycloak-admin-client-secret-file",
-			"/var/run/pagerless/keycloak/server-client-secret",
-			"file that holds the secret of the Keycloak client that reads group membership")
-		approversGroup = flag.String("approvers-group", keycloak.DefaultGroup,
-			"Keycloak group whose members may approve through the dashboard")
+		approversGroup = flag.String("approvers-group", "pagerless-approvers",
+			"realm group whose members may approve through the dashboard")
 		dashboardCookieSecure = flag.Bool("dashboard-cookie-secure", true,
 			"mark dashboard session cookies Secure; set false only when the browser reaches the dashboard over HTTP")
 	)
@@ -196,58 +178,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	workloads, err := parseNamespaces(*workloadNamespaces)
+	targets, err := parseNamespaces(*targetNamespaces)
 	if err != nil {
 		return err
 	}
 	if envDashboardBaseURL := strings.TrimSpace(os.Getenv("PAGERLESS_DASHBOARD_BASE_URL")); envDashboardBaseURL != "" {
 		*dashboardBaseURL = envDashboardBaseURL
 	}
-	dashboardAuth, err := dashboardauth.New(dashboardauth.Config{
-		Issuer:         *oidcIssuer,
-		ClientID:       *oidcClientID,
-		ClientSecret:   tokenFromFile(*oidcClientSecretFile),
-		RedirectURL:    strings.TrimSuffix(*dashboardBaseURL, "/") + "/auth/callback",
-		ApproversGroup: *approversGroup,
-		SecureCookies:  *dashboardCookieSecure,
-	})
-	if err != nil {
-		return fmt.Errorf("configure dashboard sign-in: %w", err)
-	}
-	approvers, err := keycloak.New(keycloak.Config{
-		BaseURL:      *keycloakBaseURL,
-		Realm:        realmOf(*oidcIssuer),
-		ClientID:     *keycloakAdminClientID,
-		ClientSecret: tokenFromFile(*keycloakAdminClientSecretFile),
-		Group:        *approversGroup,
-	})
-	if err != nil {
-		return fmt.Errorf("configure the Keycloak approver check: %w", err)
-	}
 	restConfig, err := ctrl.GetConfig()
 	if err != nil {
 		return fmt.Errorf("load Kubernetes configuration: %w", err)
 	}
 	ctx := ctrl.SetupSignalHandler()
-
-	scheme, err := server.Scheme()
-	if err != nil {
-		return err
-	}
-	plain, err := client.New(restConfig, client.Options{Scheme: scheme})
-	if err != nil {
-		return fmt.Errorf("create client: %w", err)
-	}
-	if _, err := webhooktls.Provision(ctx, plain, webhooktls.Options{
-		ServiceName:        *webhookService,
-		Namespace:          *namespace,
-		ConfigName:         *webhookConfig,
-		MutatingConfigName: *mutatingWebhookConfig,
-		CertDir:            *webhookCertDir,
-		Now:                time.Now(),
-	}); err != nil {
-		return fmt.Errorf("provision webhook TLS: %w", err)
-	}
 
 	listener, err := net.Listen("tcp", *reportBind)
 	if err != nil {
@@ -257,22 +199,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("listen for the metrics API: %w", err)
 	}
-	dashboardListener, err := net.Listen("tcp", *dashboardBind)
-	if err != nil {
-		return fmt.Errorf("listen for the dashboard: %w", err)
-	}
 	var sandboxReadToken func() (string, error)
 	if *sandboxReadTokenFile != "" {
 		sandboxReadToken = tokenFromFile(*sandboxReadTokenFile)
 	}
-	mgr, err := server.New(restConfig, server.Config{
+
+	cfg := server.Config{
 		Namespace:                  *namespace,
 		AgentImage:                 *agentImage,
 		AgentServerURL:             *reportURL,
 		AgentRuntime:               agentRuntimeFromEnvironment(),
 		ReportListener:             listener,
 		MetricsListener:            metricsListener,
-		DashboardListener:          dashboardListener,
+		TargetNamespaces:           targets,
 		GrafanaURL:                 *grafanaURL,
 		GrafanaMetricsDashboardUID: *grafanaMetricsDashboard,
 		GrafanaLogsDashboardUID:    *grafanaLogsDashboard,
@@ -281,10 +220,8 @@ func run() error {
 		GitHubRepository:           *githubRepository,
 		GitHubToken:                tokenFromFile(*githubTokenFile),
 		ArgoCDURL:                  *argoCDURL,
-		ArgoCDToken:                tokenFromFile(*argoCDTokenFile),
 		ArgoCDApplication:          *argoCDApplication,
 		AlertmanagerURL:            *alertmanagerURL,
-		AlertmanagerToken:          tokenFromFile(*alertmanagerTokenFile),
 		VerificationWindow:         *verificationWindow,
 		AgentServiceAccount:        *agentAccount,
 		ServerServiceAccount:       *serverAccount,
@@ -297,17 +234,42 @@ func run() error {
 		PatchBounds:        bounds,
 		ScaleBounds:        scaleBounds,
 		AlertNamespaces:    allowed,
-		WorkloadNamespaces: workloads,
-		DashboardAuth:      dashboardAuth,
-		Approvers:          approvers,
-		WebhookPort:        *webhookPort,
-		WebhookCertDir:     *webhookCertDir,
 		HealthProbeAddress: *healthBind,
-	})
+	}
+	if *argoCDURL != "" {
+		cfg.ArgoCDToken = tokenFromFile(*argoCDTokenFile)
+	}
+	if *alertmanagerURL != "" {
+		cfg.AlertmanagerToken = tokenFromFile(*alertmanagerTokenFile)
+	}
+	if *dashboardBind != "" {
+		// The dashboard is served only when an identity provider is configured. Its
+		// decisions patch Page annotations, which the Page controller reconciles.
+		dashboardAuth, err := dashboardauth.New(dashboardauth.Config{
+			Issuer:         *oidcIssuer,
+			ClientID:       *oidcClientID,
+			ClientSecret:   tokenFromFile(*oidcClientSecretFile),
+			RedirectURL:    strings.TrimSuffix(*dashboardBaseURL, "/") + "/auth/callback",
+			ApproversGroup: *approversGroup,
+			SecureCookies:  *dashboardCookieSecure,
+		})
+		if err != nil {
+			return fmt.Errorf("configure dashboard sign-in: %w", err)
+		}
+		dashboardListener, err := net.Listen("tcp", *dashboardBind)
+		if err != nil {
+			return fmt.Errorf("listen for the dashboard: %w", err)
+		}
+		cfg.DashboardAuth = dashboardAuth
+		cfg.DashboardListener = dashboardListener
+	}
+
+	mgr, err := server.New(restConfig, cfg)
 	if err != nil {
 		return err
 	}
-	ctrl.Log.WithName("setup").Info("starting pagerless-server", "namespace", *namespace, "alertNamespaces", allowed)
+	ctrl.Log.WithName("setup").Info("starting pagerless-server", "namespace", *namespace,
+		"alertNamespaces", allowed, "dashboard", cfg.DashboardListener != nil)
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("run manager: %w", err)
 	}
@@ -340,20 +302,6 @@ func parsePatchBounds(
 		bounds[setting.name] = patchresources.Bounds{Min: minimum, Max: maximum}
 	}
 	return bounds, nil
-}
-
-// realmOf returns the realm segment of a Keycloak issuer URL, such as
-// pagerless for http://keycloak.keycloak.svc.cluster.local:8080/realms/pagerless.
-func realmOf(issuer string) string {
-	parsed, err := url.Parse(issuer)
-	if err != nil {
-		return ""
-	}
-	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
-	if len(segments) == 2 && segments[0] == "realms" {
-		return segments[1]
-	}
-	return ""
 }
 
 // parseScaleBounds validates the replica bounds supplied through the server's flags.
@@ -389,8 +337,8 @@ func agentRuntimeFromEnvironment() controller.AgentRuntimeConfig {
 	}
 }
 
-// parseNamespaces splits the comma-separated list of alert namespaces and
-// checks that each one is a valid namespace name.
+// parseNamespaces splits the comma-separated list of namespaces and checks that
+// each one is a valid namespace name.
 func parseNamespaces(list string) ([]string, error) {
 	var namespaces []string
 	for name := range strings.SplitSeq(list, ",") {
@@ -399,7 +347,7 @@ func parseNamespaces(list string) ([]string, error) {
 			continue
 		}
 		if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
-			return nil, fmt.Errorf("alert namespace %q: %s", name, strings.Join(errs, "; "))
+			return nil, fmt.Errorf("namespace %q: %s", name, strings.Join(errs, "; "))
 		}
 		namespaces = append(namespaces, name)
 	}

@@ -82,10 +82,10 @@ async def run_agent(
     token_file = tmp_path / "token"
     token_file.write_text(token)
     http = httpx.AsyncClient(transport=server.transport())
-    client = ServerClient("http://pagerless-server", server.triage, token_file, http=http, sleep=no_sleep)
+    client = ServerClient("http://pagerless-server", server.page, token_file, http=http, sleep=no_sleep)
     model = Spy(provider)
     target = Target(
-        triage=server.triage,
+        page=server.page,
         kind="Deployment",
         namespace="sandbox",
         name="checkout",
@@ -566,7 +566,7 @@ class TestServerRelationship:
         assert result.model.requests == []
         assert server.reports == []
 
-    async def test_a_triage_that_is_no_longer_investigating_stops_the_run(self, tmp_path: Path) -> None:
+    async def test_a_page_that_is_no_longer_investigating_stops_the_run(self, tmp_path: Path) -> None:
         server = StandInServer()
         tools = oom_tools(REPLAYED)
         tools = RecordedTools(

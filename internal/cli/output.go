@@ -19,7 +19,7 @@ const (
 	formatYAML    = "yaml"
 )
 
-// placeholder stands for a value that is absent from a Triage.
+// placeholder stands for a value that is absent from a Page.
 const placeholder = "none"
 
 // metaFor returns the type metadata that machine-readable output carries for a kind of the pagerless.dev group.

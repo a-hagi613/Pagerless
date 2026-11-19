@@ -10,8 +10,8 @@ It starts three things:
    and writes the credentials to a mode-0600 file; nothing is printed.
 2. The envtest API server, the admission webhooks, and `pagerless-server` with the real `dashboardauth` flow, via
    the `smoke`-tagged `internal/server` test. A stand-in agent records twenty steps and a NoAction Proposal.
-3. Chromium driven by `@playwright/test`, via `e2e/smoke.spec.ts`. The browser starts the Triage from the Start
-   Triage page, waits for a step that arrives after the first snapshot, approves, and checks the recorded approver.
+3. Chromium driven by `@playwright/test`, via `e2e/smoke.spec.ts`. The browser starts the Page from the Start
+   Page view, waits for a step that arrives after the first snapshot, approves, and checks the recorded approver.
 
 ## Prerequisites
 

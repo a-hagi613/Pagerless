@@ -15,7 +15,7 @@ import (
 )
 
 // WithProposalPollInterval sets how often pagerless-server checks a Proposed
-// Triage for a Stale Proposal and for expiry.
+// Page for a Stale Proposal and for expiry.
 func WithProposalPollInterval(d time.Duration) Option {
 	return func(o *options) { o.proposalPoll = d }
 }
@@ -31,7 +31,6 @@ func (e *Env) PatchResources(allowedNamespaces ...string) map[v1alpha1.Action]pr
 	validators := proposal.DefaultValidators()
 	validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
 		Reader:            asServer,
-		Writer:            asServer,
 		Sandbox:           e.SandboxRepository(),
 		AllowedNamespaces: allowedNamespaces,
 		Bounds:            patchresources.DefaultBounds(),
@@ -63,7 +62,6 @@ func (e *Env) Remediations(allowedNamespaces ...string) map[v1alpha1.Action]prop
 	validators := e.SandboxActions(allowedNamespaces...)
 	validators[v1alpha1.ActionScale] = scale.New(scale.Config{
 		Reader:            asServer,
-		Writer:            asServer,
 		Sandbox:           e.SandboxRepository(),
 		AllowedNamespaces: allowedNamespaces,
 		Bounds:            scale.DefaultBounds(),

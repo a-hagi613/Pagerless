@@ -17,18 +17,18 @@ import (
 // startTime is a deterministic creation time for the records the tests append.
 var startTime = time.Date(2026, time.November, 16, 12, 0, 0, 0, time.UTC)
 
-// newTriage returns a Triage with the spec and status that the tests record.
-func newTriage(name string, created time.Time) *v1alpha1.Triage {
-	tr := &v1alpha1.Triage{
-		Spec: v1alpha1.TriageSpec{
-			Workload: v1alpha1.WorkloadReference{
-				Kind:      v1alpha1.WorkloadKindDeployment,
+// newPage returns a Page with the spec and status that the tests record.
+func newPage(name string, created time.Time) *v1alpha1.Page {
+	tr := &v1alpha1.Page{
+		Spec: v1alpha1.PageSpec{
+			Target: v1alpha1.TargetReference{
+				Kind:      v1alpha1.TargetKindDeployment,
 				Namespace: "sandbox",
 				Name:      "checkout",
 			},
 			Trigger: v1alpha1.Trigger{Source: v1alpha1.TriggerSourceCLI, Pod: "checkout-abc"},
 		},
-		Status: v1alpha1.TriageStatus{Phase: v1alpha1.PhasePending},
+		Status: v1alpha1.PageStatus{Phase: v1alpha1.PhasePending},
 	}
 	tr.Name = name
 	tr.Namespace = "pagerless"
@@ -46,23 +46,23 @@ func openVersion1(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	status, err := json.Marshal(v1alpha1.TriageStatus{Phase: v1alpha1.PhaseRecovered})
+	status, err := json.Marshal(v1alpha1.PageStatus{Phase: v1alpha1.PhaseRecovered})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, statement := range []string{
-		`CREATE TABLE triage_snapshots (
+		`CREATE TABLE page_snapshots (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			triage_uid TEXT NOT NULL,
+			page_uid TEXT NOT NULL,
 			namespace TEXT NOT NULL,
 			name TEXT NOT NULL,
 			phase TEXT NOT NULL,
 			observed_at TEXT NOT NULL,
 			status TEXT NOT NULL
 		)`,
-		`CREATE TABLE triage_steps (
+		`CREATE TABLE page_steps (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			triage_uid TEXT NOT NULL,
+			page_uid TEXT NOT NULL,
 			namespace TEXT NOT NULL,
 			name TEXT NOT NULL,
 			recorded_at TEXT NOT NULL,
@@ -78,9 +78,9 @@ func openVersion1(t *testing.T, path string) {
 		}
 	}
 	_, err = db.ExecContext(context.Background(),
-		`INSERT INTO triage_snapshots (triage_uid, namespace, name, phase, observed_at, status)
+		`INSERT INTO page_snapshots (page_uid, namespace, name, phase, observed_at, status)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		"uid-old", "pagerless", "triage-old", string(v1alpha1.PhaseRecovered),
+		"uid-old", "pagerless", "page-old", string(v1alpha1.PhaseRecovered),
 		formatTime(startTime.Add(time.Minute)), string(status),
 	)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestOpenUpgradesAVersion1DatabaseInPlace(t *testing.T) {
 		}
 	})
 
-	snapshots, err := store.Snapshots(context.Background(), "triage-old")
+	snapshots, err := store.Snapshots(context.Background(), "page-old")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestOpenUpgradesAVersion1DatabaseInPlace(t *testing.T) {
 	if snapshots[0].Phase != v1alpha1.PhaseRecovered {
 		t.Errorf("phase = %s, want Recovered", snapshots[0].Phase)
 	}
-	if !snapshots[0].CreatedAt.IsZero() || snapshots[0].Spec.Workload.Name != "" {
+	if !snapshots[0].CreatedAt.IsZero() || snapshots[0].Spec.Target.Name != "" {
 		t.Errorf("version 1 row gained a creation time or spec: %+v", snapshots[0])
 	}
 
@@ -139,16 +139,16 @@ func TestAppendedSnapshotsCarryTheSpecAndCreationTime(t *testing.T) {
 		}
 	})
 
-	older := newTriage("triage-older", startTime)
+	older := newPage("page-older", startTime)
 	if err := store.AppendSnapshot(context.Background(), older, startTime); err != nil {
 		t.Fatal(err)
 	}
-	newer := newTriage("triage-newer", startTime.Add(time.Minute))
+	newer := newPage("page-newer", startTime.Add(time.Minute))
 	newer.Status.Phase = v1alpha1.PhaseProposed
 	if err := store.AppendSnapshot(context.Background(), newer, startTime.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	// A second snapshot of the older Triage must not hide the newer Triage from Latest.
+	// A second snapshot of the older Page must not hide the newer Page from Latest.
 	older.Status.Phase = v1alpha1.PhaseInvestigating
 	if err := store.AppendSnapshot(context.Background(), older, startTime.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
@@ -159,16 +159,16 @@ func TestAppendedSnapshotsCarryTheSpecAndCreationTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(latest) != 2 {
-		t.Fatalf("latest snapshots = %d, want one per Triage", len(latest))
+		t.Fatalf("latest snapshots = %d, want one per Page", len(latest))
 	}
-	if latest[0].Triage != "triage-older" || latest[1].Triage != "triage-newer" {
-		t.Errorf("order = [%s %s], want the most recently appended first", latest[0].Triage, latest[1].Triage)
+	if latest[0].Page != "page-older" || latest[1].Page != "page-newer" {
+		t.Errorf("order = [%s %s], want the most recently appended first", latest[0].Page, latest[1].Page)
 	}
 	if latest[1].Phase != v1alpha1.PhaseProposed || latest[1].Status.Phase != v1alpha1.PhaseProposed {
 		t.Errorf("newer snapshot phase = %s, status phase = %s, want Proposed",
 			latest[1].Phase, latest[1].Status.Phase)
 	}
-	if latest[1].Spec.Workload != newer.Spec.Workload || latest[1].Spec.Trigger != newer.Spec.Trigger {
+	if latest[1].Spec.Target != newer.Spec.Target || latest[1].Spec.Trigger != newer.Spec.Trigger {
 		t.Errorf("spec = %+v, want %+v", latest[1].Spec, newer.Spec)
 	}
 	if !latest[1].CreatedAt.Equal(startTime.Add(time.Minute)) {

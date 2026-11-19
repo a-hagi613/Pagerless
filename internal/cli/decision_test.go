@@ -25,17 +25,19 @@ import (
 
 const (
 	decisionNamespace = "sandbox"
-	decisionWorkload  = "ledger"
+	decisionTarget    = "ledger"
 	decisionUser      = "alice@example.com"
 
 	approveCommand = "approve"
-	rejectCommand  = "reject"
+	dismissCommand = "dismiss"
 	reasonFlag     = "--reason"
 	yesFlag        = "--yes"
+	byFlag         = "--by"
 )
 
-// decisionWorkloadManifest is the Workload's manifest in the Sandbox, which is also what runs in the cluster.
-func decisionWorkloadManifest(name string) string {
+// decisionTargetManifest is the Target's manifest in the Target Repository,
+// which is also what runs in the cluster.
+func decisionTargetManifest(name string) string {
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -77,11 +79,11 @@ func startDecisionCluster(t *testing.T) *decisionCluster {
 	return &decisionCluster{env: env, kubeconfig: env.KubeconfigAs(t, decisionUser)}
 }
 
-// deploy puts a Workload in the Sandbox and in the cluster.
+// deploy puts a Target in the Target Repository and in the cluster.
 func (c *decisionCluster) deploy(t *testing.T) {
 	t.Helper()
-	const name = decisionWorkload
-	manifest := decisionWorkloadManifest(name)
+	const name = decisionTarget
+	manifest := decisionTargetManifest(name)
 	c.env.Sandbox.Commit("apps/"+name+"/deployment.yaml", manifest, "Add "+name)
 	var d appsv1.Deployment
 	if err := yaml.UnmarshalStrict([]byte(manifest), &d); err != nil {
@@ -92,16 +94,16 @@ func (c *decisionCluster) deploy(t *testing.T) {
 	}
 }
 
-// propose runs an agent for the Workload that reports the Proposal, and waits for Proposed.
-func (c *decisionCluster) propose(t *testing.T, action v1alpha1.ProposedAction) *v1alpha1.Triage {
+// propose runs an agent for the Target that reports the Proposal, and waits for Proposed.
+func (c *decisionCluster) propose(t *testing.T, action v1alpha1.ProposedAction) *v1alpha1.Page {
 	t.Helper()
-	const workload = decisionWorkload
-	created := c.env.CreateTriage(t, testenv.NewTriage(workload))
+	const target = decisionTarget
+	created := c.env.CreatePage(t, testenv.NewPage(target))
 	agent := c.env.StartAgent(t, created.Name)
 	result, err := agent.API.PostReport(t.Context(), agentapi.Report{
 		Diagnosis: "The container is OOMKilled because its memory limit is too low.",
 		Findings: []v1alpha1.Finding{{
-			Kind: v1alpha1.FindingKindLog, Source: "loki: {app=\"" + workload + "\"}",
+			Kind: v1alpha1.FindingKindLog, Source: "loki: {app=\"" + target + "\"}",
 			Summary: "the container was killed with exit code 137",
 		}},
 		Proposal: action,
@@ -146,11 +148,11 @@ func (s *decisionStdin) Read(p []byte) (int, error) {
 // run runs the plugin as the cluster's approver.
 func (c *decisionCluster) run(t *testing.T, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
-	return runKubectlTriage(t, c.kubeconfig, stdin, args...)
+	return runKubectlPage(t, c.kubeconfig, stdin, args...)
 }
 
-// runKubectlTriage runs the plugin against the kubeconfig and returns what it printed.
-func runKubectlTriage(t *testing.T, kubeconfig string, stdin io.Reader, args ...string) (string, error) {
+// runKubectlPage runs the plugin against the kubeconfig and returns what it printed.
+func runKubectlPage(t *testing.T, kubeconfig string, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
 	root := cli.NewRootCommand()
 	var out bytes.Buffer
@@ -162,32 +164,18 @@ func runKubectlTriage(t *testing.T, kubeconfig string, stdin io.Reader, args ...
 	return out.String(), err
 }
 
-func (c *decisionCluster) approvals(t *testing.T, triage string) []v1alpha1.TriageApproval {
-	t.Helper()
-	var list v1alpha1.TriageApprovalList
-	if err := c.env.Client.List(t.Context(), &list, client.InNamespace(testenv.Namespace)); err != nil {
-		t.Fatal(err)
-	}
-	var matching []v1alpha1.TriageApproval
-	for _, a := range list.Items {
-		if a.Spec.Triage == triage {
-			matching = append(matching, a)
-		}
-	}
-	return matching
-}
-
 func (c *decisionCluster) requireProposed(t *testing.T, name string) {
 	t.Helper()
-	if got := c.env.Get(t, name).Status; got.Phase != v1alpha1.PhaseProposed || got.Decision != nil {
-		t.Errorf("status = %+v, want Proposed with no decision", got)
+	page := c.env.Get(t, name)
+	if page.Status.Phase != v1alpha1.PhaseProposed || page.Status.Decision != nil {
+		t.Errorf("status = %+v, want Proposed with no decision", page.Status)
 	}
-	if got := c.approvals(t, name); len(got) != 0 {
-		t.Errorf("TriageApprovals = %+v, want none", got)
+	if page.Annotations[v1alpha1.AnnotationDecision] != "" {
+		t.Errorf("annotations = %v, want no decision annotation", page.Annotations)
 	}
 }
 
-func TestApproveShowsTheRenderedChangeAndApprovesItsHash(t *testing.T) {
+func TestApproveShowsTheRenderedChangeAndBindsTheHash(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
 	c.deploy(t)
@@ -199,26 +187,25 @@ func TestApproveShowsTheRenderedChangeAndApprovesItsHash(t *testing.T) {
 		t.Fatalf("approve: %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		proposed.Name, "Deployment " + decisionNamespace + "/" + decisionWorkload, "PatchResources",
+		proposed.Name, "Deployment " + decisionNamespace + "/" + decisionTarget, "PatchResources",
 		"container app, limits memory=512Mi",
 		change.Path, proposed.Status.Proposal.Base.Commit, proposed.Status.Proposal.Hash,
 		"-              memory: 256Mi", "+              memory: 512Mi",
 		"Approve this change? [y/N]",
-		"created (approved by " + decisionUser + ")",
+		"approved by " + decisionUser,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
 
-	tr := c.env.WaitForApproved(t, proposed.Name)
-	if got := tr.Status.Decision; got == nil || got.Approver != decisionUser || got.Outcome != v1alpha1.DecisionApproved {
-		t.Errorf("decision = %+v, want an Approval by %s", got, decisionUser)
-	}
-	approvals := c.approvals(t, proposed.Name)
-	if len(approvals) != 1 || approvals[0].Spec.ProposalHash != proposed.Status.Proposal.Hash ||
-		approvals[0].Spec.Approver != decisionUser {
-		t.Errorf("TriageApprovals = %+v, want one for hash %s by %s", approvals, proposed.Status.Proposal.Hash, decisionUser)
+	page := c.env.WaitForApproved(t, proposed.Name)
+	decision := page.Status.Decision
+	if decision == nil || decision.DecidedBy != decisionUser ||
+		decision.Outcome != v1alpha1.DecisionApproved ||
+		decision.ProposalHash != proposed.Status.Proposal.Hash {
+		t.Fatalf("decision = %+v, want an Approval of %s by %s",
+			decision, proposed.Status.Proposal.Hash, decisionUser)
 	}
 }
 
@@ -257,28 +244,30 @@ func TestApproveYesSkipsTheConfirmation(t *testing.T) {
 	c.deploy(t)
 	proposed := c.propose(t, raiseMemory)
 
-	out, err := c.run(t, strings.NewReader(""), approveCommand, proposed.Name, yesFlag, reasonFlag, "limit is right")
+	out, err := c.run(t, strings.NewReader(""), approveCommand, proposed.Name, yesFlag,
+		reasonFlag, "limit is right", byFlag, "reviewer@example.com")
 	if err != nil {
 		t.Fatalf("approve --yes: %v\n%s", err, out)
 	}
 	if strings.Contains(out, "[y/N]") || !strings.Contains(out, "+              memory: 512Mi") {
 		t.Errorf("output = %s, want the change shown and no question", out)
 	}
-	tr := c.env.WaitForApproved(t, proposed.Name)
-	if got := tr.Status.Decision; got == nil || got.Reason != "limit is right" {
-		t.Errorf("decision = %+v, want the reason recorded", got)
+	page := c.env.WaitForApproved(t, proposed.Name)
+	if got := page.Status.Decision; got == nil || got.Reason != "limit is right" ||
+		got.DecidedBy != "reviewer@example.com" {
+		t.Errorf("decision = %+v, want the reason and the declared reviewer", got)
 	}
 }
 
-func TestApproveRefusesWhenTheProposalChangesWhileTheApproverDecides(t *testing.T) {
+func TestADecisionOnAProposalThatChangedIsIgnoredByTheServer(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
 	c.deploy(t)
 	proposed := c.propose(t, raiseMemory)
 
-	changeWorkload := func() {
+	changeTarget := func() {
 		var d appsv1.Deployment
-		key := client.ObjectKey{Namespace: decisionNamespace, Name: decisionWorkload}
+		key := client.ObjectKey{Namespace: decisionNamespace, Name: decisionTarget}
 		if err := c.env.Client.Get(t.Context(), key, &d); err != nil {
 			t.Error(err)
 			return
@@ -288,12 +277,18 @@ func TestApproveRefusesWhenTheProposalChangesWhileTheApproverDecides(t *testing.
 			t.Error(err)
 		}
 	}
-	stdin := &decisionStdin{answer: "y\n", beforeAn: changeWorkload}
-	out, err := c.run(t, stdin, approveCommand, proposed.Name)
-	if err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("error = %v, want the webhook's refusal because the Proposal became stale\n%s", err, out)
+	stdin := &decisionStdin{answer: "y\n", beforeAn: changeTarget}
+	if out, err := c.run(t, stdin, approveCommand, proposed.Name); err != nil {
+		t.Fatalf("approve: %v\n%s", err, out)
 	}
-	c.requireProposed(t, proposed.Name)
+	// The controller ignores the decision because the base moved, then re-renders
+	// the Proposal under a new hash; the Page is never approved on the old one.
+	c.env.WaitFor(t, proposed.Name, "the Proposal is re-rendered", func(page *v1alpha1.Page) bool {
+		return page.Status.Proposal != nil && page.Status.Proposal.Hash != proposed.Status.Proposal.Hash
+	})
+	if page := c.env.Get(t, proposed.Name); page.Status.Decision != nil {
+		t.Fatalf("decision = %+v, want none on the stale Proposal", page.Status.Decision)
+	}
 }
 
 func TestApproveAcknowledgesANoActionProposal(t *testing.T) {
@@ -313,60 +308,60 @@ func TestApproveAcknowledgesANoActionProposal(t *testing.T) {
 	c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseDiagnosed)
 }
 
-func TestRejectRecordsTheReasonAndEndsTheTriage(t *testing.T) {
+func TestDismissRecordsTheReasonAndEndsThePage(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
 	c.deploy(t)
 	proposed := c.propose(t, raiseMemory)
 
 	out, err := c.run(t, strings.NewReader(""),
-		rejectCommand, proposed.Name, reasonFlag, "1Gi is safer")
+		dismissCommand, proposed.Name, reasonFlag, "1Gi is safer")
 	if err != nil {
-		t.Fatalf("reject: %v\n%s", err, out)
+		t.Fatalf("dismiss: %v\n%s", err, out)
 	}
-	if want := "created (rejected by " + decisionUser + ")"; !strings.Contains(out, want) {
+	if want := "dismissed by " + decisionUser; !strings.Contains(out, want) {
 		t.Errorf("output = %q, want it to contain %q", out, want)
 	}
-	tr := c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseRejected)
-	got := tr.Status.Decision
-	if got == nil || got.Outcome != v1alpha1.DecisionRejected || got.Reason != "1Gi is safer" ||
-		got.Approver != decisionUser {
-		t.Errorf("decision = %+v, want a Rejection with its reason by %s", got, decisionUser)
+	page := c.env.WaitForPhase(t, proposed.Name, v1alpha1.PhaseRejected)
+	decision := page.Status.Decision
+	if decision == nil || decision.Outcome != v1alpha1.DecisionRejected || decision.Reason != "1Gi is safer" ||
+		decision.DecidedBy != decisionUser {
+		t.Errorf("decision = %+v, want a Rejection with its reason by %s", decision, decisionUser)
 	}
 }
 
-func TestRejectRequiresAReason(t *testing.T) {
+func TestDismissRequiresAReason(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
 	c.deploy(t)
 	proposed := c.propose(t, raiseMemory)
 
 	cases := map[string][]string{
-		"no flag":          {rejectCommand, proposed.Name},
-		"an empty reason":  {rejectCommand, proposed.Name, reasonFlag, ""},
-		"a blank reason":   {rejectCommand, proposed.Name, reasonFlag, "   "},
-		"an oversize text": {rejectCommand, proposed.Name, reasonFlag, strings.Repeat("x", v1alpha1.MaxReasonLength+1)},
+		"no flag":          {dismissCommand, proposed.Name},
+		"an empty reason":  {dismissCommand, proposed.Name, reasonFlag, ""},
+		"a blank reason":   {dismissCommand, proposed.Name, reasonFlag, "   "},
+		"an oversize text": {dismissCommand, proposed.Name, reasonFlag, strings.Repeat("x", v1alpha1.MaxReasonLength+1)},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			out, err := c.run(t, strings.NewReader(""), args...)
 			if err == nil {
-				t.Fatalf("reject succeeded without a usable reason:\n%s", out)
+				t.Fatalf("dismiss succeeded without a usable reason:\n%s", out)
 			}
 			c.requireProposed(t, proposed.Name)
 		})
 	}
 }
 
-func TestDecisionsNeedAProposedTriage(t *testing.T) {
+func TestDecisionsNeedAProposedPage(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
-	investigating := c.env.CreateTriage(t, testenv.NewTriage(decisionWorkload))
+	investigating := c.env.CreatePage(t, testenv.NewPage(decisionTarget))
 	c.env.WaitForPhase(t, investigating.Name, v1alpha1.PhaseInvestigating)
 
 	decisions := [][]string{
 		{approveCommand, investigating.Name, yesFlag},
-		{rejectCommand, investigating.Name, reasonFlag, "no"},
+		{dismissCommand, investigating.Name, reasonFlag, "no"},
 	}
 	for _, args := range decisions {
 		out, err := c.run(t, strings.NewReader(""), args...)
@@ -374,30 +369,51 @@ func TestDecisionsNeedAProposedTriage(t *testing.T) {
 			t.Errorf("%s: error = %v, want a refusal that names the phase\n%s", args[0], err, out)
 		}
 	}
-	for _, args := range [][]string{{approveCommand, "ghost", yesFlag}, {rejectCommand, "ghost", reasonFlag, "no"}} {
+	for _, args := range [][]string{
+		{approveCommand, "ghost", yesFlag},
+		{dismissCommand, "ghost", reasonFlag, "no"},
+	} {
 		out, err := c.run(t, strings.NewReader(""), args...)
 		if err == nil || !strings.Contains(err.Error(), "not found") {
-			t.Errorf("%s: error = %v, want a refusal that says the Triage is missing\n%s", args[0], err, out)
+			t.Errorf("%s: error = %v, want a refusal that says the Page is missing\n%s", args[0], err, out)
 		}
 	}
-	if got := c.approvals(t, investigating.Name); len(got) != 0 {
-		t.Errorf("TriageApprovals = %+v, want none", got)
+	page := c.env.Get(t, investigating.Name)
+	if page.Status.Phase != v1alpha1.PhaseInvestigating || page.Status.Decision != nil ||
+		page.Annotations[v1alpha1.AnnotationDecision] != "" {
+		t.Fatalf("status = %+v, want the Investigating Page left undecided", page.Status)
 	}
 }
 
-func TestDecisionIsRefusedWithoutPermissionToApprove(t *testing.T) {
+func TestADecisionIsRefusedWithoutPermissionToPatchPages(t *testing.T) {
 	t.Parallel()
 	c := startDecisionCluster(t)
 	c.deploy(t)
 	proposed := c.propose(t, raiseMemory)
-	// The stranger may read Triages, as any user of the plugin may, but holds no approver Role.
+	// The stranger may read Pages, as any user of the plugin may, but holds no approver Role.
 	stranger := "stranger@example.com"
 	c.env.GrantReader(t, stranger)
 
 	as := c.env.KubeconfigAs(t, stranger)
-	out, err := runKubectlTriage(t, as, strings.NewReader(""), approveCommand, proposed.Name, yesFlag)
+	out, err := runKubectlPage(t, as, strings.NewReader(""), approveCommand, proposed.Name, yesFlag)
 	if !apierrors.IsForbidden(err) {
 		t.Errorf("error = %v, want Forbidden\n%s", err, out)
 	}
 	c.requireProposed(t, proposed.Name)
+}
+
+func TestVersionPrintsTheBuildAndTheExpectedChart(t *testing.T) {
+	t.Parallel()
+	out, err := runKubectlPage(t, "", strings.NewReader(""), "version")
+	if err != nil {
+		t.Fatalf("version: %v\n%s", err, out)
+	}
+	for _, want := range []string{"kubectl-page", "commit", "built", "expected chart", "go"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("version output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, cli.ExpectedChartVersion) {
+		t.Errorf("version output lacks the expected chart version %q:\n%s", cli.ExpectedChartVersion, out)
+	}
 }

@@ -1,128 +1,109 @@
 # Installing Pagerless
 
-Pagerless installs into a Kubernetes cluster you already run, as an operator, an
-investigation agent, an embedded web dashboard, and a CLI plugin. It does not
-install a cluster's platform: an OIDC issuer, an MCP gateway, Prometheus,
-Grafana, Argo CD, and the model endpoint are services you provide, and the chart
-references them through values.
-
-Two paths install the same release: the Helm chart (the supported artifact) and
-`hack/install.sh`, which applies the CRDs, writes the credentials Secret, and
-then runs `helm upgrade --install` with values derived from its arguments.
+Pagerless installs into one namespace of a Kubernetes cluster you already run.
+The chart is standalone: it needs no database, identity provider, message broker,
+gateway, or admission webhook. Its cluster identity is read-only, and every
+remediation is a pull request.
 
 ## Prerequisites
 
-| Prerequisite | Why the chart needs it | Set with |
-| --- | --- | --- |
-| An OIDC issuer | The dashboard signs users in with the authorization-code flow plus PKCE. | `oidc.issuer`, `oidc.dashboardClientId`, `oidc.secretName` |
-| An MCP gateway | The agent reaches the read-only `k8s`, `grafana`, `argocd`, and `github` tools through one base URL. | `mcp.gatewayUrl`, `mcp.servers` |
-| Inference credentials | The agent calls the selected model provider. | Secret `pagerless-agent-credentials`, `agent.provider` |
-| A target Git repository | Only pull-request Actions need it; without one the live-only modes are `NoAction`. | `sandbox.url`, `sandbox.readSecretName`, `sandbox.writeSecretName` |
-| Argo CD | Verification asks whether the merge commit is synced and healthy. | `argocd.url`, `argocd.application`, `argocd.secretName` |
-| Alertmanager | An opted-in alert can start a Triage. | `alertmanager.url`, `alertmanager.secretName` |
+| Prerequisite | Why it is needed |
+| --- | --- |
+| Kubernetes 1.30 or later | The chart uses a CEL validation rule on the Page CRD. |
+| Helm 3.14 or later | The chart is an `apiVersion: v2` application chart. |
+| A default StorageClass, or `persistence.storageClassName` | The append-only Page history lives on the `pagerless-data` claim. |
 
-Every credential arrives as a Secret reference, never as a plain `--set` value.
-`secrets.createPlaceholders=true` renders empty optional integration Secrets so a
-trial can start before GitHub or Argo CD credentials exist.
+No other service is required. The remaining v2.0 slices add the connectors, the
+agent endpoint, and the Portal, which point at services you already run; none of
+them is installed by this chart.
 
-## Install with the chart
+## Install with Helm
+
+```bash
+helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
+  --namespace pagerless --create-namespace
+```
+
+Or from a checkout:
 
 ```bash
 helm upgrade --install pagerless ./charts/pagerless \
-  --namespace pagerless --create-namespace \
-  --values my-values.yaml
+  --namespace pagerless --create-namespace
 ```
 
 Helm installs the CRDs in `charts/pagerless/crds/` only when the release is
-created, so apply them explicitly after a chart upgrade:
+created. Apply them explicitly after a chart upgrade, because Helm never upgrades
+a chart's `crds/` directory:
 
 ```bash
-kubectl apply -f charts/pagerless/crds/pagerless.dev_triages.yaml
-kubectl apply -f charts/pagerless/crds/pagerless.dev_triageapprovals.yaml
+kubectl apply -f charts/pagerless/crds/pagerless.dev_pages.yaml
 ```
 
-`charts/pagerless/README.md` documents every value.
+## Watch mode
+
+The chart renders exactly one of two mutually exclusive read modes:
+
+```bash
+# Every namespace (default): one read ClusterRole and ClusterRoleBinding.
+helm upgrade --install pagerless ./charts/pagerless -n pagerless
+
+# An explicit allowlist: one read Role and RoleBinding per namespace.
+helm upgrade --install pagerless ./charts/pagerless -n pagerless \
+  --set rbac.watchAllNamespaces=false \
+  --set 'rbac.watchNamespaces={shop,payments}'
+```
+
+Setting both, or setting neither an allowlist nor cluster-wide mode, fails the
+render with a message. Allowlist mode drops the cluster-scoped rules: there is no
+node or namespace read, no `/openapi/v3` validation, and no `tokenreviews`.
+Agent authentication therefore needs cluster-wide mode, or an operator-granted
+`create` on `authentication.k8s.io/tokenreviews`. See
+[ADR-0038](../docs/adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md).
+
+## Credentials
+
+The chart pre-creates `pagerless-credentials` with every documented key present
+and empty, so an unconfigured installation is a normal state rather than a
+missing-file error:
+
+```
+AI_BASE_URL  AI_API_KEY  AI_MODEL  GITHUB_TOKEN  GITHUB_REPO  GITHUB_API_URL
+```
+
+Fill it with `kubectl -n pagerless edit secret pagerless-credentials`, or keep an
+external secret manager as the only writer:
+
+```bash
+helm upgrade --install pagerless ./charts/pagerless -n pagerless \
+  --set credentials.existingSecret=team-credentials
+```
+
+With `credentials.existingSecret` set, the chart renders no Secret at all and the
+Deployment mounts the named one.
 
 ## Install with hack/install.sh
 
 ```bash
-# Preview the rendered plan and manifests without contacting a cluster.
-bash hack/install.sh --dry-run \
-  --context my-cluster \
-  --namespaces payments,checkout \
-  --provider anthropic
+# Render the plan and the manifests without contacting a cluster.
+bash hack/install.sh --dry-run --namespaces shop,payments
 
-# Install, creating the credentials Secrets from the environment.
-export ANTHROPIC_API_KEY="sk-ant-..."
-bash hack/install.sh \
-  --context my-cluster \
-  --namespaces payments,checkout \
-  --provider anthropic \
-  --yes
+# Install after filling the credentials Secret.
+kubectl -n pagerless create secret generic pagerless-credentials --from-env-file=./pagerless.env
+bash hack/install.sh --context my-cluster --namespaces shop,payments
 ```
 
-The script:
-
-1. creates the release namespace and applies the `Triage` and `TriageApproval`
-   CRDs from `charts/pagerless/crds/`;
-2. writes `Secret pagerless-agent-credentials` from the selected provider's
-   environment variables, and `Secret github-read` and `Secret github-write`
-   when `--sandbox-url` is set;
-3. runs `helm upgrade --install` with the values it derives, then waits for the
-   server Deployment to roll out.
-
-| Flag | Environment variable | Default | Meaning |
-| --- | --- | --- | --- |
-| `--context <ctx>` | `PAGERLESS_KUBE_CONTEXT` | current context | Kubernetes context to install into. |
-| `--namespaces <csv>` | `WORKLOAD_NAMESPACES` | `default` | Workload namespaces to watch and propose changes for. |
-| `--provider <name>` | `MODEL_PROVIDER` | inferred | `anthropic`, `bedrock`, or `replay`. |
-| `--sandbox-url <url>` | `SANDBOX_URL` | empty | Target repository HTTPS URL; omit for live-only mode. |
-| `--argocd-app <app>` | `ARGOCD_APPLICATION` | empty | Argo CD Application that deploys the Workloads. |
-
-## What the chart installs
-
-- `ServiceAccount`s `pagerless-server` and `pagerless-agent` (the agent receives
-  no automatic API token).
-- The release-namespace `Role` and `RoleBinding` for the server, and its
-  `ClusterRole` grants (TokenReview, webhook `caBundle` publication, Node reads).
-- `Role pagerless-approver` and, when `approvers.subjects` is set, its binding.
-- `Role pagerless-server-validation` and its binding in every Workload
-  namespace.
-- The `pagerless-server-agent-jobs` and `pagerless-server-dry-run-only`
-  admission policies and their bindings.
-- The mutating and validating webhook configurations for `TriageApproval` and
-  `Triage` creation.
-- `ConfigMap pagerless-sandbox`, `ConfigMap pagerless-agent-config`, the
-  `pagerless-history` claim, the `pagerless-server` Deployment and Service, and
-  the `pagerless` Grafana dashboard.
-
-## First Triage
+## Verify the release
 
 ```bash
-kubectl --context my-cluster -n pagerless port-forward svc/pagerless-server 8080:8082
-kubectl triage --context my-cluster --namespace payments deploy/my-service --hint "check recent restarts"
-kubectl triage --context my-cluster list
-kubectl triage --context my-cluster show <triage> --watch
-kubectl triage --context my-cluster approve <triage>
+kubectl -n pagerless rollout status deploy/pagerless-server
+kubectl auth can-i get pods/log -n shop --as=system:serviceaccount:pagerless:pagerless-server  # yes
+kubectl auth can-i update deployments -n shop --as=system:serviceaccount:pagerless:pagerless-server  # no
 ```
 
-## Verification of the installation
+`make verify-chart` runs the whole matrix on a throwaway kind cluster, builds the
+server image, and deletes the cluster afterwards.
 
-```bash
-helm lint charts/pagerless
-helm template pagerless charts/pagerless --namespace pagerless | kubectl apply --dry-run=server -f -
-```
+## Values
 
-`make validate` renders the chart in its live-only and repository-configured
-modes and checks every object with the pinned `kubeconform`.
-
-## Uninstall
-
-```bash
-helm uninstall pagerless --namespace pagerless
-kubectl delete -f charts/pagerless/crds/pagerless.dev_triages.yaml
-kubectl delete -f charts/pagerless/crds/pagerless.dev_triageapprovals.yaml
-```
-
-The CRDs are applied outside the release so that an upgrade never deletes the
-Triages they hold.
+[`charts/pagerless/README.md`](../charts/pagerless/README.md) documents every
+value, the rendered object inventory, and the read-only grant.

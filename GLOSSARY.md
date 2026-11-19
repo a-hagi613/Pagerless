@@ -1,103 +1,166 @@
 # Glossary
 
-Pagerless diagnoses failing Kubernetes Workloads with an AI agent and applies a remediation only after a human approves it. This glossary defines the project's vocabulary. Code, documentation, issues, and pull requests use these terms exactly as defined here.
+Pagerless watches a Kubernetes cluster for failing Targets and diagnoses them
+with an AI agent. A remediation is proposed as a pull request against the Git
+repository that owns the Target, and is opened only after a human approves it;
+Pagerless itself never writes to the cluster. This glossary defines the project's
+vocabulary. Code, documentation, issues, and pull requests use these terms
+exactly as defined here.
 
 ## Investigation
 
-**Triage**:
-One investigation of one failing Workload, from Trigger to verified outcome. Also the name of the Kubernetes resource that records it.
-_Avoid_: incident, ticket, case, run
+**Page**:
+One investigation of one failing Target, from Trigger to verified outcome. Also
+the name of the Kubernetes resource that records it (`pages.pagerless.dev`).
+_Avoid_: triage, incident, ticket, alert, case, run
+
+**Target**:
+The Kubernetes object that is failing and that a Page investigates: a
+Deployment, StatefulSet, DaemonSet, Job, CronJob, Pod, or
+PersistentVolumeClaim — or, for infrastructure faults, a Node. The pod that
+raised a Trigger is evidence, not the Target.
+_Avoid_: workload, resource, app, service
 
 **Trigger**:
-The event that starts or joins a Triage: an opted-in alert from Alertmanager, or a human request through the CLI or dashboard.
-_Avoid_: event, page, signal
+The observation that opens or joins a Page: a Kubernetes Warning Event, a state
+transition in a Target's status, an inbound alert from a Connector, or a human
+request.
+_Avoid_: alert (for the observation as a whole), event, signal, page (as a verb)
 
-**Workload**:
-The long-lived owner of the failing pods (a Deployment or StatefulSet) that a Triage targets. The pod that raised the Trigger is evidence, not the target.
-_Avoid_: target pod, service, app
+**Fingerprint**:
+The stable identity of one failure, built from the failing object, its kind,
+namespace and UID, the failure reason, and the failing container. It deliberately
+excludes messages, timestamps, and repetition counts, so that one crash loop is
+one failure rather than hundreds.
+_Avoid_: hash, key, signature
 
-**Active Triage**:
-A Triage that has not reached a terminal phase. A Workload has at most one Active Triage, and further Triggers attach to it.
-_Avoid_: open triage, running triage
+**Active Page**:
+A Page that has not reached a terminal Phase. A Fingerprint has at most one
+Active Page, and further Triggers join it.
+_Avoid_: open page, running page
 
-**Follow-up Triage**:
-A Triage started automatically when Verification ends in NotRecovered, linked to the Triage it follows.
-_Avoid_: retry, re-triage
+**Cooldown**:
+The period after a Page reaches a terminal Phase during which the same
+Fingerprint does not open a new Page; Triggers that arrive during it are counted
+on the Page that recorded the outcome.
+_Avoid_: backoff, quiet period, rate limit
+
+**Recurrence**:
+A failure that happens again after its Cooldown has elapsed and therefore opens
+a new Page, linked to the Page that recorded the previous outcome.
+_Avoid_: repeat, retry, flapping
+
+**Suppression**:
+A Trigger that does not open a Page because an Active Page already covers its
+Fingerprint, because the Fingerprint is in Cooldown, or because the Trigger
+exceeds the burst ceiling. A suppressed Trigger is still counted and visible.
+_Avoid_: drop, throttle, deduplication
 
 **Hint**:
-Optional guidance a human attaches when starting a Triage, passed to the agent as human input.
+Optional guidance a human attaches when opening a Page, passed to the agent as
+human input.
 _Avoid_: note, prompt, instruction
 
 **Context Bundle**:
-The fixed set of evidence Pagerless gathers before the agent's first model call: Workload status, pod states, events, recent logs, Argo CD status, the active chaos experiments that target the Workload, and recent Sandbox commits.
+The bounded set of evidence Pagerless gathers before the agent's first model
+call: Target status, pod states, Events, recent logs, and the Target's
+provenance in its repository.
 _Avoid_: context, prefetch, snapshot
 
 **Finding**:
-One cited piece of evidence, such as a log line, metric, trace, event, or commit, that supports a Diagnosis.
+One cited piece of evidence, such as a log line, an Event, a metric, a trace, a
+commit, or a manifest, that supports a Diagnosis.
 _Avoid_: observation, clue, signal
 
 **Diagnosis**:
-The agent's root-cause conclusion for a Triage, supported by Findings.
+The agent's root-cause conclusion for a Page, supported by Findings.
 _Avoid_: analysis, RCA, summary
 
 ## Remediation
 
-**Action**:
-One kind of remediation on the fixed menu: RestartWorkload, Scale, PatchResources, Rollback, or NoAction.
-_Avoid_: fix type, operation, command
+**Target Repository**:
+The Git repository, branch, and path that hold the Target's manifests and that a
+Proposal changes. A repository becomes a Target Repository by configuration or by
+provenance, never by its name.
+_Avoid_: sandbox, GitOps repository, source repository
 
 **Proposal**:
-The single typed remediation the agent recommends for a Triage: one Action with its parameters. It is the unit that is validated, hashed, and approved.
-_Avoid_: fix, suggestion, plan, recommendation
+The exact change the agent recommends for a Page: one or more file edits against
+a recorded base commit, or no change at all. It is the unit that is validated,
+rendered, hashed, and approved.
+_Avoid_: fix, suggestion, plan, recommendation, patch (for the whole object)
+
+**Diff**:
+The rendered, human-readable change a Proposal would make, shown to the approver
+and carried into the pull request.
+_Avoid_: patch (for the rendered form), change
 
 **Validation**:
-The deterministic check a Proposal must pass before a human sees it: allowed Action, parameter bounds, allowed namespace, server-side dry run, and rendered diff.
-_Avoid_: verification (the post-execution check), review
+The deterministic checks a Proposal passes before a human sees it: file and size
+bounds, paths inside the Target Repository, a clean application against the base
+commit, and no change to repository automation or credentials.
+_Avoid_: review, verification
+
+**Checks**:
+The Target Repository's own continuous-integration results on the pull request
+that carries a Proposal: schema validation, rendering, policy, and tests.
+Pagerless never overrides a failing check.
+_Avoid_: validation (the in-process pre-check), CI status
 
 **Stale Proposal**:
-A Proposal whose base (the Workload's generation or the Sandbox commit) changed before Approval. It must be re-validated and approved again under a new hash.
+A Proposal whose base commit or Target changed before approval. It cannot be
+approved; it is re-rendered under a new hash.
 _Avoid_: outdated proposal, invalid proposal
 
 **Approval**:
-A human decision to accept one specific Proposal, bound to that Proposal's hash.
+One human decision to accept one specific Proposal hash, recorded on the Page.
 _Avoid_: sign-off, ack, confirmation
 
 **Rejection**:
-A human decision to decline one specific Proposal. A Rejection is final for its Triage.
+One human decision to decline a Proposal. A Rejection is final for its Page.
 _Avoid_: denial, veto
 
-**Executor**:
-The separate write identity that carries out an approved Proposal, either live or as a pull request.
-_Avoid_: applier, remediator, actuator
+**Pull Request**:
+The artifact that carries an approved Proposal into a Target Repository for
+review and merge. It is the only way Pagerless changes a cluster's desired state.
+_Avoid_: merge request, change request
 
 **Verification**:
-The deterministic check after execution that decides whether the Workload is Recovered or NotRecovered.
+The deterministic check after a Pull Request merges that decides whether the
+Target is Recovered or NotRecovered.
 _Avoid_: validation (the pre-approval check), fixed / not fixed
 
 **Narrative**:
-A short, purely descriptive account of a Triage written after Verification. It never affects the outcome.
+A short, purely descriptive account of a Page written after Verification. It
+never affects the outcome.
 _Avoid_: summary, report, postmortem
 
 ## Lifecycle
 
 **Phase**:
-The stage a Triage is in. The main path is Pending, Investigating, Proposed, Approved, Executing, Verifying, then Recovered or NotRecovered. A Triage may instead end as Diagnosed (NoAction acknowledged), Rejected, Expired (no decision within one hour), Invalid (failed Validation twice), or Failed (agent error, exhausted budget, refused or abandoned execution, or suppression of an unapproved duplicate Triage).
+The stage a Page is in. The main path is Pending, Investigating, Proposed,
+Approved, PullRequestOpen, Verifying, then Recovered or NotRecovered. A Page may
+instead end as Diagnosed (no change recommended), Rejected, Expired (no decision
+inside the approval window), Invalid (the Proposal failed Validation twice),
+Superseded (another Page is canonical for the Fingerprint), or Failed (agent
+error, exhausted budget, or a refused or abandoned pull request).
 _Avoid_: state, status, stage
 
 ## Environment
 
-**Sandbox**:
-The Git repository that holds the Workloads' manifests. Argo CD deploys from it and the Executor's pull requests target it; `pagerless-sandbox` is the reference demo repository into which Scenarios inject failures.
-_Avoid_: demo repo, GitOps repo, test repo
+**Cluster**:
+The one Kubernetes cluster an installation watches, identified by a stable
+identifier that survives control-plane restarts. An installation serves exactly
+one Cluster.
+_Avoid_: environment, site, region
 
-**Scenario**:
-One repeatable, injectable failure, such as an OOMKilled pod, a bad image tag, or a prompt injection in logs, that serves as both a demonstration and an evaluation case.
-_Avoid_: test case, fault, chaos experiment
+**Connector**:
+A configured, read-only integration that supplies evidence or Triggers: the
+Kubernetes API, a log or metric backend, an alert source, or a Git provider. A
+Connector can only read.
+_Avoid_: adapter, integration, plugin, MCP server
 
-**Experiment**:
-An active Chaos Mesh object, such as a StressChaos CPU burn, that targets a Workload's pods from outside Git. Its name is the external cause a Diagnosis cites when no Action on the menu can fix the failure.
-_Avoid_: chaos job, injector
-
-**Replay**:
-Running the agent against recorded model responses for a Scenario instead of a live model, at no cost and with deterministic results.
-_Avoid_: mock mode, offline mode, fake LLM
+**Operator**:
+The human accountable for one installation, who supplies its credentials,
+approves Proposals, and owns the Target Repositories.
+_Avoid_: admin, user, owner, approver (as a synonym)

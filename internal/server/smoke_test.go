@@ -51,12 +51,11 @@ func TestDashboardSmoke(t *testing.T) {
 	env := testenv.Start(t,
 		testenv.WithDashboardAuth(auth),
 		testenv.WithDashboardAddress(parsed.Host),
-		testenv.WithApprovers(username),
 	)
-	deploy(t, env, workload{name: checkout})
+	deploy(t, env, target{name: checkout})
 
-	// The browser signs in and starts the Triage through the Start Triage page.
-	name := waitForTriage(t, env)
+	// The browser signs in and starts the Page through the Start Page page.
+	name := waitForPage(t, env)
 	env.WaitForPhase(t, name, v1alpha1.PhaseInvestigating)
 	agent := env.StartAgent(t, name)
 
@@ -87,13 +86,13 @@ func TestDashboardSmoke(t *testing.T) {
 	if decision.Outcome != v1alpha1.DecisionApproved {
 		t.Fatalf("decision outcome = %q, want Approved", decision.Outcome)
 	}
-	t.Logf("Triage %s approved by the asserted Keycloak user %s", name, decision.Approver)
+	t.Logf("Page %s approved by the asserted Keycloak user %s", name, decision.Approver)
 }
 
 // waitForDecision polls slowly until the browser's decision is applied. The
 // admin client's default rate limit makes the harness's 50ms poll too fast for
 // a wait that can last minutes.
-func waitForDecision(t *testing.T, env *testenv.Env, name string) *v1alpha1.Triage {
+func waitForDecision(t *testing.T, env *testenv.Env, name string) *v1alpha1.Page {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -103,7 +102,7 @@ func waitForDecision(t *testing.T, env *testenv.Env, name string) *v1alpha1.Tria
 		}
 		time.Sleep(time.Second)
 	}
-	t.Fatalf("Triage %s never recorded a decision", name)
+	t.Fatalf("Page %s never recorded a decision", name)
 	return nil
 }
 
@@ -117,22 +116,22 @@ func requiredEnv(t *testing.T, name string) string {
 	return value
 }
 
-// waitForTriage waits until the browser has started a Triage. The browser has
+// waitForPage waits until the browser has started a Page. The browser has
 // to start Chromium and complete a Keycloak sign-in first, so the bound is
 // generous.
-func waitForTriage(t *testing.T, env *testenv.Env) string {
+func waitForPage(t *testing.T, env *testenv.Env) string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		var list v1alpha1.TriageList
+		var list v1alpha1.PageList
 		if err := env.Client.List(t.Context(), &list, client.InNamespace(testenv.Namespace)); err != nil {
-			t.Fatalf("list Triages: %v", err)
+			t.Fatalf("list Pages: %v", err)
 		}
 		if len(list.Items) > 0 {
 			return list.Items[0].Name
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	t.Fatal("the browser did not start a Triage within five minutes")
+	t.Fatal("the browser did not start a Page within five minutes")
 	return ""
 }

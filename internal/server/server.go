@@ -1,5 +1,7 @@
-// Package server assembles pagerless-server: the Triage, TriageApproval, execution, and verification reconcilers, the
-// agent report endpoint, and the admission webhooks, run by one manager (ADR-0005).
+// Package server assembles pagerless-server: the Page, pull request, and
+// verification reconcilers, the agent report endpoint, and the dashboard API,
+// run by one manager (ADR-0030). The standalone chart installs no admission
+// webhook, so no webhook server is configured.
 package server
 
 import (
@@ -22,17 +24,16 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 	webassets "github.com/a-hagi613/pagerless/dashboard"
-	admissionpkg "github.com/a-hagi613/pagerless/internal/admission"
 	"github.com/a-hagi613/pagerless/internal/alerts"
 	"github.com/a-hagi613/pagerless/internal/controller"
 	"github.com/a-hagi613/pagerless/internal/dashboardapi"
 	"github.com/a-hagi613/pagerless/internal/github"
 	"github.com/a-hagi613/pagerless/internal/history"
 	"github.com/a-hagi613/pagerless/internal/metrics"
+	"github.com/a-hagi613/pagerless/internal/page"
 	"github.com/a-hagi613/pagerless/internal/patchresources"
 	"github.com/a-hagi613/pagerless/internal/proposal"
 	"github.com/a-hagi613/pagerless/internal/publish"
@@ -40,7 +41,6 @@ import (
 	"github.com/a-hagi613/pagerless/internal/rollback"
 	"github.com/a-hagi613/pagerless/internal/sandbox"
 	"github.com/a-hagi613/pagerless/internal/scale"
-	"github.com/a-hagi613/pagerless/internal/triage"
 	"github.com/a-hagi613/pagerless/internal/verification"
 )
 
@@ -53,9 +53,9 @@ const (
 	DefaultAgentDeadline = 5 * time.Minute
 	// DefaultNarrativeDeadline is the Narrative Job's active deadline: one short model call, not an investigation.
 	DefaultNarrativeDeadline = 2 * time.Minute
-	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Workload's metrics.
+	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Target's metrics.
 	DefaultMetricsDashboardUID = dashboardapi.DefaultMetricsDashboardUID
-	// DefaultLogsDashboardUID is the Grafana dashboard that shows a Workload's logs.
+	// DefaultLogsDashboardUID is the Grafana dashboard that shows a Target's logs.
 	DefaultLogsDashboardUID = dashboardapi.DefaultLogsDashboardUID
 	// shutdownTimeout bounds how long the report API drains when the server stops.
 	shutdownTimeout = 10 * time.Second
@@ -65,7 +65,7 @@ const (
 
 // Config configures pagerless-server.
 type Config struct {
-	// Namespace holds Triages, agent Jobs, and the agent service account. It is required.
+	// Namespace holds Pages, agent Jobs, and the agent service account. It is required.
 	Namespace string
 	// AgentImage is the agent container image. It is required.
 	AgentImage string
@@ -77,35 +77,34 @@ type Config struct {
 	ReportListener net.Listener
 	// MetricsListener is the listener the Prometheus metrics API serves on. It is required.
 	MetricsListener net.Listener
-	// DashboardListener is the listener the dashboard and its read-only API serve on. It is required.
+	// DashboardListener is the listener the dashboard and its read-only API serve on.
+	// The dashboard is served only when it is set together with DashboardAuth.
 	DashboardListener net.Listener
-	// DashboardAuth authenticates dashboard users and serves the sign-in routes. It is required.
+	// DashboardAuth authenticates dashboard users and serves the sign-in routes. When
+	// it is nil the dashboard is not served.
 	DashboardAuth dashboardapi.Auth
-	// WorkloadNamespaces are the namespaces whose Workloads Start Triage offers.
-	WorkloadNamespaces []string
-	// Approvers answers whether a user that pagerless-server asserts may approve. An asserted approver is
-	// refused when it is nil.
-	Approvers admissionpkg.ApproverGroups
+	// TargetNamespaces are the namespaces whose Targets the dashboard's Start request offers.
+	TargetNamespaces []string
 	// GrafanaURL is the Grafana base URL that the browser can reach, for example http://localhost:3000 while the
 	// Grafana Service is port-forwarded. Empty disables the embedded Grafana panels.
 	GrafanaURL string
-	// GrafanaMetricsDashboardUID is the Grafana dashboard that charts the Workload's metrics.
+	// GrafanaMetricsDashboardUID is the Grafana dashboard that charts the Target's metrics.
 	// It defaults to dashboardapi.DefaultMetricsDashboardUID.
 	GrafanaMetricsDashboardUID string
-	// GrafanaLogsDashboardUID is the Grafana dashboard that shows the Workload's logs.
+	// GrafanaLogsDashboardUID is the Grafana dashboard that shows the Target's logs.
 	// It defaults to dashboardapi.DefaultLogsDashboardUID.
 	GrafanaLogsDashboardUID string
-	// HistoryPath is the SQLite file that records Triage snapshots and steps. It is required.
+	// HistoryPath is the SQLite file that records Page snapshots and steps. It is required.
 	HistoryPath string
-	// ArgoCDURL is the base URL of the Argo CD API server, which Verification asks whether the merged change is
-	// synced. It is required.
+	// ArgoCDURL is the base URL of the Argo CD API server, which Verification asks
+	// whether the merged change is synced. Empty skips the GitOps check.
 	ArgoCDURL string
-	// ArgoCDToken returns the bearer token that authenticates to the Argo CD API. It is required.
+	// ArgoCDToken returns the bearer token that authenticates to the Argo CD API.
 	ArgoCDToken func() (string, error)
-	// AlertmanagerURL is the base URL of Alertmanager, which Verification asks whether the triggering alert has
-	// resolved. It is required.
+	// AlertmanagerURL is the base URL of Alertmanager. Empty disables both the
+	// inbound alert receiver and the alert-resolution check.
 	AlertmanagerURL string
-	// AlertmanagerToken reads the bearer token required by the alert receiver. It is required.
+	// AlertmanagerToken reads the bearer token required by the alert receiver.
 	AlertmanagerToken func() (string, error)
 
 	// AgentServiceAccount defaults to DefaultAgentServiceAccount.
@@ -116,13 +115,13 @@ type Config struct {
 	AgentDeadline time.Duration
 	// NarrativeDeadline is the Narrative Job's active deadline. It defaults to DefaultNarrativeDeadline.
 	NarrativeDeadline time.Duration
-	// AlertNamespaces are the namespaces whose opted-in alerts may start Triages. Empty accepts none.
+	// AlertNamespaces are the namespaces whose opted-in alerts may open Pages. Empty accepts none.
 	AlertNamespaces []string
 	// Clock defaults to the real clock.
 	Clock clock.Clock
 	// Validators are the Actions that Validation accepts, which replaces the
-	// defaults below. When it is nil, Validation accepts NoAction and
-	// RestartWorkload, and also Scale, PatchResources, and Rollback if Sandbox is set.
+	// defaults below. When it is nil, Validation accepts NoAction, and also
+	// Scale, PatchResources, and Rollback if Sandbox is set.
 	Validators map[v1alpha1.Action]proposal.ActionValidator
 	// Sandbox is the repository that the pull request Actions are rendered against and published to.
 	Sandbox sandbox.Repository
@@ -133,7 +132,7 @@ type Config struct {
 	GitHubRepository string
 	// GitHubToken returns the write-scoped token that publishes a Proposal. It is required when Sandbox is set.
 	GitHubToken func() (string, error)
-	// AllowedNamespaces are the namespaces whose Workloads the executable Actions may change.
+	// AllowedNamespaces are the namespaces whose Targets the executable Actions may change.
 	AllowedNamespaces []string
 	// PatchBounds are the permitted ranges of PatchResources requests and limits.
 	// It defaults to patchresources.DefaultBounds.
@@ -141,37 +140,27 @@ type Config struct {
 	// ScaleBounds are the permitted replica counts of the Scale Action.
 	// It defaults to scale.DefaultBounds.
 	ScaleBounds scale.Bounds
-	// ProposalPollInterval is how often a Proposed Triage is checked for a Stale Proposal.
+	// ProposalPollInterval is how often a Proposed Page is checked for a Stale Proposal.
 	// It defaults to controller.DefaultProposalPollInterval.
 	ProposalPollInterval time.Duration
-	// ExecutionPollInterval is how often an open pull request is checked for a merge.
-	// It defaults to controller.DefaultExecutionPollInterval.
-	ExecutionPollInterval time.Duration
-	// ArgoCDApplication is the Argo CD application that deploys the Sandbox. It defaults to
+	// PullRequestPollInterval is how often an open pull request is checked for a merge.
+	// It defaults to controller.DefaultPullRequestPollInterval.
+	PullRequestPollInterval time.Duration
+	// ArgoCDApplication is the Argo CD application that deploys the Target Repository. It defaults to
 	// verification.DefaultApplication.
 	ArgoCDApplication string
-	// VerificationWindow is how long Verification observes the Workload for new restarts and OOMKills.
+	// VerificationWindow is how long Verification observes the Target for new restarts and OOMKills.
 	// It defaults to verification.DefaultWindow, five minutes.
 	VerificationWindow time.Duration
-	// VerificationPollInterval is how often Verification checks a Triage.
+	// VerificationPollInterval is how often Verification checks a Page.
 	// It defaults to controller.DefaultVerificationPollInterval.
 	VerificationPollInterval time.Duration
-	// Retention is how long a terminal Triage is kept before it is deleted.
+	// Retention is how long a terminal Page is kept before it is deleted.
 	// It defaults to controller.DefaultRetention, seven days.
 	Retention time.Duration
-	// RetentionPollInterval bounds how long the retention controller waits before it checks a terminal Triage
+	// RetentionPollInterval bounds how long the retention controller waits before it checks a terminal Page
 	// again. It defaults to controller.DefaultRetentionPollInterval.
 	RetentionPollInterval time.Duration
-
-	// WebhookHost, WebhookPort, and WebhookCertDir configure the admission webhook server.
-	WebhookHost    string
-	WebhookPort    int
-	WebhookCertDir string
-	// WebhookListener is an already-bound listener that the webhook server
-	// serves on. When it is set, the webhook server does not bind WebhookHost
-	// and WebhookPort when the manager starts; the listener carries the port
-	// for the whole serving span, so nothing can take it in between.
-	WebhookListener net.Listener
 	// HealthProbeAddress is the address of the health probes, or empty to disable them.
 	HealthProbeAddress string
 }
@@ -196,16 +185,6 @@ func (c Config) validate() error {
 		return errors.New("agent server URL is required")
 	case c.ReportListener == nil:
 		return errors.New("report listener is required")
-	case c.ArgoCDURL == "":
-		return errors.New("an Argo CD URL is required")
-	case c.ArgoCDToken == nil:
-		return errors.New("an Argo CD token source is required")
-	case c.AlertmanagerURL == "":
-		return errors.New("an Alertmanager URL is required")
-	case c.AlertmanagerToken == nil:
-		return errors.New("an Alertmanager token source is required")
-	case c.WebhookListener != nil && c.WebhookCertDir == "":
-		return errors.New("a webhook certificate directory is required when a webhook listener is given")
 	}
 	if err := c.AgentRuntime.ValidateRecording(); err != nil {
 		return err
@@ -215,18 +194,15 @@ func (c Config) validate() error {
 		return errors.New("a history path is required")
 	case c.MetricsListener == nil:
 		return errors.New("a metrics listener is required")
-	case c.DashboardListener == nil:
-		return errors.New("a dashboard listener is required")
-	case c.DashboardAuth == nil:
-		return errors.New("dashboard authentication is required")
 	}
-	if c.Sandbox.URL != "" {
-		switch {
-		case c.GitHubRepository == "":
-			return errors.New("a target repository is required for pull request remediation")
-		case c.GitHubToken == nil:
-			return errors.New("a GitHub write token source is required for pull request remediation")
-		}
+	if c.DashboardListener != nil && c.DashboardAuth == nil {
+		return errors.New("dashboard authentication is required when a dashboard listener is given")
+	}
+	if c.ArgoCDURL != "" && c.ArgoCDToken == nil {
+		return errors.New("an Argo CD token source is required when an Argo CD URL is given")
+	}
+	if c.AlertmanagerURL != "" && c.AlertmanagerToken == nil {
+		return errors.New("an Alertmanager token source is required when an Alertmanager URL is given")
 	}
 	if c.Sandbox.URL != "" {
 		switch {
@@ -236,7 +212,7 @@ func (c Config) validate() error {
 			return errors.New("a GitHub token source is required when a Sandbox is configured")
 		}
 	}
-	// A Job cannot authenticate to Keycloak or reach the MCP gateway without this.
+	// A Job cannot authenticate to the model provider without this.
 	return c.AgentRuntime.ValidateGateway()
 }
 
@@ -265,8 +241,8 @@ func (c Config) withDefaults() Config {
 	if c.ProposalPollInterval == 0 {
 		c.ProposalPollInterval = controller.DefaultProposalPollInterval
 	}
-	if c.ExecutionPollInterval == 0 {
-		c.ExecutionPollInterval = controller.DefaultExecutionPollInterval
+	if c.PullRequestPollInterval == 0 {
+		c.PullRequestPollInterval = controller.DefaultPullRequestPollInterval
 	}
 	if c.ArgoCDApplication == "" {
 		c.ArgoCDApplication = verification.DefaultApplication
@@ -307,7 +283,6 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: cfg.HealthProbeAddress,
 		Cache:                  cache.Options{DefaultNamespaces: map[string]cache.Config{cfg.Namespace: {}}},
-		WebhookServer:          webhookServer(cfg),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create manager: %w", err)
@@ -315,11 +290,11 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 
 	historyStore, err := history.Open(cfg.HistoryPath)
 	if err != nil {
-		return nil, fmt.Errorf("open the Triage history: %w", err)
+		return nil, fmt.Errorf("open the Page history: %w", err)
 	}
 	if err := mgr.Add(closeHistory(historyStore)); err != nil {
 		_ = historyStore.Close()
-		return nil, fmt.Errorf("add the Triage history: %w", err)
+		return nil, fmt.Errorf("add the Page history: %w", err)
 	}
 	metricsAPI := metrics.New(mgr.GetClient())
 	broker := dashboardapi.NewBroker()
@@ -331,14 +306,12 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		if cfg.Sandbox.URL != "" {
 			validators[v1alpha1.ActionScale] = scale.New(scale.Config{
 				Reader:            mgr.GetAPIReader(),
-				Writer:            mgr.GetClient(),
 				Sandbox:           cfg.Sandbox,
 				AllowedNamespaces: cfg.AllowedNamespaces,
 				Bounds:            cfg.ScaleBounds,
 			})
 			validators[v1alpha1.ActionPatchResources] = patchresources.New(patchresources.Config{
 				Reader:            mgr.GetAPIReader(),
-				Writer:            mgr.GetClient(),
 				Sandbox:           cfg.Sandbox,
 				AllowedNamespaces: cfg.AllowedNamespaces,
 				Bounds:            cfg.PatchBounds,
@@ -352,13 +325,13 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	}
 	proposals := proposal.NewPipeline(cfg.Clock, validators)
 
-	store := &triage.StatusStore{
+	store := &page.StatusStore{
 		Client:   mgr.GetClient(),
 		Reader:   mgr.GetAPIReader(),
 		Clock:    cfg.Clock,
 		Recorder: recorder,
 	}
-	reconciler := &controller.TriageReconciler{
+	pages := &controller.PageReconciler{
 		Client: mgr.GetClient(),
 		Scheme: scheme,
 		Status: store,
@@ -373,22 +346,12 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Clock:        cfg.Clock,
 		PollInterval: cfg.ProposalPollInterval,
 	}
-	if err := reconciler.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("set up the Triage controller: %w", err)
-	}
-
-	approvals := &controller.ApprovalReconciler{
-		Client:    mgr.GetClient(),
-		Status:    store,
-		Proposals: proposals,
-		Clock:     cfg.Clock,
-	}
-	if err := approvals.SetupWithManager(mgr); err != nil {
-		return nil, fmt.Errorf("set up the TriageApproval controller: %w", err)
+	if err := pages.SetupWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("set up the Page controller: %w", err)
 	}
 
 	if cfg.Sandbox.URL != "" {
-		executions := &controller.ExecutionReconciler{
+		pullRequests := &controller.PullRequestReconciler{
 			Client: mgr.GetClient(),
 			Status: store,
 			Clock:  cfg.Clock,
@@ -401,23 +364,28 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 				},
 				Token: cfg.GitHubToken,
 			}),
-			PollInterval: cfg.ExecutionPollInterval,
+			PollInterval: cfg.PullRequestPollInterval,
 		}
-		if err := executions.SetupWithManager(mgr); err != nil {
-			return nil, fmt.Errorf("set up the execution controller: %w", err)
+		if err := pullRequests.SetupWithManager(mgr); err != nil {
+			return nil, fmt.Errorf("set up the pull request controller: %w", err)
 		}
 	}
 
+	verifier := &verification.Verifier{
+		Reader:      mgr.GetAPIReader(),
+		Application: cfg.ArgoCDApplication,
+	}
+	if cfg.ArgoCDURL != "" {
+		verifier.Applications = &verification.ArgoCD{BaseURL: cfg.ArgoCDURL, Token: cfg.ArgoCDToken}
+	}
+	if cfg.AlertmanagerURL != "" {
+		verifier.Alerts = &verification.Alertmanager{BaseURL: cfg.AlertmanagerURL, Clock: cfg.Clock}
+	}
 	verifications := &controller.VerificationReconciler{
-		Client: mgr.GetClient(),
-		Scheme: scheme,
-		Status: store,
-		Verifier: &verification.Verifier{
-			Reader:       mgr.GetAPIReader(),
-			Applications: &verification.ArgoCD{BaseURL: cfg.ArgoCDURL, Token: cfg.ArgoCDToken},
-			Alerts:       &verification.Alertmanager{BaseURL: cfg.AlertmanagerURL, Clock: cfg.Clock},
-			Application:  cfg.ArgoCDApplication,
-		},
+		Client:       mgr.GetClient(),
+		Scheme:       scheme,
+		Status:       store,
+		Verifier:     verifier,
 		Clock:        cfg.Clock,
 		Window:       cfg.VerificationWindow,
 		PollInterval: cfg.VerificationPollInterval,
@@ -444,27 +412,6 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		return nil, fmt.Errorf("set up the retention controller: %w", err)
 	}
 
-	webhooks := mgr.GetWebhookServer()
-	serverUsername := fmt.Sprintf("system:serviceaccount:%s:%s", cfg.Namespace, cfg.ServerServiceAccount)
-	webhooks.Register(admissionpkg.CreatePath, &webhook.Admission{Handler: &admissionpkg.CreateValidator{
-		Reader:    mgr.GetAPIReader(),
-		Namespace: cfg.Namespace,
-	}})
-	webhooks.Register(admissionpkg.ApprovalStampPath, &webhook.Admission{Handler: admissionpkg.ApprovalStamper{
-		ServerUsername: serverUsername,
-	}})
-	webhooks.Register(admissionpkg.ApprovalValidatePath, &webhook.Admission{Handler: &admissionpkg.ApprovalValidator{
-		Reader:         mgr.GetAPIReader(),
-		Namespace:      cfg.Namespace,
-		Proposals:      proposals,
-		Clock:          cfg.Clock,
-		ServerUsername: serverUsername,
-		Approvers:      cfg.Approvers,
-	}})
-	webhooks.Register(admissionpkg.StatusPath, &webhook.Admission{Handler: &admissionpkg.StatusGuard{
-		ServerUsername: serverUsername,
-	}})
-
 	handler := &reportapi.Handler{
 		Auth: &reportapi.Authenticator{
 			Client:         mgr.GetClient(),
@@ -476,15 +423,17 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 		Proposals: proposals,
 		Clock:     cfg.Clock,
 	}
-	receiver := &alerts.Receiver{
-		Client:     mgr.GetClient(),
-		Store:      store,
-		Namespace:  cfg.Namespace,
-		Namespaces: cfg.AlertNamespaces,
-		Token:      cfg.AlertmanagerToken,
-	}
 	mux := http.NewServeMux()
-	mux.Handle(alerts.Path, receiver)
+	if cfg.AlertmanagerURL != "" {
+		receiver := &alerts.Receiver{
+			Client:     mgr.GetClient(),
+			Store:      store,
+			Namespace:  cfg.Namespace,
+			Namespaces: cfg.AlertNamespaces,
+			Token:      cfg.AlertmanagerToken,
+		}
+		mux.Handle(alerts.Path, receiver)
+	}
 	mux.Handle("/", handler)
 	if err := mgr.Add(serve("report API", cfg.ReportListener, mux)); err != nil {
 		return nil, fmt.Errorf("add the report API: %w", err)
@@ -492,27 +441,30 @@ func New(restConfig *rest.Config, cfg Config) (ctrl.Manager, error) {
 	if err := mgr.Add(serve("metrics API", cfg.MetricsListener, metricsAPI.Handler())); err != nil {
 		return nil, fmt.Errorf("add the metrics API: %w", err)
 	}
-	// The dashboard reads through the manager's client, so it inherits the server's RBAC. Its write routes run as
-	// the server's service account and assert the dashboard user on the TriageApproval (ADR-0020).
-	dashboard := dashboardapi.New(dashboardapi.Config{
-		Namespace:          cfg.Namespace,
-		Reader:             mgr.GetClient(),
-		Writer:             mgr.GetClient(),
-		Workloads:          mgr.GetAPIReader(),
-		WorkloadNamespaces: cfg.WorkloadNamespaces,
-		Auth:               cfg.DashboardAuth,
-		History:            historyStore,
-		Broker:             broker,
-		Clock:              cfg.Clock,
-		Grafana: dashboardapi.GrafanaConfig{
-			BaseURL:             cfg.GrafanaURL,
-			MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
-			LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
-		},
-		Assets: webassets.Assets(),
-	})
-	if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
-		return nil, fmt.Errorf("add the dashboard: %w", err)
+	if cfg.DashboardListener != nil {
+		// The dashboard reads through the manager's client, so it inherits the server's
+		// RBAC. Its decision route patches the Page's decision annotations, which the
+		// Page controller reconciles into status (ADR-0031).
+		dashboard := dashboardapi.New(dashboardapi.Config{
+			Namespace:        cfg.Namespace,
+			Reader:           mgr.GetClient(),
+			Writer:           mgr.GetClient(),
+			Targets:          mgr.GetAPIReader(),
+			TargetNamespaces: cfg.TargetNamespaces,
+			Auth:             cfg.DashboardAuth,
+			History:          historyStore,
+			Broker:           broker,
+			Clock:            cfg.Clock,
+			Grafana: dashboardapi.GrafanaConfig{
+				BaseURL:             cfg.GrafanaURL,
+				MetricsDashboardUID: cfg.GrafanaMetricsDashboardUID,
+				LogsDashboardUID:    cfg.GrafanaLogsDashboardUID,
+			},
+			Assets: webassets.Assets(),
+		})
+		if err := mgr.Add(serve("dashboard", cfg.DashboardListener, dashboard)); err != nil {
+			return nil, fmt.Errorf("add the dashboard: %w", err)
+		}
 	}
 
 	if cfg.HealthProbeAddress != "" {
@@ -555,7 +507,7 @@ func closeHistory(store *history.Store) manager.Runnable {
 }
 
 // recorder writes the append-only history, updates the Prometheus metrics, and fans live events out to the
-// dashboard after a status write. A history or metrics failure is logged and never fails the request: the Triage
+// dashboard after a status write. A history or metrics failure is logged and never fails the request: the Page
 // resource is the source of truth (ADR-0001).
 type recorder struct {
 	history   *history.Store
@@ -563,15 +515,15 @@ type recorder struct {
 	dashboard *dashboardapi.Broker
 }
 
-// PhaseChanged records a Triage snapshot on every Phase change, updates the metrics, and notifies open event
+// PhaseChanged records a Page snapshot on every Phase change, updates the metrics, and notifies open event
 // streams. A terminal Phase also ends the streams, because no further change can occur.
-func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Triage, now time.Time) {
+func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Page, now time.Time) {
 	r.metrics.ObservePhaseChange(before, after, now)
 	if before.Status.Phase == after.Status.Phase {
 		return
 	}
 	if err := r.history.AppendSnapshot(ctx, after, now); err != nil {
-		logf.FromContext(ctx).Error(err, "record the Triage snapshot", "triage", after.Name)
+		logf.FromContext(ctx).Error(err, "record the Page snapshot", "page", after.Name)
 	}
 	if r.dashboard == nil {
 		return
@@ -585,14 +537,14 @@ func (r *recorder) PhaseChanged(ctx context.Context, before, after *v1alpha1.Tri
 
 // StepRecorded appends one step event to the history and sends it to open event streams.
 func (r *recorder) StepRecorded(
-	ctx context.Context, tr *v1alpha1.Triage, step v1alpha1.Step, finding *v1alpha1.Finding,
+	ctx context.Context, p *v1alpha1.Page, step v1alpha1.Step, finding *v1alpha1.Finding,
 ) {
-	if err := r.history.AppendStep(ctx, tr, step, finding); err != nil {
-		logf.FromContext(ctx).Error(err, "record the Triage step", "triage", tr.Name)
+	if err := r.history.AppendStep(ctx, p, step, finding); err != nil {
+		logf.FromContext(ctx).Error(err, "record the Page step", "page", p.Name)
 	}
 	if r.dashboard != nil {
-		r.dashboard.Publish(tr.Name, dashboardapi.EventStep, dashboardapi.StepEvent{
-			Step: step, Finding: finding, StepCount: tr.Status.StepCount,
+		r.dashboard.Publish(p.Name, dashboardapi.EventStep, dashboardapi.StepEvent{
+			Step: step, Finding: finding, StepCount: p.Status.StepCount,
 		})
 	}
 }

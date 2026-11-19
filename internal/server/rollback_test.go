@@ -13,9 +13,9 @@ import (
 )
 
 // rollbackRefused reports a Rollback Proposal and returns its Validation errors.
-func rollbackRefused(t *testing.T, env *testenv.Env, workloadName, commit string) []string {
+func rollbackRefused(t *testing.T, env *testenv.Env, targetName, commit string) []string {
 	t.Helper()
-	name, agent := startTriage(t, env, workloadName)
+	name, agent := startPage(t, env, targetName)
 	result, err := agent.API.PostReport(t.Context(), rollbackReport(commit))
 	if err != nil {
 		t.Fatal(err)
@@ -48,17 +48,17 @@ func requireRefusalContaining(t *testing.T, messages []string, parts ...string) 
 	t.Errorf("Validation errors = %v, want one containing %v", messages, parts)
 }
 
-func TestRollbackRevertsTheCommitThatBrokeTheWorkload(t *testing.T) {
+func TestRollbackRevertsTheCommitThatBrokeTheTarget(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withSandboxActions())
-	w := workload{name: checkout}
+	w := target{name: checkout}
 	deploy(t, env, w)
 	good := w.manifest()
 	broken := strings.Replace(good, "registry.invalid/checkout:1.0", "registry.invalid/checkout:9.9", 1)
 	brokenCommit := env.Sandbox.Commit(w.sourcePath(), broken, "Publish an image tag that does not exist")
 	head := env.Sandbox.Head()
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), rollbackReport(brokenCommit))
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +96,7 @@ func TestRollbackRevertsTheCommitThatBrokeTheWorkload(t *testing.T) {
 	}
 	want, err := proposal.Hash(tr, p.ProposedAction, p.RenderedChange, p.Base)
 	if err != nil || p.Hash != want {
-		t.Errorf("hash = %s, want %s (error %v): it covers the Triage, Action, Workload, and rendered revert",
+		t.Errorf("hash = %s, want %s (error %v): it covers the Page, Action, Target, and rendered revert",
 			p.Hash, want, err)
 	}
 	if env.Sandbox.Head() != head {
@@ -118,17 +118,17 @@ func TestRollbackRevertsTheCommitThatBrokeTheWorkload(t *testing.T) {
 		t.Errorf("the branch differs from the stored revert:\n%s\nwant:\n%s", got, change.Patch)
 	}
 	merged := env.GitHub.CompleteChecks(t, prs[0].Number)
-	env.WaitFor(t, tr.Name, "the merge commit is recorded", func(latest *v1alpha1.Triage) bool {
-		return latest.Status.Execution != nil && latest.Status.Execution.MergeCommit != ""
+	env.WaitFor(t, tr.Name, "the merge commit is recorded", func(latest *v1alpha1.Page) bool {
+		return latest.Status.PullRequest != nil && latest.Status.PullRequest.MergeCommit != ""
 	})
 	if got := env.Sandbox.File("main", w.sourcePath()); got != good {
 		t.Errorf("Sandbox main after the merge = %q, want the reverted manifest", got)
 	}
 
 	// Verification decides the outcome unchanged.
-	verifyingTriage := verifying(t, env, executing, merged)
+	verifyingPage := verifying(t, env, executing, merged)
 	env.Clock.Step(5 * time.Minute)
-	recovered := env.WaitForPhase(t, verifyingTriage.Name, v1alpha1.PhaseRecovered)
+	recovered := env.WaitForPhase(t, verifyingPage.Name, v1alpha1.PhaseRecovered)
 	requireChecks(t, recovered, map[string]bool{
 		v1alpha1.CheckArgoCDSynced:     true,
 		v1alpha1.CheckRolloutAvailable: true,
@@ -142,11 +142,11 @@ func TestRollbackRevertsTheCommitThatBrokeADeclaredDependency(t *testing.T) {
 	env := testenv.Start(t, withSandboxActions())
 	dependency := "shared/checkout-config.yaml"
 	env.Sandbox.Commit(dependency, "payment: live\n", "Add the checkout configuration")
-	w := workload{name: checkout, dependsOn: []string{dependency}}
+	w := target{name: checkout, dependsOn: []string{dependency}}
 	deploy(t, env, w)
 	broken := env.Sandbox.Commit(dependency, "payment: broken\n", "Break the shared checkout configuration")
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), rollbackReport(broken))
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v, want 200", result, err)
@@ -170,8 +170,8 @@ func TestRollbackRevertsTheCommitThatBrokeADeclaredDependency(t *testing.T) {
 	approve(t, env, tr)
 	withPullRequest(t, env, tr.Name)
 	env.GitHub.CompleteChecks(t, 1)
-	env.WaitFor(t, tr.Name, "the merge commit is recorded", func(latest *v1alpha1.Triage) bool {
-		return latest.Status.Execution != nil && latest.Status.Execution.MergeCommit != ""
+	env.WaitFor(t, tr.Name, "the merge commit is recorded", func(latest *v1alpha1.Page) bool {
+		return latest.Status.PullRequest != nil && latest.Status.PullRequest.MergeCommit != ""
 	})
 	if got := env.Sandbox.File("main", dependency); got != "payment: live\n" {
 		t.Errorf("Sandbox main after the merge = %q, want the reverted configuration", got)
@@ -184,32 +184,32 @@ func TestRollbackRefusesACommitOutsideTheAllowedPaths(t *testing.T) {
 	const otherPath = "apps/other/deployment.yaml"
 
 	type refusal struct {
-		name     string
-		workload string
-		commit   string
-		parts    []string
+		name   string
+		target string
+		commit string
+		parts  []string
 	}
-	twoFiles := workload{name: "two-files"}
+	twoFiles := target{name: "two-files"}
 	cases := []refusal{
-		{name: "a commit that touches another Workload", workload: "other-path",
+		{name: "a commit that touches another Target", target: "other-path",
 			parts: []string{"last 20", "commits"}},
-		{name: "a commit that is not in the Sandbox", workload: "absent-commit",
+		{name: "a commit that is not in the Sandbox", target: "absent-commit",
 			parts: []string{"commit", "not in the Sandbox"}},
-		{name: "a commit that touches more than one file", workload: twoFiles.name,
+		{name: "a commit that touches more than one file", target: twoFiles.name,
 			parts: []string{"more than one file"}},
 	}
-	// The Sandbox's working copy is shared, so every Workload and every commit
+	// The Sandbox's working copy is shared, so every Target and every commit
 	// is made before the parallel subtests report their Proposals.
 	for i := range cases {
-		deploy(t, env, workload{name: cases[i].workload})
+		deploy(t, env, target{name: cases[i].target})
 	}
 	commits := []string{
-		env.Sandbox.Commit(otherPath, "kind: Deployment\n", "Change another Workload"),
+		env.Sandbox.Commit(otherPath, "kind: Deployment\n", "Change another Target"),
 		"0123456789abcdef0123456789abcdef01234567",
 		env.Sandbox.CommitAll(map[string]string{
 			twoFiles.sourcePath():  strings.Replace(twoFiles.manifest(), ":1.0", ":9.9", 1),
 			"shared/checkout.yaml": "payment: broken\n",
-		}, "Change the Workload and a shared file together"),
+		}, "Change the Target and a shared file together"),
 	}
 	for i := range cases {
 		cases[i].commit = commits[i]
@@ -217,7 +217,7 @@ func TestRollbackRefusesACommitOutsideTheAllowedPaths(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			messages := rollbackRefused(t, env, c.workload, c.commit)
+			messages := rollbackRefused(t, env, c.target, c.commit)
 			requireRefusalContaining(t, messages, c.parts...)
 		})
 	}
@@ -227,7 +227,7 @@ func TestRollbackWindowIsTheLast20CommitsTouchingTheAllowedPaths(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withSandboxActions())
 
-	// Each Workload declares 21 dependency paths, which one commit creates and
+	// Each Target declares 21 dependency paths, which one commit creates and
 	// 21 later commits revise one at a time, so that every revision touches an
 	// allowed path exactly once and reverting any of them applies cleanly.
 	revisions := 21
@@ -239,7 +239,7 @@ func TestRollbackWindowIsTheLast20CommitsTouchingTheAllowedPaths(t *testing.T) {
 			dependsOn[i] = fmt.Sprintf("shared/%s-%d.yaml", name, i)
 			files[dependsOn[i]] = "revision: initial\n"
 		}
-		w := workload{name: name, dependsOn: dependsOn}
+		w := target{name: name, dependsOn: dependsOn}
 		deploy(t, env, w)
 		env.Sandbox.CommitAll(files, "Add the shared configuration of "+name)
 		for i, path := range dependsOn {
@@ -255,7 +255,7 @@ func TestRollbackWindowIsTheLast20CommitsTouchingTheAllowedPaths(t *testing.T) {
 	})
 	t.Run("the 20th newest commit is accepted", func(t *testing.T) {
 		t.Parallel()
-		name, agent := startTriage(t, env, "window-accepted")
+		name, agent := startPage(t, env, "window-accepted")
 		commit := commits["window-accepted"][1]
 		result, err := agent.API.PostReport(t.Context(), rollbackReport(commit))
 		if err != nil || result.StatusCode != http.StatusOK {
@@ -277,12 +277,12 @@ func TestRollbackWindowIsTheLast20CommitsTouchingTheAllowedPaths(t *testing.T) {
 func TestRollbackProposalBecomesStaleWhenTheSandboxMoves(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withSandboxActions(), testenv.WithProposalPollInterval(proposalPoll))
-	w := workload{name: checkout}
+	w := target{name: checkout}
 	deploy(t, env, w)
 	broken := strings.Replace(w.manifest(), "registry.invalid/checkout:1.0", "registry.invalid/checkout:9.9", 1)
 	commit := env.Sandbox.Commit(w.sourcePath(), broken, "Publish an image tag that does not exist")
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), rollbackReport(commit))
 	if err != nil || result.StatusCode != http.StatusOK {
 		t.Fatalf("report: %+v, %v, want 200", result, err)
@@ -290,7 +290,7 @@ func TestRollbackProposalBecomesStaleWhenTheSandboxMoves(t *testing.T) {
 	proposed := env.WaitForPhase(t, name, v1alpha1.PhaseProposed)
 
 	t.Run("an unrelated commit does not make it stale", func(t *testing.T) {
-		env.Sandbox.Commit("apps/other/deployment.yaml", "kind: Deployment\n", "Change another Workload")
+		env.Sandbox.Commit("apps/other/deployment.yaml", "kind: Deployment\n", "Change another Target")
 		time.Sleep(20 * proposalPoll)
 		after := env.Get(t, name)
 		if after.Status.Proposal.Hash != proposed.Status.Proposal.Hash {

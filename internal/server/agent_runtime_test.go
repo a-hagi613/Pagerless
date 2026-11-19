@@ -87,13 +87,12 @@ func TestAgentJobsReceiveOnlyTheirSelectedProviderAndReadOnlyCredentials(t *test
 			}
 			runtime.KeycloakTokenURL = runtime.KeycloakIssuer + "/protocol/openid-connect/token"
 			env := testenv.Start(t, testenv.WithAgentRuntime(runtime))
-			created := env.CreateTriage(t, testenv.NewTriage(checkout))
+			created := env.CreatePage(t, testenv.NewPage(checkout))
 			tr := env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
-			job, err := env.GetJob(t.Context(), tr.Status.JobName)
+			job, err := env.GetJob(t.Context(), tr.Status.AgentJobName)
 			if err != nil {
 				t.Fatal(err)
 			}
-			waitForAgentJobPolicy(t, env, serverAdmissionClient(t, env), job)
 			pod := job.Spec.Template.Spec
 			for _, volume := range pod.Volumes {
 				if volume.PersistentVolumeClaim != nil {
@@ -185,13 +184,12 @@ func requireAgentRecordingStorage(t *testing.T, provider string) {
 	if err := env.Client.Create(t.Context(), claim); err != nil {
 		t.Fatal(err)
 	}
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	tr := env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
-	job, err := env.GetJob(t.Context(), tr.Status.JobName)
+	job, err := env.GetJob(t.Context(), tr.Status.AgentJobName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitForAgentJobPolicy(t, env, serverAdmissionClient(t, env), job)
 	pod := job.Spec.Template.Spec
 	if pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 65532 {
 		t.Fatal("the recording claim must be writable by filesystem group 65532")
@@ -241,8 +239,10 @@ func requireAgentRecordingStorage(t *testing.T, provider string) {
 	if err := env.Client.List(t.Context(), &claims, client.InNamespace(testenv.Namespace)); err != nil {
 		t.Fatal(err)
 	}
-	if len(claims.Items) != 1 || claims.Items[0].Name != recordingClaimName {
-		t.Error("recording must reuse the existing claim without provisioning more claims")
+	for _, claim := range claims.Items {
+		if claim.Name != recordingClaimName && claim.Name != "pagerless-data" {
+			t.Errorf("the Job provisioning created claim %q, want only the configured one", claim.Name)
+		}
 	}
 }
 

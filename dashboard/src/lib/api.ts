@@ -5,7 +5,7 @@ export type Phase =
   | "Investigating"
   | "Proposed"
   | "Approved"
-  | "Executing"
+  | "PullRequestOpen"
   | "Verifying"
   | "Recovered"
   | "NotRecovered"
@@ -13,17 +13,27 @@ export type Phase =
   | "Rejected"
   | "Expired"
   | "Invalid"
+  | "Superseded"
   | "Failed";
 
-export type TriggerSource = "Alertmanager" | "CLI" | "Dashboard" | "FollowUp";
+export type TriggerSource =
+  | "Event"
+  | "Condition"
+  | "Alertmanager"
+  | "Grafana"
+  | "Datadog"
+  | "SNS"
+  | "CLI"
+  | "Portal"
+  | "API";
 
 export type StepKind = "ToolCall" | "Finding" | "Progress";
 
 export type FindingKind = "Log" | "Metric" | "Trace" | "Event" | "Commit";
 
-export type Action = "RestartWorkload" | "Scale" | "PatchResources" | "Rollback" | "NoAction";
+export type Action = "Scale" | "PatchResources" | "Rollback" | "NoAction";
 
-export interface WorkloadReference {
+export interface TargetReference {
   kind: string;
   namespace: string;
   name: string;
@@ -63,7 +73,7 @@ export interface Proposal {
   action: Action;
   parameters?: Record<string, unknown>;
   renderedChange?: RenderedChange;
-  base?: { commit?: string; workloadGeneration?: number };
+  base?: { commit?: string; targetGeneration?: number };
   hash: string;
   attempt: number;
   expiresAt: string;
@@ -71,16 +81,23 @@ export interface Proposal {
 
 export interface Decision {
   outcome: "Approved" | "Rejected";
-  approver: string;
+  proposalHash: string;
+  decidedBy: string;
   reason?: string;
   decidedAt: string;
 }
 
-export interface Execution {
-  pullRequestURL?: string;
+export interface PullRequest {
+  provider?: string;
+  number?: number;
+  url?: string;
+  branch?: string;
+  headSHA?: string;
+  state?: "Draft" | "Open" | "Merged" | "Closed";
+  checks?: "Pending" | "Passing" | "Failing" | "Unknown";
   mergeCommit?: string;
-  restartedPods?: string[];
-  executedAt?: string;
+  openedAt?: string;
+  mergedAt?: string;
 }
 
 export interface VerificationCheck {
@@ -105,21 +122,20 @@ export interface GrafanaLinks {
   logs?: DashboardLink;
 }
 
-export interface TriageSummary {
+export interface PageSummary {
   name: string;
   namespace: string;
   phase: Phase;
-  workload: WorkloadReference;
+  target: TargetReference;
   trigger: Trigger;
   createdAt: string;
   startedAt?: string;
   terminalAt?: string;
   action?: Action;
-  followUpTriage?: string;
   source: "live" | "history";
 }
 
-export interface TriageDetail {
+export interface PageDetail {
   name: string;
   namespace: string;
   phase: Phase;
@@ -128,10 +144,10 @@ export interface TriageDetail {
   startedAt?: string;
   terminalAt?: string;
   observedAt?: string;
-  workload: WorkloadReference;
+  target: TargetReference;
   trigger: Trigger;
   hint?: string;
-  followsTriage?: string;
+  previousPage?: string;
   triggerCount: number;
   steps: Step[];
   stepCount: number;
@@ -141,16 +157,15 @@ export interface TriageDetail {
   diagnosis?: string;
   proposal?: Proposal;
   decision?: Decision;
-  execution?: Execution;
+  pullRequest?: PullRequest;
   verification?: Verification;
   narrative?: string;
-  followUpTriage?: string;
   grafana?: GrafanaLinks;
 }
 
-export interface TriageFilters {
+export interface PageFilters {
   phase?: string;
-  workload?: string;
+  target?: string;
   trigger?: string;
   since?: string;
 }
@@ -165,7 +180,7 @@ export interface Session {
   expiresAt: string;
 }
 
-export interface WorkloadOption {
+export interface TargetOption {
   kind: "Deployment" | "StatefulSet";
   namespace: string;
   name: string;
@@ -173,9 +188,9 @@ export interface WorkloadOption {
 
 export interface DecisionAnswer {
   name: string;
-  triage: string;
+  page: string;
   decision: "Approved" | "Rejected";
-  approver: string;
+  decidedBy: string;
 }
 
 export interface StartAnswer {
@@ -184,11 +199,11 @@ export interface StartAnswer {
 }
 
 interface ListResponse {
-  triages: TriageSummary[];
+  pages: PageSummary[];
 }
 
-interface WorkloadListResponse {
-  workloads: WorkloadOption[];
+interface TargetListResponse {
+  targets: TargetOption[];
 }
 
 interface ErrorResponse {
@@ -248,10 +263,10 @@ export async function getSession(signal?: AbortSignal): Promise<Session> {
   return session;
 }
 
-export async function listTriages(
-  filters: TriageFilters,
+export async function listPages(
+  filters: PageFilters,
   signal?: AbortSignal,
-): Promise<TriageSummary[]> {
+): Promise<PageSummary[]> {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined && value !== "") {
@@ -260,18 +275,18 @@ export async function listTriages(
   }
   const encoded = query.toString();
   const response = await requestJSON<ListResponse>(
-    encoded === "" ? "/api/triages" : `/api/triages?${encoded}`,
+    encoded === "" ? "/api/pages" : `/api/pages?${encoded}`,
     {},
     signal,
   );
-  return response.triages;
+  return response.pages;
 }
 
-export async function getTriage(name: string, signal?: AbortSignal): Promise<TriageDetail> {
-  return await requestJSON<TriageDetail>(`/api/triages/${encodeURIComponent(name)}`, {}, signal);
+export async function getPage(name: string, signal?: AbortSignal): Promise<PageDetail> {
+  return await requestJSON<PageDetail>(`/api/pages/${encodeURIComponent(name)}`, {}, signal);
 }
 
-export async function decideTriage(
+export async function decidePage(
   name: string,
   decision: "Approved" | "Rejected",
   reason: string,
@@ -281,22 +296,22 @@ export async function decideTriage(
     body.reason = reason;
   }
   return await requestJSON<DecisionAnswer>(
-    `/api/triages/${encodeURIComponent(name)}/decision`,
+    `/api/pages/${encodeURIComponent(name)}/decision`,
     { method: "POST", body: JSON.stringify(body) },
   );
 }
 
-export async function listWorkloads(signal?: AbortSignal): Promise<WorkloadOption[]> {
-  const response = await requestJSON<WorkloadListResponse>("/api/workloads", {}, signal);
-  return response.workloads;
+export async function listTargets(signal?: AbortSignal): Promise<TargetOption[]> {
+  const response = await requestJSON<TargetListResponse>("/api/targets", {}, signal);
+  return response.targets;
 }
 
-export async function startTriage(workload: WorkloadOption, hint: string): Promise<StartAnswer> {
-  const body: { workload: WorkloadOption; hint?: string } = { workload };
+export async function startPage(target: TargetOption, hint: string): Promise<StartAnswer> {
+  const body: { target: TargetOption; hint?: string } = { target };
   if (hint !== "") {
     body.hint = hint;
   }
-  return await requestJSON<StartAnswer>("/api/triages", {
+  return await requestJSON<StartAnswer>("/api/pages", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -312,5 +327,5 @@ export async function signOut(): Promise<void> {
 }
 
 export function eventsURL(name: string): string {
-  return `/api/triages/${encodeURIComponent(name)}/events`;
+  return `/api/pages/${encodeURIComponent(name)}/events`;
 }

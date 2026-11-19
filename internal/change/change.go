@@ -1,5 +1,5 @@
 // Package change performs the Validation that the executable Actions share
-// (ADR-0002, ADR-0008): the namespace allowlist, reading the live Workload,
+// (ADR-0002, ADR-0008): the namespace allowlist, reading the live Target,
 // locating its manifest in the Sandbox, rendering the exact change, and
 // deciding when a Proposal has become a Stale Proposal. PatchResources and
 // Scale supply the rendering and bounds of their own change.
@@ -26,32 +26,32 @@ import (
 // maxPatchBytes is the largest patch that a Proposal can store.
 const maxPatchBytes = 32768
 
-// fieldWorkload is the Validation field of the Workload itself.
-const fieldWorkload = "workload"
+// fieldTarget is the Validation field of the Target itself.
+const fieldTarget = "target"
 
-// ErrNoLiveWorkload means that the Workload does not exist.
-var ErrNoLiveWorkload = errors.New("the Workload does not exist")
+// ErrNoLiveTarget means that the Target does not exist.
+var ErrNoLiveTarget = errors.New("the Target does not exist")
 
 // Config configures a Validator.
 type Config struct {
-	// Reader reads Workloads directly from the API server, not from a cache.
+	// Reader reads Targets directly from the API server, not from a cache.
 	Reader client.Reader
-	// Sandbox is the repository that holds the Workloads' manifests.
+	// Sandbox is the repository that holds the Targets' manifests.
 	Sandbox sandbox.Repository
-	// AllowedNamespaces are the namespaces whose Workloads may be changed. None are allowed when it is empty.
+	// AllowedNamespaces are the namespaces whose Targets may be changed. None are allowed when it is empty.
 	AllowedNamespaces []string
 }
 
-// LiveWorkload is a Deployment or StatefulSet read from the cluster.
-type LiveWorkload struct {
+// LiveTarget is a Deployment or StatefulSet read from the cluster.
+type LiveTarget struct {
 	// Object is the Deployment or StatefulSet.
 	Object client.Object
 	// PodSpec is the pod template's spec.
 	PodSpec *corev1.PodSpec
 }
 
-// Replicas returns the Workload's desired replica count.
-func (w *LiveWorkload) Replicas() int32 {
+// Replicas returns the Target's desired replica count.
+func (w *LiveTarget) Replicas() int32 {
 	switch object := w.Object.(type) {
 	case *appsv1.Deployment:
 		if object.Spec.Replicas != nil {
@@ -65,9 +65,9 @@ func (w *LiveWorkload) Replicas() int32 {
 	return 1
 }
 
-// SetReplicas sets the Workload's desired replica count on the live object, for
+// SetReplicas sets the Target's desired replica count on the live object, for
 // a server-side dry run.
-func (w *LiveWorkload) SetReplicas(replicas int32) {
+func (w *LiveTarget) SetReplicas(replicas int32) {
 	switch object := w.Object.(type) {
 	case *appsv1.Deployment:
 		object.Spec.Replicas = &replicas
@@ -86,18 +86,16 @@ type Renderer interface {
 	ParametersField() string
 	// CheckParameters returns the Validation errors in the requested parameters.
 	CheckParameters() []agentapi.ValidationError
-	// Check enforces the Action's rules on the live Workload, before the Sandbox is read.
-	Check(live *LiveWorkload) []agentapi.ValidationError
+	// Check enforces the Action's rules on the live Target, before the Sandbox is read.
+	Check(live *LiveTarget) []agentapi.ValidationError
 	// Render returns the manifest with the change, and any Validation errors in
-	// the result. The live Workload and the source path are passed so that a
+	// the result. The live Target and the source path are passed so that a
 	// renderer can enforce rules that depend on them. A non-nil error means that
 	// the manifest cannot be edited safely.
 	Render(
-		ctx context.Context, src []byte, workload v1alpha1.WorkloadReference,
-		live *LiveWorkload, sourcePath string,
+		ctx context.Context, src []byte, target v1alpha1.TargetReference,
+		live *LiveTarget, sourcePath string,
 	) ([]byte, []agentapi.ValidationError, error)
-	// DryRun applies the change to the live Workload with a server-side dry run.
-	DryRun(ctx context.Context, live *LiveWorkload) ([]agentapi.ValidationError, error)
 }
 
 // Validator performs the shared Validation and staleness checks.
@@ -108,39 +106,39 @@ type Validator struct {
 // New returns a Validator.
 func New(cfg Config) *Validator { return &Validator{cfg: cfg} }
 
-// NamespaceErrors returns the Validation errors when the Workload's namespace
+// NamespaceErrors returns the Validation errors when the Target's namespace
 // is not one that the Action may change.
 func (v *Validator) NamespaceErrors(
-	ref v1alpha1.WorkloadReference, action v1alpha1.Action,
+	ref v1alpha1.TargetReference, action v1alpha1.Action,
 ) []agentapi.ValidationError {
 	if slices.Contains(v.cfg.AllowedNamespaces, ref.Namespace) {
 		return nil
 	}
 	return []agentapi.ValidationError{{
-		Field:   "workload.namespace",
+		Field:   "target.namespace",
 		Message: fmt.Sprintf("namespace %s is not in the allowlist for %s", ref.Namespace, action),
 	}}
 }
 
-// Live returns the Workload as the API server holds it.
+// Live returns the Target as the API server holds it.
 func (v *Validator) Live(
-	ctx context.Context, ref v1alpha1.WorkloadReference,
-) (*LiveWorkload, error) {
+	ctx context.Context, ref v1alpha1.TargetReference,
+) (*LiveTarget, error) {
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
-	var live LiveWorkload
+	var live LiveTarget
 	switch ref.Kind {
-	case v1alpha1.WorkloadKindDeployment:
+	case v1alpha1.TargetKindDeployment:
 		var d appsv1.Deployment
-		live = LiveWorkload{Object: &d, PodSpec: &d.Spec.Template.Spec}
-	case v1alpha1.WorkloadKindStatefulSet:
+		live = LiveTarget{Object: &d, PodSpec: &d.Spec.Template.Spec}
+	case v1alpha1.TargetKindStatefulSet:
 		var s appsv1.StatefulSet
-		live = LiveWorkload{Object: &s, PodSpec: &s.Spec.Template.Spec}
+		live = LiveTarget{Object: &s, PodSpec: &s.Spec.Template.Spec}
 	default:
-		return nil, fmt.Errorf("unsupported Workload kind %q", ref.Kind)
+		return nil, fmt.Errorf("unsupported Target kind %q", ref.Kind)
 	}
 	if err := v.cfg.Reader.Get(ctx, key, live.Object); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, ErrNoLiveWorkload
+			return nil, ErrNoLiveTarget
 		}
 		return nil, fmt.Errorf("read %s %s: %w", ref.Kind, key, err)
 	}
@@ -148,34 +146,34 @@ func (v *Validator) Live(
 }
 
 // Validate runs the Validation that every pull request Action shares: the
-// namespace allowlist, the Action's parameter bounds, the live Workload and its
+// namespace allowlist, the Action's parameter bounds, the live Target and its
 // manifest, the rendered patch, and a server-side dry run. When it passes, the
 // returned Outcome holds the exact patch and the base it was rendered against.
 func (v *Validator) Validate(
 	ctx context.Context, req proposal.Request, r Renderer,
 ) (proposal.Outcome, error) {
-	workload := req.Triage.Spec.Workload
-	errs := v.NamespaceErrors(workload, r.Action())
+	target := req.Page.Spec.Target
+	errs := v.NamespaceErrors(target, r.Action())
 	errs = append(errs, r.CheckParameters()...)
 	if len(errs) > 0 {
 		return proposal.Outcome{Errors: errs}, nil
 	}
 
-	live, err := v.Live(ctx, workload)
-	if errors.Is(err, ErrNoLiveWorkload) {
-		return refuse(fieldWorkload,
-			fmt.Sprintf("%s %s/%s does not exist", workload.Kind, workload.Namespace, workload.Name)), nil
+	live, err := v.Live(ctx, target)
+	if errors.Is(err, ErrNoLiveTarget) {
+		return refuse(fieldTarget,
+			fmt.Sprintf("%s %s/%s does not exist", target.Kind, target.Namespace, target.Name)), nil
 	}
 	if err != nil {
 		return proposal.Outcome{}, err
 	}
 	sourcePath := live.Object.GetAnnotations()[v1alpha1.AnnotationSourcePath]
 	if sourcePath == "" {
-		return refuse(fieldWorkload, fmt.Sprintf("the Workload has no %s annotation, so its manifest cannot be located",
+		return refuse(fieldTarget, fmt.Sprintf("the Target has no %s annotation, so its manifest cannot be located",
 			v1alpha1.AnnotationSourcePath)), nil
 	}
 	if err := sandbox.CheckPath(sourcePath); err != nil {
-		return refuse(fieldWorkload, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err)), nil
+		return refuse(fieldTarget, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err)), nil
 	}
 	if errs := r.Check(live); len(errs) > 0 {
 		return proposal.Outcome{Errors: errs}, nil
@@ -189,16 +187,16 @@ func (v *Validator) Validate(
 	original, err := checkout.ReadFile(ctx, sourcePath)
 	switch {
 	case errors.Is(err, sandbox.ErrNotFound), errors.Is(err, sandbox.ErrInvalidPath):
-		return refuse(fieldWorkload, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err)), nil
+		return refuse(fieldTarget, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err)), nil
 	case err != nil:
 		return proposal.Outcome{}, err
 	}
-	rendered, errs, err := r.Render(ctx, original, workload, live, sourcePath)
+	rendered, errs, err := r.Render(ctx, original, target, live, sourcePath)
 	if len(errs) > 0 {
 		return proposal.Outcome{Errors: errs}, nil
 	}
 	if err != nil {
-		return refuse(fieldWorkload, fmt.Sprintf("the manifest %s cannot be rendered: %v", sourcePath, err)), nil
+		return refuse(fieldTarget, fmt.Sprintf("the manifest %s cannot be rendered: %v", sourcePath, err)), nil
 	}
 	patch, err := checkout.Diff(ctx, sourcePath, rendered)
 	if err != nil {
@@ -212,29 +210,28 @@ func (v *Validator) Validate(
 		return refuse(r.ParametersField(), fmt.Sprintf("the rendered patch exceeds %d bytes", maxPatchBytes)), nil
 	}
 
-	// The dry run overwrites the object with its result, whose generation is the one the change would produce.
-	generation := live.Object.GetGeneration()
-	if errs, err := r.DryRun(ctx, live); err != nil || len(errs) > 0 {
-		return proposal.Outcome{Errors: errs}, err
-	}
+	// Validation is in-process and deterministic: the patch applies cleanly to
+	// the recorded base, and the Target Repository's own Checks decide whether
+	// the pull request may merge. The product holds no update grant on any
+	// workload, so there is no server-side dry run to authorise (ADR-0037).
 	return proposal.Outcome{
 		Change: &v1alpha1.RenderedChange{Path: sourcePath, Patch: patch},
-		Base:   &v1alpha1.ProposalBase{Commit: checkout.Commit, WorkloadGeneration: generation},
+		Base:   &v1alpha1.ProposalBase{Commit: checkout.Commit, TargetGeneration: live.Object.GetGeneration()},
 	}, nil
 }
 
 // Stale reports why the Proposal's base no longer holds, or an empty string
-// when it still does. The base holds while the Workload's generation and, for a
+// when it still does. The base holds while the Target's generation and, for a
 // pull request Action, its source path and the Sandbox file the patch changes
 // are unchanged.
-func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error) {
+func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Page) (string, error) {
 	p := t.Status.Proposal
 	if p == nil || p.Base == nil {
 		return "", nil
 	}
-	live, err := v.Live(ctx, t.Spec.Workload)
-	if errors.Is(err, ErrNoLiveWorkload) {
-		return v1alpha1.ReasonWorkloadDeleted, nil
+	live, err := v.Live(ctx, t.Spec.Target)
+	if errors.Is(err, ErrNoLiveTarget) {
+		return v1alpha1.ReasonTargetDeleted, nil
 	}
 	if err != nil {
 		return "", err
@@ -244,8 +241,8 @@ func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, erro
 	// The source path is checked first, because changing an annotation also bumps a Deployment's generation.
 	case change != nil && live.Object.GetAnnotations()[v1alpha1.AnnotationSourcePath] != change.Path:
 		return v1alpha1.ReasonSourcePathChanged, nil
-	case live.Object.GetGeneration() != p.Base.WorkloadGeneration:
-		return v1alpha1.ReasonWorkloadGenerationChanged, nil
+	case live.Object.GetGeneration() != p.Base.TargetGeneration:
+		return v1alpha1.ReasonTargetGenerationChanged, nil
 	case change == nil:
 		// A live Action has nothing to render against beyond the generation.
 		return "", nil
@@ -264,13 +261,13 @@ func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, erro
 	defer func() { _ = checkout.Close() }()
 	blob, _, err := checkout.Blob(ctx, change.Path)
 	if errors.Is(err, sandbox.ErrNotFound) || errors.Is(err, sandbox.ErrInvalidPath) {
-		return v1alpha1.ReasonSandboxFileChanged, nil
+		return v1alpha1.ReasonTargetRepositoryFileChanged, nil
 	}
 	if err != nil {
 		return "", err
 	}
 	if patchedBlob := baseBlob(change.Patch); patchedBlob == "" || patchedBlob != blob {
-		return v1alpha1.ReasonSandboxFileChanged, nil
+		return v1alpha1.ReasonTargetRepositoryFileChanged, nil
 	}
 	return "", nil
 }

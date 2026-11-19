@@ -21,10 +21,10 @@ func withRemediations() testenv.Option {
 	})
 }
 
-// scaleReport is a report whose Proposal scales the Workload.
+// scaleReport is a report whose Proposal scales the Target.
 func scaleReport(replicas int32) agentapi.Report {
 	return agentapi.Report{
-		Diagnosis: "The Workload is at its capacity, so it needs more replicas.",
+		Diagnosis: "The Target is at its capacity, so it needs more replicas.",
 		Findings:  []v1alpha1.Finding{logFinding},
 		Proposal: v1alpha1.ProposedAction{
 			Action:     v1alpha1.ActionScale,
@@ -51,12 +51,12 @@ func changedLines(patch string) (removed, added []string) {
 func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, withRemediations())
-	w := workload{name: checkout}
+	w := target{name: checkout}
 	deploy(t, env, w)
 	head := env.Sandbox.Head()
 	before := liveDeployment(t, env, checkout)
 
-	name, agent := startTriage(t, env, checkout)
+	name, agent := startPage(t, env, checkout)
 	result, err := agent.API.PostReport(t.Context(), scaleReport(3))
 	if err != nil || result.StatusCode != http.StatusOK || result.Report.Phase != v1alpha1.PhaseProposed {
 		t.Fatalf("report: %+v, %v, want 200 and phase Proposed", result, err)
@@ -78,7 +78,7 @@ func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *t
 	if err := gitApplyCheck(t, env, change.Patch); err != nil {
 		t.Errorf("the patch does not apply to the Sandbox: %v", err)
 	}
-	if p.Base == nil || p.Base.Commit != head || p.Base.WorkloadGeneration != before.Generation {
+	if p.Base == nil || p.Base.Commit != head || p.Base.TargetGeneration != before.Generation {
 		t.Errorf("base = %+v, want commit %s and generation %d", p.Base, head, before.Generation)
 	}
 	wantHash, err := proposal.Hash(proposed, p.ProposedAction, p.RenderedChange, p.Base)
@@ -89,7 +89,7 @@ func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *t
 	// Validation renders the change and dry-runs it. It changes nothing.
 	after := liveDeployment(t, env, checkout)
 	if after.Generation != before.Generation || *after.Spec.Replicas != 1 {
-		t.Errorf("the dry run changed the Workload: generation %d, replicas %d",
+		t.Errorf("the dry run changed the Target: generation %d, replicas %d",
 			after.Generation, *after.Spec.Replicas)
 	}
 	if env.Sandbox.Head() != head {
@@ -100,7 +100,7 @@ func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *t
 	approve(t, env, proposed)
 	tr := withPullRequest(t, env, proposed.Name)
 	prs := env.GitHub.PullRequests()
-	if len(prs) != 1 || prs[0].URL != tr.Status.Execution.PullRequestURL {
+	if len(prs) != 1 || prs[0].URL != tr.Status.PullRequest.URL {
 		t.Fatalf("pull requests = %+v, want exactly the recorded one", prs)
 	}
 	if got := env.Sandbox.Diff(p.Base.Commit, "refs/heads/"+prs[0].Head); got != change.Patch {
@@ -112,8 +112,8 @@ func TestScaleProposalRendersTheReplicaCountPatchAndDeliversItByPullRequest(t *t
 
 	// The existing Verification path takes over once the pull request merges.
 	commit := env.GitHub.CompleteChecks(t, prs[0].Number)
-	env.WaitFor(t, name, "the merge commit is recorded", func(tr *v1alpha1.Triage) bool {
-		return tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != ""
+	env.WaitFor(t, name, "the merge commit is recorded", func(tr *v1alpha1.Page) bool {
+		return tr.Status.PullRequest != nil && tr.Status.PullRequest.MergeCommit != ""
 	})
 	env.MarkDeploymentAvailable(t, sandboxNamespace, checkout)
 	env.ArgoCD.Sync(commit)
@@ -137,21 +137,21 @@ func TestScaleProposalsOutsideTheBoundsAreRefused(t *testing.T) {
 	cases := []struct {
 		name     string
 		replicas int32
-		workload workload
+		target   target
 	}{
 		{name: "below the minimum", replicas: 0},
 		{name: "above the maximum", replicas: 11},
 	}
 	for i := range cases {
-		cases[i].workload = workload{name: "scaled-" + strings.ReplaceAll(cases[i].name, " ", "-")}
-		deploy(t, env, cases[i].workload)
+		cases[i].target = target{name: "scaled-" + strings.ReplaceAll(cases[i].name, " ", "-")}
+		deploy(t, env, cases[i].target)
 	}
 	head := env.Sandbox.Head()
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			created := env.CreateTriage(t, testenv.NewTriage(tc.workload.name))
+			created := env.CreatePage(t, testenv.NewPage(tc.target.name))
 			agent := env.StartAgent(t, created.Name)
 			result, err := agent.API.PostReport(t.Context(), scaleReport(tc.replicas))
 			if err != nil {
@@ -184,11 +184,11 @@ func TestScaleProposalsOutsideTheBoundsAreRefused(t *testing.T) {
 	if got := env.Sandbox.Head(); got != head {
 		t.Errorf("a refused Scale moved the Sandbox head from %s to %s", head, got)
 	}
-	// Nothing changed the live Workload either.
+	// Nothing changed the live Target either.
 	for _, tc := range cases {
-		d := liveDeployment(t, env, tc.workload.name)
+		d := liveDeployment(t, env, tc.target.name)
 		if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 {
-			t.Errorf("Deployment %s has replicas %v, want 1", tc.workload.name, d.Spec.Replicas)
+			t.Errorf("Deployment %s has replicas %v, want 1", tc.target.name, d.Spec.Replicas)
 		}
 	}
 }

@@ -32,7 +32,7 @@ class Sleeps:
 def client(server: StandInServer, token_file: Path, sleeps: Sleeps | None = None) -> ServerClient:
     return ServerClient(
         "http://pagerless-server/",
-        server.triage,
+        server.page,
         token_file,
         http=httpx.AsyncClient(transport=server.transport()),
         sleep=sleeps or Sleeps(),
@@ -61,20 +61,20 @@ async def test_the_token_is_read_again_for_every_request_because_the_kubelet_rot
     assert len(server.events) == 2
 
 
-async def test_an_event_is_posted_to_the_triages_events_path(token_file: Path) -> None:
-    server = StandInServer(triage="triage-1")
+async def test_an_event_is_posted_to_the_pages_events_path(token_file: Path) -> None:
+    server = StandInServer(page="page-1")
     await client(server, token_file).post_event(
         StepEvent(kind="ToolCall", tool="pods_log", summary="pods_log {}")
     )
-    assert [r.url.path for r in server.requests] == ["/v1/triages/triage-1/events"]
+    assert [r.url.path for r in server.requests] == ["/v1/pages/page-1/events"]
     assert server.events == [{"kind": "ToolCall", "tool": "pods_log", "summary": "pods_log {}"}]
 
 
-async def test_a_triage_name_cannot_change_the_path(token_file: Path) -> None:
-    server = StandInServer(triage="a/../b")
+async def test_a_page_name_cannot_change_the_path(token_file: Path) -> None:
+    server = StandInServer(page="a/../b")
     api = client(server, token_file)
     await api.post_event(EVENT)
-    assert server.requests[0].url.raw_path == b"/v1/triages/a%2F..%2Fb/events"
+    assert server.requests[0].url.raw_path == b"/v1/pages/a%2F..%2Fb/events"
 
 
 class TestEvents:
@@ -85,7 +85,7 @@ class TestEvents:
             await client(server, token_file).post_event(EVENT)
         assert refused.value.status == 401
 
-    async def test_a_triage_that_is_no_longer_investigating_refuses_the_agent(self, token_file: Path) -> None:
+    async def test_a_page_that_is_no_longer_investigating_refuses_the_agent(self, token_file: Path) -> None:
         server = StandInServer()
         server.investigating = False
         with pytest.raises(ServerRefusedError) as refused:
@@ -143,7 +143,7 @@ class TestReport:
             ("findings[0].source", "cite it"),
         ]
 
-    async def test_a_report_for_a_triage_that_has_moved_on_is_a_refusal_of_the_agent(
+    async def test_a_report_for_a_page_that_has_moved_on_is_a_refusal_of_the_agent(
         self, token_file: Path
     ) -> None:
         server = StandInServer()

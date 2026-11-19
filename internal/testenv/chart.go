@@ -22,10 +22,9 @@ var (
 )
 
 type renderedChart struct {
-	// objects is the file that holds the chart's non-webhook objects.
+	// objects is the file that holds the chart's objects, other than the CRDs,
+	// which envtest installs from charts/pagerless/crds.
 	objects string
-	// webhooks is the file that holds the webhook configurations, which envtest rewrites to its own server.
-	webhooks string
 }
 
 // chart returns the rendered chart for the repository rooted at root.
@@ -38,8 +37,7 @@ func chart(t testing.TB, root string) renderedChart {
 	return chartFiles
 }
 
-// renderChart runs helm template and splits its output into the objects the
-// harness applies and the webhook configurations envtest installs.
+// renderChart runs helm template and keeps the objects the harness applies.
 func renderChart(root string) (renderedChart, error) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		return renderedChart{}, fmt.Errorf("helm is required by the envtest harness: %w", err)
@@ -47,13 +45,12 @@ func renderChart(root string) (renderedChart, error) {
 	var stdout, stderr bytes.Buffer
 	command := exec.Command("helm", "template", "pagerless", filepath.Join(root, "charts", "pagerless"),
 		"--namespace", Namespace,
-		"--set", "workloadNamespaces={"+SandboxNamespace+"}",
-		"--set", "persistence.enabled=false")
+		"--set", "credentials.secretName=pagerless-credentials")
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
 		return renderedChart{}, fmt.Errorf("helm template: %w: %s", err, stderr.String())
 	}
-	objects, webhooks, err := splitChart(stdout.String())
+	objects, err := renderedObjects(stdout.String())
 	if err != nil {
 		return renderedChart{}, err
 	}
@@ -61,40 +58,31 @@ func renderChart(root string) (renderedChart, error) {
 	if err != nil {
 		return renderedChart{}, fmt.Errorf("create the rendered chart directory: %w", err)
 	}
-	files := renderedChart{
-		objects:  filepath.Join(dir, "objects.yaml"),
-		webhooks: filepath.Join(dir, "webhooks.yaml"),
-	}
+	files := renderedChart{objects: filepath.Join(dir, "objects.yaml")}
 	if err := os.WriteFile(files.objects, []byte(objects), 0o600); err != nil {
 		return renderedChart{}, fmt.Errorf("write the rendered objects: %w", err)
-	}
-	if err := os.WriteFile(files.webhooks, []byte(webhooks), 0o600); err != nil {
-		return renderedChart{}, fmt.Errorf("write the rendered webhooks: %w", err)
 	}
 	return files, nil
 }
 
-// splitChart separates the documents that the API server applies from the
-// webhook configurations that envtest rewrites and from the CRDs, which the
-// harness installs from charts/pagerless/crds.
-func splitChart(rendered string) (objects, webhooks string, err error) {
-	var objectDocs, webhookDocs []string
+// renderedObjects keeps the documents that the API server applies, dropping the
+// CRDs, which the harness installs from charts/pagerless/crds.
+func renderedObjects(rendered string) (string, error) {
+	var objectDocs []string
 	for document := range strings.SplitSeq(rendered, "\n---") {
 		switch {
 		case strings.TrimSpace(document) == "":
 			continue
 		case documentKind(document) == "CustomResourceDefinition":
 			continue
-		case isWebhook(documentKind(document)):
-			webhookDocs = append(webhookDocs, document)
 		default:
 			objectDocs = append(objectDocs, document)
 		}
 	}
-	if len(webhookDocs) == 0 {
-		return "", "", fmt.Errorf("the chart rendered no webhook configuration")
+	if len(objectDocs) == 0 {
+		return "", fmt.Errorf("the chart rendered no objects")
 	}
-	return strings.Join(objectDocs, "\n---\n"), strings.Join(webhookDocs, "\n---\n"), nil
+	return strings.Join(objectDocs, "\n---\n"), nil
 }
 
 // documentKind returns the kind of one YAML document, or an empty string.
@@ -107,12 +95,8 @@ func documentKind(document string) string {
 	return ""
 }
 
-func isWebhook(kind string) bool {
-	return kind == "MutatingWebhookConfiguration" || kind == "ValidatingWebhookConfiguration"
-}
-
-// ChartObjects returns the file that holds the chart's rendered, non-webhook
-// objects, for a test that asserts what the chart installs.
+// ChartObjects returns the file that holds the chart's rendered objects, for a
+// test that asserts what the chart installs.
 func ChartObjects(t testing.TB) string {
 	t.Helper()
 	return chart(t, repoRoot(t)).objects

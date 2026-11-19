@@ -6,18 +6,10 @@ metadata:
   labels:
     {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
 spec:
+  type: {{ .Values.service.type }}
   selector:
     app.kubernetes.io/name: pagerless-server
   ports:
-    - name: report
-      port: 8080
-      targetPort: report
-    - name: webhook
-      port: 443
-      targetPort: webhook
-    - name: metrics
-      port: 9090
-      targetPort: metrics
-    - name: dashboard
-      port: 8082
-      targetPort: dashboard
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http

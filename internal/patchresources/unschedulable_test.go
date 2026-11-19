@@ -27,7 +27,7 @@ const (
 	unschedulableMemory       = "256Gi"
 )
 
-func unschedulableLiveWorkload(requests corev1.ResourceList) *change.LiveWorkload {
+func unschedulableLiveTarget(requests corev1.ResourceList) *change.LiveTarget {
 	deployment := &appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
 			Template: corev1.PodTemplateSpec{
@@ -42,7 +42,7 @@ func unschedulableLiveWorkload(requests corev1.ResourceList) *change.LiveWorkloa
 			},
 		},
 	}
-	return &change.LiveWorkload{Object: deployment, PodSpec: &deployment.Spec.Template.Spec}
+	return &change.LiveTarget{Object: deployment, PodSpec: &deployment.Spec.Template.Spec}
 }
 
 type localRepo struct {
@@ -118,8 +118,8 @@ func TestCheckUnschedulableTreatsKnownGoodTagAsOptional(t *testing.T) {
 		},
 	}
 	reader := fake.NewClientBuilder().WithObjects(node).Build()
-	liveUnschedulable := func() *change.LiveWorkload {
-		return unschedulableLiveWorkload(list(cpuResource, defaultCPURequest, memoryResource, unschedulableMemory))
+	liveUnschedulable := func() *change.LiveTarget {
+		return unschedulableLiveTarget(list(cpuResource, defaultCPURequest, memoryResource, unschedulableMemory))
 	}
 
 	t.Run("without a known-good tag, node allocatable bounds still apply", func(t *testing.T) {
@@ -203,7 +203,7 @@ func TestCheckUnschedulableTreatsKnownGoodTagAsOptional(t *testing.T) {
 		repo := newLocalRepo(t)
 		repo.commit(unschedulableManifestPath, header+appContainer, "Add checkout")
 		r := &renderer{reader: reader, sandbox: repo.repository()}
-		live := unschedulableLiveWorkload(list("nvidia.com/gpu", "1"))
+		live := unschedulableLiveTarget(list("nvidia.com/gpu", "1"))
 
 		errs, err := r.checkUnschedulable(
 			t.Context(), live, checkout, unschedulableManifestPath, appName,

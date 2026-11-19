@@ -11,14 +11,14 @@ import (
 	"github.com/a-hagi613/pagerless/internal/testenv"
 )
 
-// retentionPollBound is longer than the harness's retention poll interval, so a test that asserts a Triage still
+// retentionPollBound is longer than the harness's retention poll interval, so a test that asserts a Page still
 // exists has given the controller several chances to delete it.
 const retentionPollBound = 500 * time.Millisecond
 
-func TestRetentionDeletesATerminalTriageAfterSevenDays(t *testing.T) {
+func TestRetentionDeletesATerminalPageAfterSevenDays(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t, testenv.WithRetentionPollInterval(100*time.Millisecond))
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 	result, err := agent.API.PostReport(t.Context(), withUsage(noActionReport(), reportUsage))
 	if err != nil || result.StatusCode != http.StatusOK {
@@ -46,10 +46,10 @@ func TestRetentionDeletesATerminalTriageAfterSevenDays(t *testing.T) {
 	t.Run("six days and twenty-three hours is not seven days", func(t *testing.T) {
 		env.Clock.Step(6*24*time.Hour + 23*time.Hour)
 		time.Sleep(retentionPollBound)
-		var live v1alpha1.Triage
+		var live v1alpha1.Page
 		key := types.NamespacedName{Namespace: testenv.Namespace, Name: created.Name}
 		if err := env.Client.Get(t.Context(), key, &live); err != nil {
-			t.Fatalf("the Triage was deleted before seven days: %v", err)
+			t.Fatalf("the Page was deleted before seven days: %v", err)
 		}
 	})
 
@@ -69,19 +69,19 @@ func TestRetentionDeletesATerminalTriageAfterSevenDays(t *testing.T) {
 	})
 }
 
-func TestRetentionKeepsAnActiveTriage(t *testing.T) {
+func TestRetentionKeepsAnActivePage(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	env.WaitForPhase(t, created.Name, v1alpha1.PhaseInvestigating)
 
 	env.Clock.Step(8 * 24 * time.Hour)
 	time.Sleep(retentionPollBound)
 
-	var live v1alpha1.Triage
+	var live v1alpha1.Page
 	key := types.NamespacedName{Namespace: testenv.Namespace, Name: created.Name}
 	if err := env.Client.Get(t.Context(), key, &live); err != nil {
-		t.Fatalf("an Active Triage was deleted: %v", err)
+		t.Fatalf("an Active Page was deleted: %v", err)
 	}
 	if live.Status.Phase != v1alpha1.PhaseInvestigating {
 		t.Errorf("phase = %s, want Investigating", live.Status.Phase)

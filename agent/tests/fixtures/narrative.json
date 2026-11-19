@@ -8,7 +8,7 @@
     {
       "stage": "narrative",
       "response": {
-        "text": "The checkout Workload became unavailable because its memory-holder sidecar was OOMKilled on every start: its command allocated 48 MiB against a 32 MiB memory limit, and the sidecar had been added by a committed manifest change that Argo CD had synced just before the failing pod was created, with no active chaos experiment involved. The proposed remediation was a rollback that reverted the most recent change to the checkout manifest, raising the memory limit and request, and it was approved and merged through a pull request. Verification then passed on every check: Argo CD reported the application Synced and Healthy, the rollout had its replica updated and available, the alert resolved in Alertmanager, and no containers restarted afterward, so the Triage ended in Recovered.",
+        "text": "The checkout Workload became unavailable because its memory-holder sidecar was OOMKilled on every start: its command allocated 48 MiB against a 32 MiB memory limit, and the sidecar had been added by a committed manifest change that Argo CD had synced just before the failing pod was created, with no active chaos experiment involved. The proposed remediation was a rollback that reverted the most recent change to the checkout manifest, raising the memory limit and request, and it was approved and merged through a pull request. Verification then passed on every check: Argo CD reported the application Synced and Healthy, the rollout had its replica updated and available, the alert resolved in Alertmanager, and no containers restarted afterward, so the Page ended in Recovered.",
         "tool_calls": [],
         "structured": null,
         "usage": {

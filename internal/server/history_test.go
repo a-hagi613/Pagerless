@@ -16,12 +16,12 @@ import (
 // podsLogTool is the read-only Kubernetes MCP tool that the tests report as a tool call.
 const podsLogTool = "kubernetes.pods_log"
 
-// recovered drives one Triage from creation to Recovered. Its report carries the usage that the metrics tests
-// assert, and its Proposal patches the checkout Workload's memory limit.
+// recovered drives one Page from creation to Recovered. Its report carries the usage that the metrics tests
+// assert, and its Proposal patches the checkout Target's memory limit.
 func recovered(t *testing.T, env *testenv.Env) string {
 	t.Helper()
-	deploy(t, env, workload{name: checkout})
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	deploy(t, env, target{name: checkout})
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 	result, err := agent.API.PostReport(t.Context(), withUsage(
 		patchReport("app", nil, quantities("memory", "512Mi")), reportUsage,
@@ -33,8 +33,8 @@ func recovered(t *testing.T, env *testenv.Env) string {
 	approve(t, env, proposed)
 	withPullRequest(t, env, created.Name)
 	commit := env.GitHub.CompleteChecks(t, 1)
-	tr := env.WaitFor(t, created.Name, "the merge commit is recorded", func(tr *v1alpha1.Triage) bool {
-		return tr.Status.Execution != nil && tr.Status.Execution.MergeCommit != ""
+	tr := env.WaitFor(t, created.Name, "the merge commit is recorded", func(tr *v1alpha1.Page) bool {
+		return tr.Status.PullRequest != nil && tr.Status.PullRequest.MergeCommit != ""
 	})
 	verifying(t, env, tr, commit)
 	env.Clock.Step(5 * time.Minute)
@@ -66,14 +66,14 @@ func TestHistoryRecordsEveryPhaseChange(t *testing.T) {
 		if snapshot.Status.Phase != snapshot.Phase {
 			t.Errorf("snapshot phase = %s, status phase = %s", snapshot.Phase, snapshot.Status.Phase)
 		}
-		if snapshot.Triage != name || snapshot.Namespace != testenv.Namespace {
+		if snapshot.Page != name || snapshot.Namespace != testenv.Namespace {
 			t.Errorf("snapshot names %s/%s, want %s/%s",
-				snapshot.Namespace, snapshot.Triage, testenv.Namespace, name)
+				snapshot.Namespace, snapshot.Page, testenv.Namespace, name)
 		}
 	}
 	want := []v1alpha1.Phase{
 		v1alpha1.PhasePending, v1alpha1.PhaseInvestigating, v1alpha1.PhaseProposed,
-		v1alpha1.PhaseApproved, v1alpha1.PhaseExecuting, v1alpha1.PhaseVerifying,
+		v1alpha1.PhaseApproved, v1alpha1.PhasePullRequestOpen, v1alpha1.PhaseVerifying,
 		v1alpha1.PhaseRecovered,
 	}
 	if !slices.Equal(phases, want) {
@@ -103,7 +103,7 @@ func TestHistoryRecordsEveryPhaseChange(t *testing.T) {
 func TestHistoryAppendsEveryStepEvent(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 
 	finding := logFinding
@@ -157,7 +157,7 @@ func TestHistoryAppendsEveryStepEvent(t *testing.T) {
 func TestHistoryCannotBeRewritten(t *testing.T) {
 	t.Parallel()
 	env := testenv.Start(t)
-	created := env.CreateTriage(t, testenv.NewTriage(checkout))
+	created := env.CreatePage(t, testenv.NewPage(checkout))
 	agent := env.StartAgent(t, created.Name)
 	if result, err := agent.API.PostEvent(t.Context(), agentapi.StepEvent{
 		Kind: v1alpha1.StepKindProgress, Summary: "progress",
@@ -171,10 +171,10 @@ func TestHistoryCannotBeRewritten(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	for _, statement := range []string{
-		"UPDATE triage_snapshots SET phase = 'Recovered'",
-		"DELETE FROM triage_snapshots",
-		"UPDATE triage_steps SET summary = 'rewritten'",
-		"DELETE FROM triage_steps",
+		"UPDATE page_snapshots SET phase = 'Recovered'",
+		"DELETE FROM page_snapshots",
+		"UPDATE page_steps SET summary = 'rewritten'",
+		"DELETE FROM page_steps",
 	} {
 		if _, err := db.ExecContext(t.Context(), statement); err == nil ||
 			!strings.Contains(err.Error(), "append-only") {

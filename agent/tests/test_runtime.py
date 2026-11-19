@@ -109,12 +109,12 @@ async def test_replay_runs_real_tools_and_reports_the_result_without_creating_a_
     ).save(recording)
     env = {
         **RUNTIME_ENV,
-        "PAGERLESS_TRIAGE": "triage-1",
+        "PAGERLESS_PAGE": "page-1",
         "PAGERLESS_TOKEN_FILE": str(token),
         "PAGERLESS_REPLAY_FILE": str(recording),
         "PAGERLESS_TRIGGERING_POD": "checkout-new",
     }
-    report_server = StandInServer(token="report-token", triage="triage-1")
+    report_server = StandInServer(token="report-token", page="page-1")
     http = httpx.AsyncClient(transport=report_server.transport())
     outcome = await run(
         RuntimeSettings.from_env(env), client_factory=lambda _: Client(server), server_http=http
@@ -146,12 +146,12 @@ async def test_only_a_completed_live_investigation_replaces_the_recording(
     )
     env = {
         **RUNTIME_ENV,
-        "PAGERLESS_TRIAGE": "triage-1",
+        "PAGERLESS_PAGE": "page-1",
         "PAGERLESS_TOKEN_FILE": str(token),
         "PAGERLESS_MODEL_PROVIDER": "anthropic",
         "PAGERLESS_RECORDING_FILE": str(destination),
     }
-    report_server = StandInServer(token="report-token", triage="triage-1")
+    report_server = StandInServer(token="report-token", page="page-1")
     report_server.investigating = accepted
     outcome = await run(
         RuntimeSettings.from_env(env),

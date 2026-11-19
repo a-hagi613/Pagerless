@@ -1,5 +1,5 @@
 // Package rollback performs Validation for the Rollback Action: it decides
-// whether the requested commit is one that the Workload may revert, renders the
+// whether the requested commit is one that the Target may revert, renders the
 // revert as an exact git patch against the current Sandbox commit, and decides
 // when a rendered Proposal has become a Stale Proposal (ADR-0002, ADR-0008,
 // ADR-0021).
@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	// Window is the number of commits that a Workload may roll back: the last 20
+	// Window is the number of commits that a Target may roll back: the last 20
 	// commits touching its own path or a path it declares it depends on.
 	Window = 20
 	// maxPatchBytes is the largest patch that a Proposal can store.
@@ -38,20 +38,20 @@ const (
 )
 
 const (
-	fieldPrefix   = "proposal.parameters.rollback"
-	fieldCommit   = fieldPrefix + ".commit"
-	fieldWorkload = "workload"
+	fieldPrefix = "proposal.parameters.rollback"
+	fieldCommit = fieldPrefix + ".commit"
+	fieldTarget = "target"
 )
 
-var errNoLiveWorkload = errors.New("the Workload does not exist")
+var errNoLiveTarget = errors.New("the Target does not exist")
 
 // Config configures the Rollback validator.
 type Config struct {
-	// Reader reads Workloads directly from the API server, not from a cache.
+	// Reader reads Targets directly from the API server, not from a cache.
 	Reader client.Reader
-	// Sandbox is the repository that holds the Workloads' manifests.
+	// Sandbox is the repository that holds the Targets' manifests.
 	Sandbox sandbox.Repository
-	// AllowedNamespaces are the namespaces whose Workloads may be rolled back. None are allowed when it is empty.
+	// AllowedNamespaces are the namespaces whose Targets may be rolled back. None are allowed when it is empty.
 	AllowedNamespaces []string
 }
 
@@ -66,7 +66,7 @@ func New(cfg Config) *Validator { return &Validator{cfg: cfg} }
 var _ proposal.ActionValidator = (*Validator)(nil)
 var _ proposal.StalenessChecker = (*Validator)(nil)
 
-// commitParameter is the shape that the Triage schema admits for a commit.
+// commitParameter is the shape that the Page schema admits for a commit.
 var commitParameter = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
 
 // Validate checks the Proposal and, when it passes, renders the revert of the
@@ -78,13 +78,13 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 	} else {
 		return refuse(fieldPrefix, "rollback parameters are required"), nil
 	}
-	workload := req.Triage.Spec.Workload
+	target := req.Page.Spec.Target
 
 	var errs []agentapi.ValidationError
-	if !slices.Contains(v.cfg.AllowedNamespaces, workload.Namespace) {
+	if !slices.Contains(v.cfg.AllowedNamespaces, target.Namespace) {
 		errs = append(errs, agentapi.ValidationError{
-			Field:   "workload.namespace",
-			Message: fmt.Sprintf("namespace %s is not in the allowlist for Rollback", workload.Namespace),
+			Field:   "target.namespace",
+			Message: fmt.Sprintf("namespace %s is not in the allowlist for Rollback", target.Namespace),
 		})
 	}
 	if !commitParameter.MatchString(params.Commit) {
@@ -97,10 +97,10 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 		return proposal.Outcome{Errors: errs}, nil
 	}
 
-	live, err := v.workload(ctx, workload)
-	if errors.Is(err, errNoLiveWorkload) {
-		return refuse(fieldWorkload,
-			fmt.Sprintf("%s %s/%s does not exist", workload.Kind, workload.Namespace, workload.Name)), nil
+	live, err := v.target(ctx, target)
+	if errors.Is(err, errNoLiveTarget) {
+		return refuse(fieldTarget,
+			fmt.Sprintf("%s %s/%s does not exist", target.Kind, target.Namespace, target.Name)), nil
 	}
 	if err != nil {
 		return proposal.Outcome{}, err
@@ -157,8 +157,8 @@ func (v *Validator) Validate(ctx context.Context, req proposal.Request) (proposa
 	return proposal.Outcome{
 		Change: &v1alpha1.RenderedChange{Path: revert.Path, Patch: revert.Patch},
 		Base: &v1alpha1.ProposalBase{
-			Commit:             history.Commit,
-			WorkloadGeneration: live.object.GetGeneration(),
+			Commit:           history.Commit,
+			TargetGeneration: live.object.GetGeneration(),
 		},
 	}, nil
 }
@@ -167,22 +167,22 @@ func refuse(field, message string) proposal.Outcome {
 	return proposal.Outcome{Errors: refuseErrors(field, message)}
 }
 
-// allowedPaths returns the Workload's own Sandbox path followed by the
+// allowedPaths returns the Target's own Sandbox path followed by the
 // dependency paths it declares, with the Validation errors that make them
 // unusable.
 func allowedPaths(annotations map[string]string) ([]string, []agentapi.ValidationError) {
 	sourcePath := annotations[v1alpha1.AnnotationSourcePath]
 	if sourcePath == "" {
-		return nil, refuseErrors(fieldWorkload, fmt.Sprintf(
-			"the Workload has no %s annotation, so its manifest cannot be located", v1alpha1.AnnotationSourcePath))
+		return nil, refuseErrors(fieldTarget, fmt.Sprintf(
+			"the Target has no %s annotation, so its manifest cannot be located", v1alpha1.AnnotationSourcePath))
 	}
 	if err := sandbox.CheckPath(sourcePath); err != nil {
-		return nil, refuseErrors(fieldWorkload, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err))
+		return nil, refuseErrors(fieldTarget, fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationSourcePath, err))
 	}
 	paths := []string{sourcePath}
 	for _, p := range v1alpha1.DependsOnPaths(annotations) {
 		if err := sandbox.CheckPath(p); err != nil {
-			return nil, refuseErrors(fieldWorkload,
+			return nil, refuseErrors(fieldTarget,
 				fmt.Sprintf("annotation %s: %v", v1alpha1.AnnotationDependsOnPaths, err))
 		}
 		paths = append(paths, p)
@@ -194,25 +194,25 @@ func refuseErrors(field, message string) []agentapi.ValidationError {
 	return []agentapi.ValidationError{{Field: field, Message: message}}
 }
 
-// liveWorkload is a Deployment or StatefulSet read from the cluster.
-type liveWorkload struct {
+// liveTarget is a Deployment or StatefulSet read from the cluster.
+type liveTarget struct {
 	object client.Object
 }
 
-func (v *Validator) workload(ctx context.Context, ref v1alpha1.WorkloadReference) (*liveWorkload, error) {
+func (v *Validator) target(ctx context.Context, ref v1alpha1.TargetReference) (*liveTarget, error) {
 	key := client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}
-	var live liveWorkload
+	var live liveTarget
 	switch ref.Kind {
-	case v1alpha1.WorkloadKindDeployment:
-		live = liveWorkload{object: &appsv1.Deployment{}}
-	case v1alpha1.WorkloadKindStatefulSet:
-		live = liveWorkload{object: &appsv1.StatefulSet{}}
+	case v1alpha1.TargetKindDeployment:
+		live = liveTarget{object: &appsv1.Deployment{}}
+	case v1alpha1.TargetKindStatefulSet:
+		live = liveTarget{object: &appsv1.StatefulSet{}}
 	default:
-		return nil, fmt.Errorf("unsupported Workload kind %q", ref.Kind)
+		return nil, fmt.Errorf("unsupported Target kind %q", ref.Kind)
 	}
 	if err := v.cfg.Reader.Get(ctx, key, live.object); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, errNoLiveWorkload
+			return nil, errNoLiveTarget
 		}
 		return nil, fmt.Errorf("read %s %s: %w", ref.Kind, key, err)
 	}
@@ -223,7 +223,7 @@ func (v *Validator) workload(ctx context.Context, ref v1alpha1.WorkloadReference
 // when it still does. A Rollback Proposal holds while the Sandbox's tip is the
 // commit it was rendered against, or while re-rendering the same revert against
 // the new tip gives the same patch.
-func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, error) {
+func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Page) (string, error) {
 	p := t.Status.Proposal
 	if p == nil || p.Base == nil || p.RenderedChange == nil ||
 		p.Parameters == nil || p.Parameters.Rollback == nil {
@@ -236,9 +236,9 @@ func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, erro
 	if head == p.Base.Commit {
 		return "", nil
 	}
-	live, err := v.workload(ctx, t.Spec.Workload)
-	if errors.Is(err, errNoLiveWorkload) {
-		return v1alpha1.ReasonWorkloadDeleted, nil
+	live, err := v.target(ctx, t.Spec.Target)
+	if errors.Is(err, errNoLiveTarget) {
+		return v1alpha1.ReasonTargetDeleted, nil
 	}
 	if err != nil {
 		return "", err
@@ -248,7 +248,7 @@ func (v *Validator) Stale(ctx context.Context, t *v1alpha1.Triage) (string, erro
 		return v1alpha1.ReasonSourcePathChanged, nil
 	}
 	// The Proposal holds only while the file it reverts is still one of the paths
-	// the Workload declares, because otherwise the window itself has changed.
+	// the Target declares, because otherwise the window itself has changed.
 	if !slices.Contains(paths, p.RenderedChange.Path) {
 		return v1alpha1.ReasonSourcePathChanged, nil
 	}
@@ -283,12 +283,12 @@ func (v *Validator) revalidated(
 	switch {
 	case errors.Is(err, sandbox.ErrRevertConflict), errors.Is(err, sandbox.ErrRevertNotOneFile),
 		errors.Is(err, sandbox.ErrAlreadyReverted):
-		return v1alpha1.ReasonSandboxFileChanged, nil
+		return v1alpha1.ReasonTargetRepositoryFileChanged, nil
 	case err != nil:
 		return "", err
 	}
 	if revert.Path != p.RenderedChange.Path || revert.Patch != p.RenderedChange.Patch {
-		return v1alpha1.ReasonSandboxFileChanged, nil
+		return v1alpha1.ReasonTargetRepositoryFileChanged, nil
 	}
 	return "", nil
 }

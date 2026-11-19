@@ -13,8 +13,8 @@ The graph is fixed (spec #1, ADR-0001):
    `revise` asks for one revised Proposal. A second refusal ends the run.
 
 A budget that runs out, a server that refuses the agent, or a failure ends the run with
-no report. The Findings that the agent already posted as step events stay with the Triage,
-and pagerless-server then ends the Triage as Failed.
+no report. The Findings that the agent already posted as step events stay with the Page,
+and pagerless-server then ends the Page as Failed.
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ class Outcome:
 
     @property
     def exit_code(self) -> int:
-        """The process exit code. A Job that exits non-zero without a report ends the Triage as Failed."""
+        """The process exit code. A Job that exits non-zero without a report ends the Page as Failed."""
         return {"reported": 0, "failed": 1, "budget_exhausted": 2, "proposal_refused": 3, "rejected": 4}[
             self.kind
         ]
@@ -277,7 +277,7 @@ class Agent:
         answer = await self._server.post_report(report)
         if answer.accepted:
             return {"outcome": Outcome("reported", "The report was accepted.", phase=answer.phase)}
-        # The server also records the refusal on the Triage; the Job log keeps it
+        # The server also records the refusal on the Page; the Job log keeps it
         # beside the model calls that produced it for failure diagnostics.
         reasons = "; ".join(f"{error.field}: {error.message}" for error in answer.errors)
         log.warning("the server refused Proposal attempt %d: %s", state["attempt"], reasons)

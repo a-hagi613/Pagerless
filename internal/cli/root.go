@@ -1,5 +1,5 @@
-// Package cli implements kubectl-triage, the kubectl plugin for Triages.
-// Commands read and write Triage resources through the Kubernetes API in the
+// Package cli implements kubectl-page, the kubectl plugin for Pages.
+// Commands read and write Page resources through the Kubernetes API in the
 // pagerless namespace, whatever namespace the user works in. They never call
 // pagerless-server directly.
 package cli
@@ -16,25 +16,25 @@ import (
 	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// TriageNamespace is the namespace that holds every Triage.
-const TriageNamespace = "pagerless"
+// PageNamespace is the namespace that holds every Page.
+const PageNamespace = "pagerless"
 
-// NewRootCommand returns the kubectl-triage command. Its own action starts a
-// Triage for the target that its argument names. The subcommands list and show
-// Triages, and approve and reject their Proposals.
+// NewRootCommand returns the kubectl-page command. Its own action starts a
+// Page for the target that its argument names. The subcommands list and show
+// Pages, and approve or dismiss their Proposals.
 func NewRootCommand() *cobra.Command {
 	conn := &connection{}
 	start := &startOptions{conn: conn}
 	root := &cobra.Command{
-		Use:   "kubectl triage <pod/name | deploy/name | sts/name>",
-		Short: "Start, list, and show Triages for failing Workloads",
-		Long: `Start a Triage for the Workload that owns a failing pod or that is named
-directly, list Triages, show a Triage's Diagnosis, Proposal, and outcome, and
-approve or reject its Proposal.
+		Use:   "kubectl page <pod/name | deploy/name | sts/name>",
+		Short: "Start, list, and show Pages for failing Targets",
+		Long: `Start a Page for the Target that owns a failing pod or that is named
+directly, list Pages, show a Page's Diagnosis, Proposal, and outcome, and
+approve or dismiss its Proposal.
 
-A pod is resolved to its owning Deployment or StatefulSet. A Triage targets the
-Workload in the namespace given by --namespace, or in the namespace of the
-current context. Triages are stored in the pagerless namespace.`,
+A pod is resolved to its owning Deployment or StatefulSet. A Page targets the
+Target in the namespace given by --namespace, or in the namespace of the
+current context. Pages are stored in the pagerless namespace.`,
 		Args:         cobra.ExactArgs(1),
 		RunE:         start.run,
 		SilenceUsage: true,
@@ -45,12 +45,18 @@ current context. Triages are stored in the pagerless namespace.`,
 		"path to the kubeconfig file (default: $KUBECONFIG, then ~/.kube/config)")
 	root.PersistentFlags().StringVar(&conn.context, "context", "", "kubeconfig context to use")
 	root.PersistentFlags().StringVarP(&conn.namespace, "namespace", "n", "",
-		"namespace of the Workload (default: the namespace of the current context)")
-	root.AddCommand(newListCommand(conn), newShowCommand(conn), newApproveCommand(conn), newRejectCommand(conn))
+		"namespace of the Target (default: the namespace of the current context)")
+	root.AddCommand(
+		newListCommand(conn),
+		newShowCommand(conn),
+		newApproveCommand(conn),
+		newDismissCommand(conn),
+		newVersionCommand(),
+	)
 	return root
 }
 
-// connection holds the flags that select the cluster and the Workload namespace.
+// connection holds the flags that select the cluster and the Target namespace.
 type connection struct {
 	kubeconfig string
 	context    string
@@ -60,7 +66,7 @@ type connection struct {
 // cluster is a client for the cluster that the kubeconfig selects.
 type cluster struct {
 	client client.WithWatch
-	// namespace is the namespace of the Workloads that the user works in.
+	// namespace is the namespace of the Targets that the user works in.
 	namespace string
 }
 

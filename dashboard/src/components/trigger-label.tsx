@@ -1,7 +1,7 @@
 import { Badge } from "./ui/badge";
 import type { Trigger } from "@/lib/api";
 
-// TriggerLabel names what started the Triage, with the pod or alert that carried it.
+// TriggerLabel names what started the Page, with the pod or alert that carried it.
 export function TriggerLabel({ trigger }: { trigger: Trigger }) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-1.5">

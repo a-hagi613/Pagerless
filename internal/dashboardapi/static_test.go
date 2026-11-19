@@ -20,7 +20,7 @@ func builtAssets() fs.FS {
 func TestSPAServesTheShellAndClientRoutes(t *testing.T) {
 	t.Parallel()
 	handler := NewSPA(builtAssets())
-	for _, target := range []string{"/", "/triages/checkout-abc"} {
+	for _, target := range []string{"/", "/pages/checkout-abc"} {
 		request := httptest.NewRequest(http.MethodGet, target, nil)
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)

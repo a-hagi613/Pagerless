@@ -26,20 +26,20 @@ const (
 var (
 	// ErrUnauthenticated means the caller presented no valid token for this server.
 	ErrUnauthenticated = errors.New("unauthenticated")
-	// ErrForbidden means the caller is authenticated but is not the Triage's Job.
+	// ErrForbidden means the caller is authenticated but is not the Page's Job.
 	ErrForbidden = errors.New("forbidden")
 )
 
 // Authenticator verifies that a request comes from the agent Job of one
-// particular Triage. It checks the projected service account token with a
+// particular Page. It checks the projected service account token with a
 // TokenReview, then follows the pod the token is bound to up to its Job and
-// the Job up to the Triage.
+// the Job up to the Page.
 type Authenticator struct {
 	// Client creates TokenReviews.
 	Client client.Client
 	// Reader reads Pods and Jobs directly from the API server.
 	Reader client.Reader
-	// Namespace is the namespace that holds Triages, agent Jobs, and the agent service account.
+	// Namespace is the namespace that holds Pages, agent Jobs, and the agent service account.
 	Namespace string
 	// ServiceAccount is the name of the agent service account.
 	ServiceAccount string
@@ -90,27 +90,27 @@ func first(values authenticationv1.ExtraValue) string {
 }
 
 // Authorize verifies that the caller's pod belongs to the Job that this
-// Triage started: the pod is controlled by the Job recorded in the Triage's
-// status, and that Job is controlled by the Triage.
-func (a *Authenticator) Authorize(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
-	if t.Status.JobName == "" {
-		return fmt.Errorf("%w: the Triage has no agent Job", ErrForbidden)
+// Page started: the pod is controlled by the Job recorded in the Page's
+// status, and that Job is controlled by the Page.
+func (a *Authenticator) Authorize(ctx context.Context, caller *Caller, t *v1alpha1.Page) error {
+	if t.Status.AgentJobName == "" {
+		return fmt.Errorf("%w: the Page has no agent Job", ErrForbidden)
 	}
-	return a.authorizeJob(ctx, caller, t, t.Status.JobName)
+	return a.authorizeJob(ctx, caller, t, t.Status.AgentJobName)
 }
 
 // AuthorizeNarrative verifies that the caller's pod belongs to the Narrative Job
-// that this Triage started.
-func (a *Authenticator) AuthorizeNarrative(ctx context.Context, caller *Caller, t *v1alpha1.Triage) error {
+// that this Page started.
+func (a *Authenticator) AuthorizeNarrative(ctx context.Context, caller *Caller, t *v1alpha1.Page) error {
 	if t.Status.NarrativeJobName == "" {
-		return fmt.Errorf("%w: the Triage has no Narrative Job", ErrForbidden)
+		return fmt.Errorf("%w: the Page has no Narrative Job", ErrForbidden)
 	}
 	return a.authorizeJob(ctx, caller, t, t.Status.NarrativeJobName)
 }
 
 // authorizeJob verifies that the caller's pod is controlled by the named Job and
-// that the Job is controlled by the Triage.
-func (a *Authenticator) authorizeJob(ctx context.Context, caller *Caller, t *v1alpha1.Triage, jobName string) error {
+// that the Job is controlled by the Page.
+func (a *Authenticator) authorizeJob(ctx context.Context, caller *Caller, t *v1alpha1.Page, jobName string) error {
 	var pod corev1.Pod
 	if err := a.Reader.Get(ctx, client.ObjectKey{Namespace: a.Namespace, Name: caller.podName}, &pod); err != nil {
 		return fmt.Errorf("%w: pod %s not found", ErrForbidden, caller.podName)
@@ -120,10 +120,10 @@ func (a *Authenticator) authorizeJob(ctx context.Context, caller *Caller, t *v1a
 	}
 	var job batchv1.Job
 	if err := a.Reader.Get(ctx, client.ObjectKey{Namespace: t.Namespace, Name: jobName}, &job); err != nil {
-		return fmt.Errorf("%w: the Triage's Job was not found", ErrForbidden)
+		return fmt.Errorf("%w: the Page's Job was not found", ErrForbidden)
 	}
 	if !metav1.IsControlledBy(&job, t) || !metav1.IsControlledBy(&pod, &job) {
-		return fmt.Errorf("%w: the caller is not the Job of Triage %s", ErrForbidden, t.Name)
+		return fmt.Errorf("%w: the caller is not the Job of Page %s", ErrForbidden, t.Name)
 	}
 	return nil
 }

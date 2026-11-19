@@ -10,17 +10,17 @@ import (
 )
 
 const (
-	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Workload's metrics. It is the default for
-	// --grafana-workload-dashboard-uid and matches the dashboard provisioned in deploy/observability/dashboards.
-	DefaultMetricsDashboardUID = "pagerless-workload"
-	// DefaultLogsDashboardUID is the Grafana dashboard that shows a Workload's logs. It is the default for
+	// DefaultMetricsDashboardUID is the Grafana dashboard that charts a Target's metrics. It is the default for
+	// --grafana-target-dashboard-uid and matches the dashboard provisioned in deploy/observability/dashboards.
+	DefaultMetricsDashboardUID = "pagerless-target"
+	// DefaultLogsDashboardUID is the Grafana dashboard that shows a Target's logs. It is the default for
 	// --grafana-logs-dashboard-uid and matches the dashboard provisioned in deploy/observability/dashboards.
-	DefaultLogsDashboardUID = "pagerless-workload-logs"
+	DefaultLogsDashboardUID = "pagerless-target-logs"
 	// metricsSlug and logsSlug are the URL slugs that Grafana renders from the dashboard titles.
-	metricsSlug = "workload-metrics"
-	logsSlug    = "workload-logs"
-	// windowLead and windowTail widen the Workload's lifetime, so that the panels show the minutes before the
-	// Triage started and after it ended.
+	metricsSlug = "target-metrics"
+	logsSlug    = "target-logs"
+	// windowLead and windowTail widen the Target's lifetime, so that the panels show the minutes before the
+	// Page started and after it ended.
 	windowLead = 15 * time.Minute
 	windowTail = 5 * time.Minute
 )
@@ -30,13 +30,13 @@ type GrafanaConfig struct {
 	// BaseURL is the Grafana base URL that the browser can reach, for example http://localhost:3000 while the
 	// Grafana Service is port-forwarded.
 	BaseURL string
-	// MetricsDashboardUID is the Grafana dashboard that charts the Workload's metrics.
+	// MetricsDashboardUID is the Grafana dashboard that charts the Target's metrics.
 	MetricsDashboardUID string
-	// LogsDashboardUID is the Grafana dashboard that shows the Workload's logs.
+	// LogsDashboardUID is the Grafana dashboard that shows the Target's logs.
 	LogsDashboardUID string
 }
 
-// GrafanaLinks are the embedded panels and deep links for one Triage's Workload.
+// GrafanaLinks are the embedded panels and deep links for one Page's Target.
 type GrafanaLinks struct {
 	BaseURL string         `json:"baseURL"`
 	Metrics *DashboardLink `json:"metrics,omitempty"`
@@ -49,9 +49,9 @@ type DashboardLink struct {
 	DeepLink string `json:"deepLink"`
 }
 
-// links builds the Grafana links for a Workload over the Triage's lifetime, or nil when Grafana is unconfigured.
+// links builds the Grafana links for a Target over the Page's lifetime, or nil when Grafana is unconfigured.
 func (g GrafanaConfig) links(
-	spec *v1alpha1.TriageSpec, status *v1alpha1.TriageStatus, createdAt, now time.Time,
+	spec *v1alpha1.PageSpec, status *v1alpha1.PageStatus, createdAt, now time.Time,
 ) *GrafanaLinks {
 	base := strings.TrimRight(strings.TrimSpace(g.BaseURL), "/")
 	if base == "" {
@@ -75,8 +75,8 @@ func (g GrafanaConfig) links(
 	to = to.Add(windowTail)
 
 	query := url.Values{}
-	query.Set("var-namespace", spec.Workload.Namespace)
-	query.Set("var-workload", spec.Workload.Name)
+	query.Set("var-namespace", spec.Target.Namespace)
+	query.Set("var-target", spec.Target.Name)
 	query.Set("from", strconv.FormatInt(from.UnixMilli(), 10))
 	query.Set("to", strconv.FormatInt(to.UnixMilli(), 10))
 
