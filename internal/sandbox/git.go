@@ -9,8 +9,8 @@ import "context"
 // stdin is the standard input when it is not nil, and the result is the
 // standard output.
 //
-// pagerless-executor uses it to write to the Sandbox, which this package
-// itself never does.
+// The Sandbox helpers use it to write into the bare repository that stands in
+// for the Target Repository; nothing in the server writes to a Target.
 func Git(ctx context.Context, dir string, env []string, stdin []byte, args ...string) (string, error) {
 	return run(ctx, dir, env, stdin, args...)
 }
