@@ -24,12 +24,10 @@ import (
 // Action is one kind of remediation that a Proposal can recommend. Every
 // remaining Action is delivered as a pull request: Pagerless never mutates the
 // cluster.
-// +kubebuilder:validation:Enum=FilePatch;Scale;PatchResources;Rollback;NoAction
+// +kubebuilder:validation:Enum=Scale;PatchResources;Rollback;NoAction
 type Action string
 
 const (
-	// ActionFilePatch changes whole files in the Target Repository through a pull request.
-	ActionFilePatch Action = "FilePatch"
 	// ActionScale changes the Target's replica count through a pull request.
 	ActionScale Action = "Scale"
 	// ActionPatchResources changes a container's requests and limits through a pull request.
@@ -44,7 +42,7 @@ const (
 // a pull request against the Target Repository. NoAction changes nothing.
 func (a Action) DeliveredByPullRequest() bool {
 	switch a {
-	case ActionFilePatch, ActionScale, ActionPatchResources, ActionRollback:
+	case ActionScale, ActionPatchResources, ActionRollback:
 		return true
 	default:
 		return false

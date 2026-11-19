@@ -607,7 +607,6 @@ spec:
                   action:
                     description: Action is the remediation.
                     enum:
-                    - FilePatch
                     - Scale
                     - PatchResources
                     - Rollback

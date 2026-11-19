@@ -25,10 +25,10 @@ from pagerless_agent.bundle import WorkloadRef
 # Limits that the server enforces, matching `internal/agentapi/check.go`.
 MAX_DIAGNOSIS_LENGTH = 4000
 MAX_NARRATIVE_LENGTH = 4000
-MAX_FINDING_SOURCE_LENGTH = 500
-MAX_FINDING_SUMMARY_LENGTH = 1000
-MAX_STEP_SUMMARY_LENGTH = 300
-MAX_TOOL_NAME_LENGTH = 128
+MAX_FINDING_SOURCE_LENGTH = 300
+MAX_FINDING_SUMMARY_LENGTH = 500
+MAX_STEP_SUMMARY_LENGTH = 200
+MAX_TOOL_NAME_LENGTH = 64
 # The number of Findings a Page keeps (`v1alpha1.MaxFindings`).
 MAX_FINDINGS = 20
 # Bounds on the model usage one report may carry, matching `internal/agentapi/check.go`.
