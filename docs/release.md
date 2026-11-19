@@ -68,8 +68,9 @@ formula. It is not complete until both verification jobs pass:
 
 - `verify` creates a throwaway kind cluster, installs the chart from GHCR with an
   `existingSecret`, checks that exactly one Deployment and no StatefulSet was
-  rendered, installs the plugin from the published `page.yaml`, and checks that
-  both images carry both architectures. It deletes the cluster even on failure.
+  rendered, runs the read-only authorization matrix against that install, installs
+  the plugin from the published `page.yaml`, and checks that both images carry
+  both architectures. It deletes the cluster even on failure.
 - `formula` generates the formula from the release checksums, runs
   `brew audit --strict`, installs with `brew install --build-from-source`, and
   checks the installed plugin's version.
