@@ -17,7 +17,8 @@ Authentication requires no external identity provider and no external database.
 - `auth.mode` accepts two values: `token` (the default) and `disabled`.
 - In `token` mode, the Helm chart generates two Secrets in the release namespace:
   - `pagerless-admin-secret`, containing a 48-character alphanumeric bootstrap token (`helm.sh/resource-policy: keep`, preserved across upgrades via `lookup` or supplied out of band in GitOps via `auth.adminSecret.create: false`).
-  - `pagerless-session-key`, containing a 32-byte signing key (`helm.sh/resource-policy: keep`).- `POST /api/auth/login` compares the submitted token against the mounted
+  - `pagerless-session-key`, containing at least 32 bytes of signing key (`helm.sh/resource-policy: keep`).
+- `POST /api/auth/login` compares the submitted token against the mounted
   `pagerless-admin-secret` in constant time with a fixed delay and per-source-address
   rate limiting (`429` with `Retry-After` and a warning log on lockout). On
   success, it issues an HTTP-only, `SameSite=Lax`, path-scoped cookie
