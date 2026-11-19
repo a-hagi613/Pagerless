@@ -136,6 +136,7 @@ func New(cfg Config) *Handler {
 	h.mux.Handle("GET /login", h.auth.SignIn())
 	h.mux.Handle("POST /api/auth/login", h.auth.Login())
 	h.mux.Handle("POST /api/auth/logout", h.auth.Logout())
+	h.mux.Handle("POST /logout", h.auth.Logout())
 	h.mux.HandleFunc("GET /api/auth/session", h.session)
 	h.mux.HandleFunc("GET /api/session", h.session)
 	h.mux.HandleFunc("GET /api/pages", h.list)

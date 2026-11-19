@@ -38,19 +38,13 @@ func newVersionCommand(opts *options) *cobra.Command {
 				Mode:          opts.mode,
 			}
 			if opts.mode == modeServer {
-				client, err := newAPIClient(opts.server, "")
-				if err != nil {
-					return err
-				}
 				stored, err := loadConfig(opts.configPath)
 				if err != nil {
 					return err
 				}
-				if stored.SessionToken != "" {
-					client.token = stored.SessionToken
-					if csrf, err := csrfFromSession(stored.SessionToken); err == nil {
-						client.csrf = csrf
-					}
+				client, err := newAPIClient(opts.server, stored.SessionToken)
+				if err != nil {
+					return err
 				}
 				var server serverVersion
 				if err := client.do(cmd.Context(), "GET", "/api/version", nil, &server); err != nil {

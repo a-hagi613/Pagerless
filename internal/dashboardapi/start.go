@@ -60,10 +60,25 @@ type targetListResponse struct {
 }
 
 // targetList answers with the Deployments and StatefulSets that Start Page
-// may target, so the browser offers a choice instead of a free-text name.
+// may target, so the browser offers a choice instead of a free-text name. With
+// no configured allowlist, every namespace the read identity can see is
+// offered; the chart passes the list when it restricts the watch.
 func (h *Handler) targetList(w http.ResponseWriter, r *http.Request) {
+	namespaces := h.namespaces
+	if len(namespaces) == 0 {
+		var list corev1.NamespaceList
+		if err := h.targets.List(r.Context(), &list); err != nil {
+			h.internal(w, r.Context(), fmt.Errorf("list namespaces: %w", err))
+			return
+		}
+		namespaces = make([]string, 0, len(list.Items))
+		for i := range list.Items {
+			namespaces = append(namespaces, list.Items[i].Name)
+		}
+		slices.Sort(namespaces)
+	}
 	var targets []v1alpha1.TargetReference
-	for _, namespace := range h.namespaces {
+	for _, namespace := range namespaces {
 		var deployments appsv1.DeploymentList
 		if err := h.targets.List(r.Context(), &deployments, client.InNamespace(namespace)); err != nil {
 			h.internal(w, r.Context(), fmt.Errorf("list Deployments in %s: %w", namespace, err))

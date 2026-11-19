@@ -25,7 +25,7 @@ type DashboardSession struct {
 	CSRF   string
 }
 
-// fakeAuth is a stand-in for the Keycloak sign-in. It issues sessions without a
+// fakeAuth is a stand-in for the bootstrap-token sign-in. It issues sessions without a
 // browser, so a test drives the authenticated API directly; the real flow is
 // covered by internal/dashboardauth's tests.
 type fakeAuth struct {

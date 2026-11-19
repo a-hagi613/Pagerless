@@ -153,8 +153,7 @@ func WithAlertmanagerToken(source func() (string, error)) Option {
 	return func(o *options) { o.alertToken = source }
 }
 
-// WithDashboardAuth replaces the harness's stand-in sign-in with a real one,
-// such as the Keycloak flow that the smoke test drives through a browser.
+// WithDashboardAuth replaces the harness's stand-in sign-in with a real one.
 func WithDashboardAuth(auth dashboardapi.Auth) Option {
 	return func(o *options) { o.dashboardAuth = auth }
 }
