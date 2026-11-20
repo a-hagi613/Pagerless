@@ -213,7 +213,14 @@ jobs:
           helm package charts/pagerless --destination dist/chart
           echo "${{ secrets.GITHUB_TOKEN }}" |
             helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
-          helm push "dist/chart/pagerless-${VERSION}.tgz" oci://ghcr.io/a-hagi613/charts
+          # A registry tag is immutable through helm, so a re-run of a tag that
+          # failed after this step must not push the same version twice.
+          if helm show chart oci://ghcr.io/a-hagi613/charts/pagerless \
+              --version "${VERSION}" >/dev/null 2>&1; then
+            echo "the chart ${VERSION} is already published; nothing to push"
+          else
+            helm push "dist/chart/pagerless-${VERSION}.tgz" oci://ghcr.io/a-hagi613/charts
+          fi
 
   verify:
     name: Install the published artifacts on kind
