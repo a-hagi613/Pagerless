@@ -305,6 +305,45 @@ func TestTheManifestCarriesTheBundleCatalogueAndLimits(t *testing.T) {
 	}
 }
 
+// TestTheManifestCatalogueUsesTheFieldNamesTheAgentValidates pins the wire
+// contract between the server's catalogue and the agent's Pydantic models. The
+// agent validates the manifest with extra="forbid" and requires input_schema, so
+// a camelCase key here fails every investigation before it starts - which is
+// exactly what the first live cluster run produced. The assertion is made on the
+// encoded manifest, not on the Go struct, so a tag change cannot slip past it.
+func TestTheManifestCatalogueUsesTheFieldNamesTheAgentValidates(t *testing.T) {
+	t.Parallel()
+	page := pageFixture()
+	broker, _, _, _ := brokerFixture(t)
+	manifest, err := broker.Manifest(t.Context(), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Tools []map[string]json.RawMessage `json:"tools"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Tools) == 0 {
+		t.Fatal("the manifest carries no tools")
+	}
+	for _, tool := range decoded.Tools {
+		var name string
+		_ = json.Unmarshal(tool["name"], &name)
+		if _, ok := tool["input_schema"]; !ok {
+			t.Errorf("tool %q has no input_schema field; keys are the agent's contract", name)
+		}
+		if _, ok := tool["inputSchema"]; ok {
+			t.Errorf("tool %q carries inputSchema, which the agent's contract forbids", name)
+		}
+	}
+}
+
 // TestTheCatalogueHasNoWriteTool asserts the fixed catalogue: every entry is a
 // read tool, and the write verbs a model might try are absent.
 func TestTheCatalogueHasNoWriteTool(t *testing.T) {

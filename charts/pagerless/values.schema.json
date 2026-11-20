@@ -1689,6 +1689,17 @@
       "additionalProperties": {
         "type": "string"
       }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The model endpoint's transport policy. An in-cluster gateway is plain HTTP, which the server refuses unless allowInsecureEndpoint is set.",
+      "properties": {
+        "allowInsecureEndpoint": {
+          "type": "boolean",
+          "description": "Permit a non-HTTPS model base URL, for an in-cluster gateway, vLLM, Ollama or a tunneled laptop."
+        }
+      }
     }
   }
 }

@@ -119,6 +119,10 @@ spec:
               value: {{ include "pagerless.credentialsSecret" . }}
             - name: PAGERLESS_MODEL_API_KEY_KEY
               value: AI_API_KEY
+            {{- if .Values.model.allowInsecureEndpoint }}
+            - name: PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT
+              value: "1"
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
