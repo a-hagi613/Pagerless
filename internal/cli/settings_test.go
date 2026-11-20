@@ -99,8 +99,9 @@ func TestLoginStoresOnlyTheServerAndTheSession(t *testing.T) {
 	if !strings.Contains(out, "signed in to "+server.URL) {
 		t.Errorf("output = %q, want the server it signed in to", out)
 	}
-	if !strings.Contains(out, "kubectl -n pagerless delete secret pagerless-admin-secret") {
-		t.Errorf("output = %q, want the documented hardening step", out)
+	if !strings.Contains(out, "auth.adminSecret.name") ||
+		!strings.Contains(out, "default is pagerless-admin-secret") {
+		t.Errorf("output = %q, want the hardening step with the unknown-name instruction", out)
 	}
 
 	info, err := os.Stat(configPath)
@@ -120,6 +121,55 @@ func TestLoginStoresOnlyTheServerAndTheSession(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "bootstrap-token") {
 		t.Error("the bootstrap token was written to the configuration file")
+	}
+}
+
+// TestLoginNamesTheConfiguredBootstrapSecret proves the CLI reads the name the
+// chart records instead of printing the default Secret name.
+func TestLoginNamesTheConfiguredBootstrapSecret(t *testing.T) {
+	env, kubeconfig := startCluster(t)
+	var config corev1.ConfigMap
+	key := client.ObjectKey{Namespace: testenv.Namespace, Name: "pagerless-config"}
+	if err := env.Client.Get(t.Context(), key, &config); err != nil {
+		t.Fatalf("read pagerless-config: %v", err)
+	}
+	if config.Data == nil {
+		config.Data = map[string]string{}
+	}
+	config.Data["PAGERLESS_AUTH_ADMIN_SECRET"] = "team-admin"
+	if err := env.Client.Update(t.Context(), &config); err != nil {
+		t.Fatalf("record the bootstrap Secret name: %v", err)
+	}
+
+	cookie := sessionCookie(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/login" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Token != "bootstrap-token" {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "pagerless_session", Value: cookie, Path: "/", HttpOnly: true})
+		_ = json.NewEncoder(w).Encode(map[string]string{"expiresAt": "2026-11-19T04:00:00Z"})
+	}))
+	t.Cleanup(server.Close)
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	out, errOut, err := runCLI(t, "BOOTSTRAP_TOKEN=bootstrap-token\n",
+		"--config", configPath, "--kubeconfig", kubeconfig,
+		"--release-namespace", testenv.Namespace,
+		"login", "--server", server.URL, "--from-stdin")
+	if err != nil {
+		t.Fatalf("login: %v\n%s", err, errOut)
+	}
+	if !strings.Contains(out, "kubectl -n "+testenv.Namespace+" delete secret team-admin") {
+		t.Errorf("output = %q, want the configured bootstrap Secret name", out)
 	}
 }
 

@@ -26,6 +26,11 @@ import (
 // releaseNamespace is the namespace every namespaced object is installed into.
 const releaseNamespace = "pagerless"
 
+const (
+	clusterRoleKind        = "ClusterRole"
+	clusterRoleBindingKind = "ClusterRoleBinding"
+)
+
 // credentialsSecretName is the Secret the chart pre-creates for credentials.
 const credentialsSecretName = "pagerless-credentials"
 
@@ -151,7 +156,9 @@ func TestTheDefaultRenderIsOneReadOnlyShell(t *testing.T) {
 	documents := render(t)
 
 	want := []string{
+		"ClusterRole/pagerless-pagerless-agent-auth",
 		"ClusterRole/pagerless-pagerless-read",
+		"ClusterRoleBinding/pagerless-pagerless-agent-auth",
 		"ClusterRoleBinding/pagerless-pagerless-read",
 		"ConfigMap/pagerless-config",
 		"ConfigMap/pagerless-connectors",
@@ -196,7 +203,7 @@ func TestTheDefaultRenderIsOneReadOnlyShell(t *testing.T) {
 	// The only cluster-scoped objects are the CRD and the read role and binding.
 	for _, doc := range documents {
 		switch doc.Kind {
-		case "CustomResourceDefinition", "ClusterRole", "ClusterRoleBinding":
+		case "CustomResourceDefinition", clusterRoleKind, clusterRoleBindingKind:
 		default:
 			if doc.Metadata.Namespace == "" {
 				t.Errorf("%s %q is cluster-scoped, want it in %q", doc.Kind, doc.Metadata.Name, releaseNamespace)
@@ -219,7 +226,7 @@ func countKind(documents []document, kind string) int {
 func TestTheClusterReadRoleIsExactlyTheCheckedInAllowlist(t *testing.T) {
 	t.Parallel()
 	documents := render(t)
-	role := find(t, documents, "ClusterRole", "pagerless-pagerless-read")
+	role := find(t, documents, clusterRoleKind, "pagerless-pagerless-read")
 	got := ruleSet(t, role)
 	want := []string{
 		`group="" resources=[] verbs=[get] names=[] urls=[/openapi/v3 /openapi/v3/*]`,
@@ -228,7 +235,6 @@ func TestTheClusterReadRoleIsExactlyTheCheckedInAllowlist(t *testing.T) {
 		`group="" resources=[namespaces nodes] verbs=[get list watch] names=[]`,
 		`group="" resources=[pods/log] verbs=[get] names=[]`,
 		`group="apps" resources=[daemonsets deployments replicasets statefulsets] verbs=[get list watch] names=[]`,
-		`group="authentication.k8s.io" resources=[tokenreviews] verbs=[create] names=[]`,
 		`group="batch" resources=[cronjobs jobs] verbs=[get list watch] names=[]`,
 		`group="discovery.k8s.io" resources=[endpointslices] verbs=[get list watch] names=[]`,
 		`group="events.k8s.io" resources=[events] verbs=[get list watch] names=[]`,
@@ -347,8 +353,21 @@ func TestAllowlistModeRendersPerNamespaceReadRolesWithoutClusterRules(t *testing
 	t.Parallel()
 	documents := render(t, "rbac.watchAllNamespaces=false", "rbac.watchNamespaces={shop,payments}")
 
-	if clusters := countKind(documents, "ClusterRole") + countKind(documents, "ClusterRoleBinding"); clusters != 0 {
-		t.Errorf("allowlist mode renders %d cluster-scoped RBAC objects, want none", clusters)
+	if clusters := countKind(documents, clusterRoleKind) + countKind(documents, clusterRoleBindingKind); clusters != 2 {
+		t.Errorf("allowlist mode renders %d cluster-scoped RBAC objects, want only the agent-auth role and binding", clusters)
+	}
+	authRole := find(t, documents, clusterRoleKind, "pagerless-pagerless-agent-auth")
+	authRules := ruleSet(t, authRole)
+	wantAuth := []string{`group="authentication.k8s.io" resources=[tokenreviews] verbs=[create] names=[]`}
+	if !slices.Equal(authRules, wantAuth) {
+		t.Errorf("allowlist agent-auth ClusterRole rules:\n%s\nwant:\n%s",
+			strings.Join(authRules, "\n"), strings.Join(wantAuth, "\n"))
+	}
+	find(t, documents, clusterRoleBindingKind, "pagerless-pagerless-agent-auth")
+	for _, doc := range documents {
+		if doc.Kind == clusterRoleKind && doc.Metadata.Name == "pagerless-pagerless-read" {
+			t.Errorf("allowlist mode renders the cluster-wide read ClusterRole %q", doc.Metadata.Name)
+		}
 	}
 	namespaced := []string{"shop", "payments"}
 	for _, namespace := range namespaced {
@@ -368,6 +387,48 @@ func TestAllowlistModeRendersPerNamespaceReadRolesWithoutClusterRules(t *testing
 			t.Errorf("Role in %s:\n%s\nwant:\n%s", namespace, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
 		findIn(t, documents, "RoleBinding", "pagerless-pagerless-read", namespace)
+	}
+}
+
+// TestTheAgentTokenReviewIsGrantedInEveryWatchMode keeps the one non-read verb
+// outside the release namespace available in allowlist mode, where no
+// cluster-wide read role is rendered.
+func TestTheAgentTokenReviewIsGrantedInEveryWatchMode(t *testing.T) {
+	t.Parallel()
+	shapes := map[string][]string{
+		"cluster-wide": nil,
+		"allowlist":    {"rbac.watchAllNamespaces=false", "rbac.watchNamespaces={shop,payments}"},
+	}
+	for name, sets := range shapes {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			documents := render(t, sets...)
+			role := find(t, documents, clusterRoleKind, "pagerless-pagerless-agent-auth")
+			want := []string{`group="authentication.k8s.io" resources=[tokenreviews] verbs=[create] names=[]`}
+			if got := ruleSet(t, role); !slices.Equal(got, want) {
+				t.Errorf("%s agent-auth ClusterRole rules:\n%s\nwant:\n%s",
+					name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+			}
+			binding := find(t, documents, clusterRoleBindingKind, "pagerless-pagerless-agent-auth")
+			subjects, ok := binding.Raw["subjects"].([]any)
+			if !ok || len(subjects) != 1 {
+				t.Fatalf("%s agent-auth binding subjects = %+v, want the server ServiceAccount", name, binding.Raw["subjects"])
+			}
+			subject, _ := subjects[0].(map[string]any)
+			if subject["kind"] != "ServiceAccount" ||
+				subject["name"] != "pagerless-server" || subject["namespace"] != releaseNamespace {
+				t.Errorf("%s agent-auth binding subject = %+v, want ServiceAccount pagerless-server in %s",
+					name, subject, releaseNamespace)
+			}
+		})
+	}
+	// The read role must not carry the TokenReview grant: it is rendered once,
+	// outside both watch modes.
+	read := ruleSet(t, find(t, render(t), clusterRoleKind, "pagerless-pagerless-read"))
+	for _, rule := range read {
+		if strings.Contains(rule, "tokenreviews") {
+			t.Errorf("the read ClusterRole still grants tokenreviews: %s", rule)
+		}
 	}
 }
 
@@ -467,6 +528,9 @@ func TestTheConfigMapNamesTheCredentialsSecret(t *testing.T) {
 	if got := owned["PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER"]; got != "" {
 		t.Errorf("PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER = %v, want empty", got)
 	}
+	if got := owned["PAGERLESS_AUTH_ADMIN_SECRET"]; got != "pagerless-admin-secret" {
+		t.Errorf("PAGERLESS_AUTH_ADMIN_SECRET = %v, want pagerless-admin-secret", got)
+	}
 
 	external := config(render(t, "credentials.existingSecret="+externalCredentialsSecret))
 	if got := external["PAGERLESS_CREDENTIALS_SECRET"]; got != externalCredentialsSecret {
@@ -496,7 +560,7 @@ func TestNoForbiddenGrantIsRendered(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			for _, doc := range render(t, sets...) {
-				if doc.Kind != "ClusterRole" && doc.Kind != "Role" {
+				if doc.Kind != clusterRoleKind && doc.Kind != "Role" {
 					continue
 				}
 				for _, parsed := range parseRules(t, doc) {

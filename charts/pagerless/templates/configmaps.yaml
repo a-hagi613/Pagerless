@@ -22,6 +22,9 @@ data:
   # Secret the Deployment mounts and refuses a Secret an external manager owns.
   PAGERLESS_CREDENTIALS_SECRET: {{ include "pagerless.credentialsSecret" . | quote }}
   PAGERLESS_CREDENTIALS_EXTERNAL_MANAGER: {{ .Values.credentials.existingSecret | quote }}
+  # Read by `kubectl page login`, so its hardening hint names the bootstrap
+  # token Secret the installation actually created.
+  PAGERLESS_AUTH_ADMIN_SECRET: {{ .Values.auth.adminSecret.name | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -77,8 +77,14 @@ allowlist mode drops them.
 # Structural validation of a proposed manifest without a cluster write.
 - nonResourceURLs: ["/openapi/v3", "/openapi/v3/*"]
   verbs: [get]
-# Authenticates the agent Job's projected token on every report and tool call.
-# It is an authentication request, not a write to any object.
+{{- end -}}
+
+{{/*
+The one verb outside the release namespace. Creating a TokenReview only asks the
+API server whether a bearer token is valid; it grants no access to any cluster
+object and is required in both watch modes, including the allowlist.
+*/}}
+{{- define "pagerless.tokenReviewRules" -}}
 - apiGroups: [authentication.k8s.io]
   resources: [tokenreviews]
   verbs: [create]

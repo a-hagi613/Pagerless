@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/a-hagi613/pagerless/internal/dashboardauth"
 )
@@ -60,7 +62,7 @@ func runLogin(cmd *cobra.Command, opts *options, source sourceFlags) error {
 	if strings.TrimSpace(opts.server) == "" {
 		return usagef("login needs --server <url>")
 	}
-	client, err := newAPIClient(opts.server, "")
+	portal, err := newAPIClient(opts.server, "")
 	if err != nil {
 		return err
 	}
@@ -73,24 +75,50 @@ func runLogin(cmd *cobra.Command, opts *options, source sourceFlags) error {
 		return usagef("%s was not provided: use an interactive prompt, standard input, a file, or an env file",
 			bootstrapTokenKey)
 	}
-	session, expiresAt, err := client.exchange(cmd.Context(), token)
+	session, expiresAt, err := portal.exchange(cmd.Context(), token)
 	if err != nil {
 		return err
 	}
-	path, err := saveConfig(opts.configPath, configFile{Server: client.base, SessionToken: session})
+	path, err := saveConfig(opts.configPath, configFile{Server: portal.base, SessionToken: session})
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "using server mode (%s)\n", client.base)
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "using server mode (%s)\n", portal.base)
 	_, err = fmt.Fprintf(cmd.OutOrStdout(),
-		"signed in to %s; the session expires at %s and is stored in %s\n", client.base, expiresAt, path)
+		"signed in to %s; the session expires at %s and is stored in %s\n", portal.base, expiresAt, path)
 	if err != nil {
 		return err
 	}
+	if name, ok := bootstrapSecretName(cmd.Context(), opts); ok {
+		_, err = fmt.Fprintf(cmd.OutOrStdout(),
+			"once you no longer need the bootstrap token, delete it: kubectl -n %s delete secret %s\n",
+			opts.pageNamespace, name)
+		return err
+	}
 	_, err = fmt.Fprintf(cmd.OutOrStdout(),
-		"once you no longer need the bootstrap token, delete it: kubectl -n %s delete secret pagerless-admin-secret\n",
+		"once you no longer need the bootstrap token, delete the Secret your installation sets as "+
+			"auth.adminSecret.name (the default is pagerless-admin-secret) in namespace %s\n",
 		opts.pageNamespace)
 	return err
+}
+
+// bootstrapSecretName returns the bootstrap token Secret the chart records in
+// pagerless-config. A caller without cluster access gets a generic instruction
+// rather than a guessed name.
+func bootstrapSecretName(ctx context.Context, opts *options) (string, bool) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	clus, err := connect(opts)
+	if err != nil {
+		return "", false
+	}
+	var config corev1.ConfigMap
+	key := client.ObjectKey{Namespace: opts.pageNamespace, Name: "pagerless-config"}
+	if err := clus.client.Get(ctx, key, &config); err != nil {
+		return "", false
+	}
+	name := strings.TrimSpace(config.Data["PAGERLESS_AUTH_ADMIN_SECRET"])
+	return name, name != ""
 }
 
 // exchange posts the bootstrap token and returns the session cookie.
