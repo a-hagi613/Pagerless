@@ -78,6 +78,16 @@ jobs:
           set -euo pipefail
           bash scripts/release/tools.sh
           echo "$PWD/bin/release-tools" >>"$GITHUB_PATH"
+      # A re-run must not collide with what the previous attempt uploaded:
+      # GitHub refuses a second asset with the same name, and GoReleaser's
+      # replace mode recreates the release without clearing its assets. The tag
+      # is kept, because it is what this job is publishing.
+      - name: Remove a release left by an earlier attempt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release delete "v${VERSION}" --yes --cleanup-tag=false 2>/dev/null || true
       - name: Publish the archives, checksums, SBOMs, and Krew index Pull Request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
