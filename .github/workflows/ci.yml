@@ -172,10 +172,11 @@ jobs:
           go-version-file: go.mod
       - name: Lint the release scripts
         run: shellcheck -x scripts/release/*.sh
-      - name: Validate the GoReleaser configuration and the Krew manifest
-        run: make release-check
-      - name: Build the snapshot archives, checksums, SBOMs, and manifest
-        run: make release-snapshot
+      # The same command a release runs locally before the tag. Keeping one
+      # command means CI cannot check a different set from the one an operator
+      # relies on, and a drift between them shows up here rather than at a tag.
+      - name: Run the release preflight
+        run: make release-preflight
       - name: Check the snapshot inventory
         run: |
           set -euo pipefail

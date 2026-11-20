@@ -150,7 +150,11 @@ jobs:
 
   images:
     name: Multi-arch images
-    needs: validate
+    # The publish step is the one that fails on a tag, and a multi-arch build
+    # costs more than ten minutes. Waiting for it means a failed release stops
+    # before that build starts instead of burning it in parallel and then
+    # reporting that the artifacts were never going to be published.
+    needs: [validate, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -194,7 +198,10 @@ jobs:
 
   chart:
     name: OCI chart
-    needs: validate
+    # Same reasoning as the images job: the chart is cheap, but publishing it
+    # for a release whose archives failed helps nobody, and the ordering is what
+    # makes the first failure the only one the run spends time on.
+    needs: [validate, release]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
