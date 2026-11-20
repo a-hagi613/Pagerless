@@ -129,11 +129,20 @@ jobs:
           branch="release/v${VERSION}-plugin-manifest"
           git config user.name "pagerless-release"
           git config user.email "release@pagerless.dev"
-          git checkout -b "$branch"
+          # A release can be re-run, so both the branch and the pull request have
+          # to tolerate their own earlier output: reset the branch instead of
+          # failing when it exists, and report the existing pull request rather
+          # than trying to open a second one.
+          git checkout -B "$branch"
           git add plugins/page.yaml
           git commit --message "Refresh plugins/page.yaml for v${VERSION}" \
             --message "The release checksums are the authoritative ones, so the manifest a checkout installs is regenerated from them."
-          git push origin "$branch"
+          git push --force-with-lease origin "$branch"
+          existing="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            echo "Pull request #${existing} already refreshes plugins/page.yaml for v${VERSION}; left as it is."
+            exit 0
+          fi
           gh pr create --base main --head "$branch" \
             --title "Refresh plugins/page.yaml for v${VERSION}" \
             --body "Regenerated from the v${VERSION} release checksum file by the release workflow."
