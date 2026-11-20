@@ -58,6 +58,11 @@ jobs:
       pull-requests: write
     env:
       VERSION: ${{ needs.validate.outputs.version }}
+      # GoReleaser's Krew publisher accepts only single environment references
+      # in its templated fields, so both values are decided here rather than in
+      # .goreleaser.yaml.
+      KREW_BRANCH: page-${{ needs.validate.outputs.version }}
+      KREW_SKIP_UPLOAD: ${{ secrets.KREW_INDEX_TOKEN == '' && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

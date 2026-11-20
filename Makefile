@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent check-links validate verify-chart release-tools release-check release-snapshot preflight dev down install
+.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent check-links validate verify-chart release-tools release-check release-snapshot release-preflight preflight dev down install
 
 
 help: ## List the available targets.
@@ -74,6 +74,17 @@ release-tools: ## Download the pinned GoReleaser and Syft into bin/release-tools
 release-check: release-tools ## Validate the GoReleaser configuration and the plugin manifest template.
 	$(RELEASE_TOOLS_DIR)/goreleaser check
 	bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
+
+release-preflight: ## Run the whole release pipeline locally, without publishing.
+	# The gate that runs before a tag. It checks the version wiring, then builds
+	# every artifact the tagged workflow builds - four archives, the checksum
+	# file, one SBOM per archive, and the rendered plugin manifest - and verifies
+	# them. It cannot exercise the publish stage, which needs a tag and a token,
+	# so anything that fails only there has to be reviewed by reading
+	# .goreleaser.yaml and .github/workflows/release.yml.
+	bash scripts/release/check-versions.sh --version "$$(sed -n 's/^version: //p' charts/pagerless/Chart.yaml)"
+	$(MAKE) release-check
+	$(MAKE) release-snapshot
 
 release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest locally.
 	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean

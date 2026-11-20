@@ -76,12 +76,18 @@ krews:
       Pagerless must already be installed in the cluster. Install the chart with
       helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
       --namespace pagerless --create-namespace, then run kubectl page --help.
-    skip_upload: '{{ if index .Env "KREW_INDEX_TOKEN" }}false{{ else }}true{{ end }}'
+    # GoReleaser runs the publish stage only, and it validates that every
+    # templated field here is a single environment reference: a literal, a
+    # conditional, or a template action such as {{ .Version }} is rejected with
+    # "expected {{ .Env.VAR_NAME }} only". So the branch name and the skip
+    # decision are computed by the workflow and read from the environment, which
+    # also keeps the token out of this file.
+    skip_upload: '{{ .Env.KREW_SKIP_UPLOAD }}'
     repository:
       owner: a-hagi613
       name: krew-index
-      branch: "page-{{ .Version }}"
-      token: '{{ index .Env "KREW_INDEX_TOKEN" }}'
+      branch: '{{ .Env.KREW_BRANCH }}'
+      token: '{{ .Env.KREW_INDEX_TOKEN }}'
       pull_request:
         enabled: true
         base:
@@ -122,6 +128,11 @@ release:
     name: pagerless
   draft: false
   prerelease: auto
+  # A release that fails after the release object exists must be re-runnable.
+  # GoReleaser's default refuses a second run for the same tag, which turns one
+  # bad step into a manual cleanup before any retry; replace recreates the
+  # release and its assets from the tag's tree instead.
+  mode: replace
   # The four facts an operator needs before installing: what a single install
   # contains, how to supply credentials, what the cluster identity may do, and
   # how a change reaches a cluster. The changelog below them is generated; this

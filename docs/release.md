@@ -43,13 +43,23 @@ packages under the repository's package settings after the first release.
 ## Before the tag
 
 ```bash
-make release-check     # goreleaser check and the Krew manifest lint
-make release-snapshot   # archives, checksums, SBOMs, and the rendered manifest
+make release-preflight   # version wiring, goreleaser check, every artifact, verified
 ```
 
-Both run on every pull request. The snapshot reports `0.0.0-snapshot` and
-publishes nothing; it exists so that a broken configuration is found before a tag
-rather than by a failed release.
+`make release-check` and `make release-snapshot` remain available on their own,
+and CI runs them on every pull request. `release-preflight` chains the version
+check to both, so one command proves that the tree, the chart, and the plugin
+manifest agree and that the archives, checksums, SBOMs, and rendered manifest all
+build and verify.
+
+The snapshot reports `0.0.0-snapshot` and publishes nothing. **The publish stage
+itself cannot be exercised without a tag**, because it needs one and a token: a
+GoReleaser publish-time validation, such as its rule that a Krew publisher field
+may hold only a single environment reference, fails there and nowhere earlier.
+Review `.goreleaser.yaml` and `.github/workflows/release.yml` for that class of
+problem, and rely on `release.mode: replace` so a release that fails after the
+release object exists can be re-run for the same tag instead of needing a manual
+delete.
 
 Bump the version in `charts/pagerless/Chart.yaml` (`version` and `appVersion`) in
 the release pull request. `scripts/release/check-versions.sh --version X.Y.Z`
