@@ -103,8 +103,11 @@ type ToolSpec struct {
 	Name string `json:"name"`
 	// Description states what the tool reads and what it refuses.
 	Description string `json:"description"`
-	// InputSchema is the JSON Schema of the tool's arguments.
-	InputSchema map[string]any `json:"inputSchema"`
+	// InputSchema is the JSON Schema of the tool's arguments. The name is
+	// snake_case because the agent's contract validates the manifest strictly
+	// with extra="forbid"; a camelCase key here fails every investigation
+	// before it starts.
+	InputSchema map[string]any `json:"input_schema"`
 }
 
 // Capabilities records what the server supports beyond the catalogue.

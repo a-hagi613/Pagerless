@@ -207,6 +207,14 @@ ingress:
   annotations: {}
   tls: []
 
+# An in-cluster model endpoint is served over plain HTTP: an OpenAI-compatible
+# gateway, a vLLM or Ollama pod, or a laptop reached through a tunnel. The server
+# refuses a non-HTTPS base URL unless this is set, because it cannot tell a
+# cluster-local address from a mistake, so the override is explicit and off by
+# default.
+model:
+  allowInsecureEndpoint: false
+
 # --- Scheduling -------------------------------------------------------------
 
 # Egress policy for the agent Job. The Job has exactly two destinations: the
