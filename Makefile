@@ -3,7 +3,7 @@
 include hack/versions.env
 PAGERLESS_BUILD_REVISION ?= local
 
-.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent check-links validate verify-chart release-tools release-check release-snapshot preflight dev down install
+.PHONY: help generate manifests build-cli build-images brand-assets dashboard-build dashboard-check test test-go portal-e2e test-agent lint lint-go lint-agent check-links validate verify-chart release-tools release-check release-snapshot release-preflight preflight dev down install
 
 
 help: ## List the available targets.
@@ -14,6 +14,12 @@ RELEASE_TOOLS_DIR := $(CURDIR)/bin/release-tools
 # The snapshot version names the archives and the plugin's reported version. It
 # is never a release version, so a snapshot can never be mistaken for one.
 RELEASE_SNAPSHOT_VERSION ?= 0.0.0-snapshot
+# GoReleaser evaluates the Krew publisher's templates even when it is only
+# building a snapshot, so the two values it reads from the environment are always
+# supplied here. A snapshot never uploads, so skipping is the correct default for
+# every local and pull-request run; the tagged workflow overrides both.
+KREW_BRANCH ?= page-$(RELEASE_SNAPSHOT_VERSION)
+KREW_SKIP_UPLOAD ?= true
 ENVTEST_K8S_VERSION := 1.37.0
 GO_TEST_FLAGS ?= -p 1 -parallel 2
 
@@ -75,8 +81,20 @@ release-check: release-tools ## Validate the GoReleaser configuration and the pl
 	$(RELEASE_TOOLS_DIR)/goreleaser check
 	bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
 
+release-preflight: ## Run the whole release pipeline locally, without publishing.
+	# The gate that runs before a tag. It checks the version wiring, then builds
+	# every artifact the tagged workflow builds - four archives, the checksum
+	# file, one SBOM per archive, and the rendered plugin manifest - and verifies
+	# them. It cannot exercise the publish stage, which needs a tag and a token,
+	# so anything that fails only there has to be reviewed by reading
+	# .goreleaser.yaml and .github/workflows/release.yml.
+	bash scripts/release/check-versions.sh --version "$$(sed -n 's/^version: //p' charts/pagerless/Chart.yaml)"
+	$(MAKE) release-check
+	$(MAKE) release-snapshot
+
 release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest locally.
-	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
+	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) KREW_BRANCH="$(KREW_BRANCH)" KREW_SKIP_UPLOAD="$(KREW_SKIP_UPLOAD)" \
+		PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
 	bash scripts/release/render-krew-manifest.sh --checksums dist/checksums.txt --version "$(RELEASE_SNAPSHOT_VERSION)" --output dist/plugins/page.yaml
 	bash scripts/release/lint-krew-manifest.sh dist/plugins/page.yaml dist/checksums.txt
 	bash scripts/release/verify-artifacts.sh --version "$(RELEASE_SNAPSHOT_VERSION)" --checksums dist/checksums.txt --dist dist --skip-krew
