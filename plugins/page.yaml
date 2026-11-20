@@ -50,5 +50,3 @@ spec:
         matchLabels:
           os: darwin
           arch: arm64
-
-# push probe only (+1 line, manifest update only, no workflow touched)
