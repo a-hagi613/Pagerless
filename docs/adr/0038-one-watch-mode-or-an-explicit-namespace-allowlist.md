@@ -19,8 +19,10 @@ The chart renders exactly two watch modes, and they are mutually exclusive:
   ClusterRoleBinding grant the read rules cluster-wide.
 - **Mode B, `rbac.watchAllNamespaces: false` with a non-empty
   `rbac.watchNamespaces`:** each listed namespace receives an equivalent read
-  Role and RoleBinding, with the cluster-scoped rules omitted: no `nodes`, no
-  `namespaces`, no `/openapi/v3`, and no `tokenreviews`.
+  Role and RoleBinding, with the cluster-scoped read rules omitted: no `nodes`,
+  no `namespaces`, and no `/openapi/v3`. The separate agent-auth ClusterRole and
+  ClusterRoleBinding (ADR-0037 amendment) still grant `tokenreviews` in both
+  modes.
 
 `helm template` fails with a clear message when both are set, or when the
 allowlist is empty and cluster-wide watching is off. The chart never renders a
@@ -32,11 +34,10 @@ partially applied mode.
   reports the gap rather than showing an empty Finding.
 - Mode B loses `/openapi/v3` schema validation, which is a non-resource URL, so
   a `Role` cannot grant it.
-- Mode B drops `tokenreviews`, which is cluster-scoped. An allowlisted
-  installation must have the operator grant `create` on
-  `authentication.k8s.io/tokenreviews` cluster-wide for agent authentication, or
-  use Mode A. This is a known limitation of confining a role to namespaces, and
-  the chart README states it.
+- Agent authentication is identical in both modes: the separate ClusterRole and
+  ClusterRoleBinding grant only `create` on `authentication.k8s.io/tokenreviews`,
+  which is how the server validates the per-Page agent token and which grants no
+  access to any cluster object.
 - The release-namespace Role grants `pods` read so that the server can read the
   agent pod that presents a token in either mode.
 - The rendered rules are compared against a checked-in allowlist in a Go test,

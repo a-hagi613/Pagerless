@@ -16,6 +16,10 @@ Watching: every namespace through ClusterRole {{ .Release.Name }}-pagerless-read
 Watching: {{ join ", " .Values.rbac.watchNamespaces }} through a read Role per namespace.
 {{- end }}
 
+Agent authentication: ClusterRole {{ .Release.Name }}-pagerless-agent-auth grants
+create on authentication.k8s.io/tokenreviews in every watch mode. It grants no
+access to any cluster object.
+
 {{- if eq .Values.auth.mode "disabled" }}
 
 WARNING: auth.mode=disabled is in effect.

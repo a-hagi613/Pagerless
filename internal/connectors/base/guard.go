@@ -1,7 +1,10 @@
 package base
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,8 +36,9 @@ type Metrics struct {
 }
 
 // NewMetrics builds and registers the Connector collectors. A nil registerer
-// gets a private registry, which keeps tests isolated.
-func NewMetrics(registerer prometheus.Registerer) *Metrics {
+// gets a private registry, which keeps tests isolated. A duplicate registration
+// is returned as an error rather than silently adopting or panicking.
+func NewMetrics(registerer prometheus.Registerer) (*Metrics, error) {
 	if registerer == nil {
 		registerer = prometheus.NewRegistry()
 	}
@@ -53,21 +57,48 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 			Name: MetricBreakerState, Help: "Connector Circuit Breaker state: 0 closed, 1 half-open, 2 open.",
 		}, []string{metricLabelConnector}),
 	}
-	register(registerer, m.requests)
-	register(registerer, m.errors)
-	register(registerer, m.latency)
-	register(registerer, m.breaker)
-	return m
-}
-
-// register registers a collector, adopting the existing one when a second
-// Metrics value is built against the same registry.
-func register(registerer prometheus.Registerer, collector prometheus.Collector) {
-	if err := registerer.Register(collector); err != nil {
-		if _, already := err.(prometheus.AlreadyRegisteredError); !already {
-			panic(err)
+	for _, collector := range []struct {
+		name      string
+		collector prometheus.Collector
+	}{
+		{MetricRequests, m.requests},
+		{MetricErrors, m.errors},
+		{MetricLatency, m.latency},
+		{MetricBreakerState, m.breaker},
+	} {
+		if err := register(registerer, collector.name, collector.collector); err != nil {
+			return nil, err
 		}
 	}
+	return m, nil
+}
+
+// register registers a collector and reports a collision with both the
+// existing and the new descriptor, so a duplicate is a startup error rather
+// than a stack trace.
+func register(registerer prometheus.Registerer, name string, collector prometheus.Collector) error {
+	if err := registerer.Register(collector); err != nil {
+		if already, ok := errors.AsType[prometheus.AlreadyRegisteredError](err); ok {
+			return fmt.Errorf("metric %s collides with an existing registration: existing %s, new %s",
+				name, describe(already.ExistingCollector), describe(collector))
+		}
+		return fmt.Errorf("register metric %s: %w", name, err)
+	}
+	return nil
+}
+
+// describe names a collector's descriptors for a collision message.
+func describe(collector prometheus.Collector) string {
+	descriptions := make(chan *prometheus.Desc, 8)
+	go func() {
+		collector.Describe(descriptions)
+		close(descriptions)
+	}()
+	var names []string
+	for description := range descriptions {
+		names = append(names, description.String())
+	}
+	return strings.Join(names, "; ")
 }
 
 // ObserveRequest records one call.

@@ -51,11 +51,13 @@ helm upgrade --install pagerless ./charts/pagerless -n pagerless \
 ```
 
 Setting both, or setting neither an allowlist nor cluster-wide mode, fails the
-render with a message. Allowlist mode drops the cluster-scoped rules: there is no
-node or namespace read, no `/openapi/v3` validation, and no `tokenreviews`.
-Agent authentication therefore needs cluster-wide mode, or an operator-granted
-`create` on `authentication.k8s.io/tokenreviews`. See
-[ADR-0038](adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md).
+render with a message. Allowlist mode drops the cluster-scoped read rules: there
+is no node or namespace read and no `/openapi/v3` validation. A separate
+ClusterRole and ClusterRoleBinding in every watch mode still grant `create` on
+`authentication.k8s.io/tokenreviews`; that authenticates the per-Page agent
+token and grants no access to any cluster object. See
+[ADR-0038](adr/0038-one-watch-mode-or-an-explicit-namespace-allowlist.md) and
+[ADR-0037](adr/0037-read-only-cluster-identity.md).
 
 ## Authentication
 
@@ -133,8 +135,9 @@ A healthy installation renders one Deployment, one Service, one
 PersistentVolumeClaim, two ConfigMaps, two ServiceAccounts, one
 NetworkPolicy, the `pages.pagerless.dev` CRD, the credentials Secret (omitted
 with `credentials.existingSecret`) and, in token mode, the two authentication
-Secrets, plus the read identity. It renders no identity provider, gateway,
-database, or MCP server, and no admission webhook.
+Secrets, the read identity, and the agent-auth ClusterRole and
+ClusterRoleBinding that grant only `create` on `tokenreviews`. It renders no
+identity provider, gateway, database, or MCP server, and no admission webhook.
 
 `make verify-chart` runs the whole matrix on a throwaway kind cluster, builds the
 server image, and deletes the cluster afterwards.

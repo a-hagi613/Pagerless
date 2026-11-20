@@ -61,6 +61,13 @@ func NewRegistry(cfg Config, deps Deps) (*Registry, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	if deps.Metrics == nil {
+		recorder, err := base.NewMetrics(nil)
+		if err != nil {
+			return nil, fmt.Errorf("create the Connector metrics: %w", err)
+		}
+		deps.Metrics = recorder
+	}
 	ctx := context.Background()
 	registry := &Registry{NativeConfig: cfg.Logs.NativeKubernetes}
 	pattern, err := compileRedactions(cfg.Redaction.Patterns)

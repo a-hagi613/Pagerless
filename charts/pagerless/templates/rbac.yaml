@@ -11,6 +11,35 @@ validated before anything renders.
 */ -}}
 {{- include "pagerless.validateWatch" . }}
 {{- if .Values.rbac.create }}
+{{- /*
+Agent authentication is the same in both watch modes: the server creates one
+TokenReview per agent report or tool call. The grant is a separate ClusterRole
+so allowlist mode, which renders no cluster-wide read role, cannot lose it.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-pagerless-agent-auth
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+rules:
+  {{- include "pagerless.tokenReviewRules" . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-pagerless-agent-auth
+  labels:
+    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-pagerless-agent-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
+---
 {{- if .Values.rbac.watchAllNamespaces }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

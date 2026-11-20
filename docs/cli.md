@@ -161,7 +161,10 @@ Exchanges the bootstrap token from `pagerless-admin-secret` for a session and
 stores the server URL and the session in the local configuration with mode
 `0600`. The first sign-in needs `--server <url>`; later runs reuse the stored
 URL. The token is read from the same four sources as a credential and is never
-stored. The command prints the step that deletes the bootstrap Secret.
+stored. The command prints the step that deletes the bootstrap Secret: it reads
+`PAGERLESS_AUTH_ADMIN_SECRET` from the release's `pagerless-config` ConfigMap
+when the kubeconfig can reach the cluster, and otherwise names the chart value
+`auth.adminSecret.name` rather than guessing a Secret name.
 
 ## `kubectl page version`
 

@@ -17,7 +17,7 @@ helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
 | `Deployment` | `pagerless-server` | One replica, `Recreate`, because it is the single writer of Page status. |
 | `Service` | `pagerless-server` | `ClusterIP` by default; `service.type` changes it. |
 | `PersistentVolumeClaim` | `pagerless-data` | The append-only Page history. |
-| `ConfigMap` | `pagerless-config` | Non-secret server and CLI configuration: the allowlist and the credentials Secret's name and manager. |
+| `ConfigMap` | `pagerless-config` | Non-secret server and CLI configuration: the allowlist, the credentials Secret's name and manager, and the bootstrap token Secret's name. |
 | `ConfigMap` | `pagerless-connectors` | The catalogue rendered from `connectors.*`. |
 | `Secret` | `pagerless-admin-secret` | The bootstrap token, in `token` mode only; kept across `helm uninstall` unless `auth.adminSecret.keep` is false. |
 | `Secret` | `pagerless-session-key` | The HMAC-SHA256 session signing key, in `token` mode only; kept across `helm uninstall`. |
@@ -27,6 +27,7 @@ helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
 | `ServiceAccount` | `pagerless-server` | Holds the read identity. |
 | `ServiceAccount` | `pagerless-agent` | Bound to no Role or ClusterRole; never automounts a token. |
 | `ClusterRole`, `ClusterRoleBinding` | `<release>-pagerless-read` | Cluster-wide mode only. |
+| `ClusterRole`, `ClusterRoleBinding` | `<release>-pagerless-agent-auth` | `create` on `authentication.k8s.io/tokenreviews` in every watch mode; no object access. |
 | `Role`, `RoleBinding` | `<release>-pagerless-read` | One per entry in `rbac.watchNamespaces`, in allowlist mode. |
 | `Role`, `RoleBinding` | `pagerless-server` | Pages, the agent Jobs, and the credentials Secret in the release namespace. |
 | `Role` | `pagerless-approver` | `get`/`list`/`watch` and `patch` on `pages`. |
@@ -42,9 +43,10 @@ certificate, and no webhook port.
 The read role and every allowlisted read Role grant `get`/`list`/`watch` on
 pods, services, endpoints, ConfigMaps, PVCs, both Event APIs, `apps` workloads,
 `batch` jobs and cron jobs, endpoint slices, and ingresses, plus `get` on
-`pods/log`. The cluster-wide role adds nodes, namespaces, `/openapi/v3`, and
-`create` on `authentication.k8s.io/tokenreviews`, which authenticates the agent
-Job.
+`pods/log`. The cluster-wide role adds nodes, namespaces, and `/openapi/v3`.
+A separate ClusterRole and ClusterRoleBinding always grant `create` on
+`authentication.k8s.io/tokenreviews`, in both watch modes: it authenticates the
+per-Page agent token and grants no access to any cluster object.
 
 No rule grants `update`, `patch`, `create`, or `delete` on a workload, Event, or
 Node, or any of `pods/exec`, `pods/attach`, `pods/portforward`,

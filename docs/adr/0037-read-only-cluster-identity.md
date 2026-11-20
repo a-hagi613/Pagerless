@@ -41,6 +41,12 @@ The one non-read verb outside the release namespace is `create` on
 write to any object, and the server cannot verify an agent Job's projected token
 without it.
 
+> **Amendment (2026-11-19):** The `tokenreviews` grant is rendered as its own
+> ClusterRole and ClusterRoleBinding in both watch modes, including the
+> namespace allowlist. Creating a TokenReview only asks the API server whether a
+> bearer token is valid; it grants no access to any cluster object, and the
+> server cannot authenticate an agent Job's per-Page token without it.
+
 Forbidden, and asserted by tests: any `update`, `patch`, `create`, or `delete`
 on a workload, Event, or Node; `pods/exec`, `pods/attach`, `pods/portforward`,
 `pods/ephemeralcontainers`; `serviceaccounts/token`; `impersonate`, `escalate`,
