@@ -14,6 +14,12 @@ RELEASE_TOOLS_DIR := $(CURDIR)/bin/release-tools
 # The snapshot version names the archives and the plugin's reported version. It
 # is never a release version, so a snapshot can never be mistaken for one.
 RELEASE_SNAPSHOT_VERSION ?= 0.0.0-snapshot
+# GoReleaser evaluates the Krew publisher's templates even when it is only
+# building a snapshot, so the two values it reads from the environment are always
+# supplied here. A snapshot never uploads, so skipping is the correct default for
+# every local and pull-request run; the tagged workflow overrides both.
+KREW_BRANCH ?= page-$(RELEASE_SNAPSHOT_VERSION)
+KREW_SKIP_UPLOAD ?= true
 ENVTEST_K8S_VERSION := 1.37.0
 GO_TEST_FLAGS ?= -p 1 -parallel 2
 
@@ -87,7 +93,8 @@ release-preflight: ## Run the whole release pipeline locally, without publishing
 	$(MAKE) release-snapshot
 
 release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest locally.
-	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
+	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) KREW_BRANCH="$(KREW_BRANCH)" KREW_SKIP_UPLOAD="$(KREW_SKIP_UPLOAD)" \
+		PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
 	bash scripts/release/render-krew-manifest.sh --checksums dist/checksums.txt --version "$(RELEASE_SNAPSHOT_VERSION)" --output dist/plugins/page.yaml
 	bash scripts/release/lint-krew-manifest.sh dist/plugins/page.yaml dist/checksums.txt
 	bash scripts/release/verify-artifacts.sh --version "$(RELEASE_SNAPSHOT_VERSION)" --checksums dist/checksums.txt --dist dist --skip-krew
