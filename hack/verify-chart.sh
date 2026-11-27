@@ -154,10 +154,18 @@ bash "$REPO_ROOT/hack/verify-read-only-grants.sh" \
 fake_pod="$(kc -n "$NAMESPACE" get pod -l app.kubernetes.io/name=pagerless-fake -o jsonpath='{.items[0].metadata.name}')"
 
 echo "==> asking through the released CLI"
-printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
+if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
 	/usr/local/bin/kubectl-page "Why is checkout failing?" -n "$WORKLOAD_NAMESPACE" \
 	--address "http://pagerless-server:8080" --token-file - --json \
-	--follow-timeout 300s >"$STATE/cli.json"
+	--follow-timeout 300s >"$STATE/cli.json" 2>"$STATE/cli.err"; then
+	echo "the CLI investigation failed:" >&2
+	cat "$STATE/cli.err" >&2
+	echo "==> agent logs" >&2
+	kc -n "$NAMESPACE" logs deployment/pagerless-agent --tail=200 >&2 || true
+	echo "==> server logs" >&2
+	kc -n "$NAMESPACE" logs deployment/pagerless-server --tail=100 >&2 || true
+	exit 1
+fi
 E2E_PAGE_FILE="$STATE/page-id" python3 - "$STATE/cli.json" <<'PY'
 import json, os, sys
 body = json.load(open(sys.argv[1]))
@@ -216,7 +224,7 @@ if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
 echo "==> proving readiness reports a broken model and recovers"
 helm upgrade "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" --reuse-values \
-	--set model.baseUrl=http://pagerless-fake:9099/v1 --wait --timeout "${TIMEOUT}s" >/dev/null
+	--set model.baseUrl=http://pagerless-fake:9090/v1-broken --wait --timeout "${TIMEOUT}s" >/dev/null
 degraded=0
 for _ in $(seq 1 60); do
 	status=$(curl --silent -o "$STATE/degraded.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
