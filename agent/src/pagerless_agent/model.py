@@ -1,77 +1,55 @@
-"""The interface between the agent graph and a model endpoint.
+"""The small interface between the agent graph and a Chat Completions endpoint.
 
-One provider speaks the OpenAI Chat Completions protocol. It answers a `ModelRequest`
-with a `ModelResponse`; the graph never sees an SDK object, a provider dialect, or a
-retry. `Rung` records which structured-output rung produced a stage's output, so that a
-degraded installation is visible on the Page.
+The graph never sees an SDK object, a provider dialect or a retry. It works with
+`ModelRequest` and `ModelResponse`, which also make the tests deterministic.
 """
 
 from __future__ import annotations
 
-from enum import StrEnum
-from typing import Any, Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from pagerless_agent.budget import Budget
-from pagerless_agent.structured import Rung
 
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class Stage(StrEnum):
-    """The stage that makes a model call: a graph stage, or the Narrative Job."""
-
-    INVESTIGATE = "investigate"
-    DIAGNOSE = "diagnose"
-    PROPOSE = "propose"
-    NARRATIVE = "narrative"
-
-
 class ToolSpec(_Frozen):
-    """A tool the model may call, forwarded verbatim from the server's catalogue."""
+    """A tool the model may call, forwarded from the Go tool policy."""
 
     name: str
     description: str
-    input_schema: dict[str, Any]
+    input_schema: dict[str, object]
 
 
 class ToolCall(_Frozen):
-    """A request from the model to call one tool.
+    """One tool call requested by the model.
 
-    `argument_error` is set when the model's arguments could not be repaired. The graph
-    returns it to the model as a correctable tool error, so a weak model gets one chance
-    to call the tool again rather than failing the Job (§3.4.3).
+    `argument_error` is set when the requested arguments were not a JSON object. The graph
+    returns it as a correctable tool error, so a weak model gets another attempt instead of
+    failing the turn.
     """
 
     id: str
     name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
+    arguments: dict[str, object] = Field(default_factory=dict)
     argument_error: str | None = None
 
 
 class Message(_Frozen):
-    """One message of the conversation.
+    """One message sent to or received from the model."""
 
-    A `tool` message carries the output of the call named by `tool_call_id`. Provider-private
-    reasoning fields have no representation here: they are dropped when a response is
-    normalised and can therefore never be echoed back to a provider.
-    """
-
-    role: str
+    role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
 
 
 class Usage(_Frozen):
-    """The tokens one model call used, and whether the provider reported them.
-
-    `estimated` is true when the provider omitted `usage` and the figure was computed
-    locally, which the report then states so the Page never presents an estimate as fact.
-    """
+    """The tokens one model call used, and whether the provider reported them."""
 
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
@@ -79,43 +57,31 @@ class Usage(_Frozen):
 
 
 class ModelRequest(_Frozen):
-    """One call to the model.
+    """One request. `forced_tool` asks the provider to force a named function call."""
 
-    `output_schema` is set when the stage needs structured output; the response must then
-    carry `structured`. `max_output_tokens` caps this call when the stage needs a smaller
-    limit than the endpoint's.
-    """
-
-    stage: Stage
     system: str
     messages: tuple[Message, ...]
     tools: tuple[ToolSpec, ...] = ()
-    output_schema: dict[str, Any] | None = None
     max_output_tokens: int | None = Field(default=None, ge=1)
+    forced_tool: str | None = None
+    purpose: Literal["turn", "readiness"] = "turn"
 
 
 class ModelResponse(_Frozen):
-    """The model's answer to one request.
-
-    `rung` is the structured-output rung that produced `structured`, `None` for a stage
-    that asked for no schema. `model_calls` counts the HTTP requests behind this answer,
-    including transport retries, so the budget accounts for every one.
-    """
+    """The provider's answer, normalised and bounded."""
 
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
-    structured: dict[str, Any] | None = None
     usage: Usage
-    rung: Rung | None = None
     finish_reason: str | None = None
     model_calls: int = 1
 
 
 class ModelProvider(Protocol):
-    """Anything that can answer a model request."""
+    """Anything that can answer one Chat Completions request."""
 
     async def complete(self, request: ModelRequest, *, budget: Budget | None = None) -> ModelResponse:
-        """Answer the request, counting every call against `budget`."""
+        """Answer the request, counting every HTTP attempt against `budget`."""
         ...
 
     def estimate_input_tokens(self, request: ModelRequest) -> int:

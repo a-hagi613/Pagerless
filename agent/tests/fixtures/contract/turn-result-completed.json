@@ -1,0 +1,16 @@
+{
+  "status": "completed",
+  "content": "Checkout calls an upstream that is not accepting connections.",
+  "citations": [
+    {
+      "callId": "c-1",
+      "pointer": "/data/items/0"
+    }
+  ],
+  "usage": {
+    "inputTokens": 1200,
+    "outputTokens": 180,
+    "modelCalls": 2,
+    "toolCalls": 1
+  }
+}

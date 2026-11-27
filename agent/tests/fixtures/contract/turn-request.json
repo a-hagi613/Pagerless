@@ -1,0 +1,39 @@
+{
+  "pageId": "p1",
+  "turnId": "t1",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Why is checkout timing out?",
+      "turnId": "t1"
+    }
+  ],
+  "namespace": "shop",
+  "target": {
+    "kind": "Deployment",
+    "name": "checkout",
+    "namespace": "shop"
+  },
+  "tools": [
+    {
+      "name": "resources_get",
+      "description": "Read one allowed Kubernetes object.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"type": "string"},
+          "name": {"type": "string"},
+          "namespace": {"type": "string"}
+        }
+      }
+    }
+  ],
+  "callbackUrl": "http://pagerless-server.pagerless.svc:8080",
+  "limits": {
+    "toolCalls": 4,
+    "modelCalls": 4,
+    "inputTokens": 100000,
+    "seconds": 60
+  }
+}

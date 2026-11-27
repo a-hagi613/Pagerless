@@ -1,0 +1,34 @@
+{
+  "pageId": "p1",
+  "turnId": "t2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Why is checkout timing out?",
+      "turnId": "t1"
+    },
+    {
+      "role": "assistant",
+      "content": "The logs show repeated upstream read timeouts.",
+      "turnId": "t1"
+    },
+    {
+      "role": "user",
+      "content": "Which change introduced that?",
+      "turnId": "t2"
+    }
+  ],
+  "namespace": "shop",
+  "tools": [
+    {
+      "name": "repo_read",
+      "description": "Read one repository file.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"path": {"type": "string"}}
+      }
+    }
+  ],
+  "callbackUrl": "http://pagerless-server.pagerless.svc:8080"
+}

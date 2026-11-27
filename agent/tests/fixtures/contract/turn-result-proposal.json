@@ -1,0 +1,25 @@
+{
+  "status": "completed",
+  "content": "The readiness probe timeout is too short for the cold start, so the deployment is edited.",
+  "citations": [
+    {
+      "callId": "c-1",
+      "pointer": "/data/items/0"
+    }
+  ],
+  "proposal": {
+    "baseSha": "0123456789abcdef0123456789abcdef01234567",
+    "files": [
+      {
+        "path": "apps/shop/deployment.yaml",
+        "content": "apiVersion: apps/v1\nkind: Deployment\n"
+      }
+    ]
+  },
+  "usage": {
+    "inputTokens": 2200,
+    "outputTokens": 320,
+    "modelCalls": 3,
+    "toolCalls": 2
+  }
+}
