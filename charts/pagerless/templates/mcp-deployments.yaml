@@ -161,3 +161,105 @@ spec:
                 path: github-read-token
         - name: tmp
           emptyDir: {}
+{{- define "pagerless.observabilityMCP" -}}
+{{- $root := .root -}}
+{{- $name := .name -}}
+{{- $provider := .provider -}}
+{{- $url := .url -}}
+{{- $tokenKey := .tokenKey -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-%s-mcp" (include "pagerless.fullname" $root) $name }}
+  labels:
+    {{- include "pagerless.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pagerless.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}-mcp
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}-mcp
+    spec:
+      serviceAccountName: {{ printf "%s-github-mcp" (include "pagerless.fullname" $root) }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml $root.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $name }}-mcp
+          image: {{ include "pagerless.serverImage" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command: ["/usr/local/bin/pagerless-mcp"]
+          args:
+            - --provider={{ $provider }}
+            - --listen=:{{ $root.Values.mcp.port }}
+            - --token-file=/var/run/pagerless/secret/mcp-token
+            - --{{ $provider }}-url={{ required (printf "observability.%s.url is required when enabled" $name) $url }}
+            {{- if $tokenKey }}
+            - --api-token-file=/var/run/pagerless/observability/token
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ $root.Values.mcp.port }}
+              protocol: TCP
+          volumeMounts:
+            {{- include "pagerless.credentialsMount" $root | nindent 12 }}
+            {{- if $tokenKey }}
+            - name: observability-token
+              mountPath: /var/run/pagerless/observability
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            {{- toYaml $root.Values.securityContext | nindent 12 }}
+      volumes:
+        {{- include "pagerless.credentialsVolume" $root | nindent 8 }}
+        {{- if $tokenKey }}
+        - name: observability-token
+          secret:
+            secretName: {{ required "existingSecret must name the externally provisioned credentials Secret" $root.Values.existingSecret }}
+            optional: true
+            defaultMode: 0400
+            items:
+              - key: {{ $tokenKey }}
+                path: token
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- if .Values.observability.prometheus.enabled }}
+---
+{{ include "pagerless.observabilityMCP" (dict "root" . "name" "prometheus" "provider" "prometheus" "url" .Values.observability.prometheus.url "tokenKey" .Values.observability.prometheus.tokenSecretKey) }}
+{{- end }}
+{{- if .Values.observability.grafana.enabled }}
+---
+{{ include "pagerless.observabilityMCP" (dict "root" . "name" "grafana" "provider" "grafana" "url" .Values.observability.grafana.url "tokenKey" .Values.observability.grafana.tokenSecretKey) }}
+{{- end }}

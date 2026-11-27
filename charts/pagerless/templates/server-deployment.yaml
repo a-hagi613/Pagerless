@@ -65,6 +65,16 @@ spec:
               value: /var/run/pagerless/secret/github-read-token
             - name: PAGERLESS_GITHUB_WRITE_TOKEN_FILE
               value: /var/run/pagerless/secret/github-write-token
+            - name: PAGERLESS_TRIGGER_TOKEN_FILE
+              value: /var/run/pagerless/trigger/trigger-token
+            {{- if .Values.observability.prometheus.enabled }}
+            - name: PAGERLESS_PROMETHEUS_MCP_URL
+              value: {{ printf "http://%s:%v/mcp" (include "pagerless.prometheusMCPServiceName" .) .Values.mcp.port | quote }}
+            {{- end }}
+            {{- if .Values.observability.grafana.enabled }}
+            - name: PAGERLESS_GRAFANA_MCP_URL
+              value: {{ printf "http://%s:%v/mcp" (include "pagerless.grafanaMCPServiceName" .) .Values.mcp.port | quote }}
+            {{- end }}
             - name: PAGERLESS_NAMESPACE_ALLOWLIST
               value: {{ join "," .Values.kubernetes.namespaceAllowlist | quote }}
             - name: PAGERLESS_RETENTION
@@ -95,6 +105,9 @@ spec:
               mountPath: /var/lib/pagerless
             - name: tmp
               mountPath: /tmp
+            - name: trigger
+              mountPath: /var/run/pagerless/trigger
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /readyz
@@ -126,6 +139,14 @@ spec:
           {{- end }}
         - name: tmp
           emptyDir: {}
+        - name: trigger
+          secret:
+            secretName: {{ required "existingSecret must name the externally provisioned credentials Secret" .Values.existingSecret }}
+            optional: true
+            defaultMode: 0400
+            items:
+              - key: trigger-token
+                path: trigger-token
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

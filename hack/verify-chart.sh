@@ -99,6 +99,10 @@ helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--set github.baseBranch=main \
 	--set github.apiUrl=http://pagerless-fake:9091 \
 	--set github.pathPrefix=apps/checkout \
+	--set observability.prometheus.enabled=true \
+	--set observability.prometheus.url=http://pagerless-fake:9092 \
+	--set observability.grafana.enabled=true \
+	--set observability.grafana.url=http://pagerless-fake:9093 \
 	--set image.tag="${VERSION}" \
 	--set agentImage.tag="${VERSION}" \
 	--set agent.budget.seconds=180 \
@@ -112,7 +116,7 @@ helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 		curl --silent "http://127.0.0.1:18081/readyz" || true
 		kill "$DIAG_PID" >/dev/null 2>&1 || true
 		kc -n "$NAMESPACE" describe pods
-		for deployment in pagerless-server pagerless-agent pagerless-kubernetes-mcp pagerless-github-mcp; do
+		for deployment in pagerless-server pagerless-agent pagerless-kubernetes-mcp pagerless-github-mcp pagerless-prometheus-mcp pagerless-grafana-mcp; do
 			echo "==> logs ${deployment}"
 			kc -n "$NAMESPACE" logs "deployment/${deployment}" --tail=80 || true
 		done
@@ -141,6 +145,8 @@ status=$(curl --silent -o "$STATE/ready.json" -w '%{http_code}' "http://127.0.0.
 	kc -n "$NAMESPACE" logs deployment/pagerless-agent --tail=100 || true
 	kc -n "$NAMESPACE" logs deployment/pagerless-kubernetes-mcp --tail=100 || true
 	kc -n "$NAMESPACE" logs deployment/pagerless-github-mcp --tail=100 || true
+	kc -n "$NAMESPACE" logs deployment/pagerless-prometheus-mcp --tail=100 || true
+	kc -n "$NAMESPACE" logs deployment/pagerless-grafana-mcp --tail=100 || true
 	exit 1
 }
 python3 - "$STATE/ready.json" <<'PY'
@@ -149,6 +155,8 @@ body = json.load(open(sys.argv[1]))
 assert body["status"] == "ready", body
 for check in body["checks"]:
     assert check["ok"], check
+names = {check["name"] for check in body["checks"]}
+assert {"prometheus_mcp", "grafana_mcp"} <= names, names
 print("readiness:", ", ".join(c["name"] for c in body["checks"]))
 PY
 
@@ -428,6 +436,20 @@ SPEC
 	) || fail_stage "browser"
 elif [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
 	echo "browser is blocked: the CLI page is unavailable" >&2
+fi
+
+echo "==> starting an investigation through the MCP trigger"
+trigger_response="$(curl --silent --show-error --fail-with-body -X POST \
+	"http://127.0.0.1:${LOCAL_PORT}/mcp" \
+	-H "Authorization: Bearer ${operator_token}" \
+	-H 'Content-Type: application/json' \
+	-d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pagerless_investigate","arguments":{"question":"Why is checkout unavailable?","namespace":"shop","target":{"kind":"Deployment","name":"checkout"},"idempotencyKey":"e2e-mcp-trigger"}}}')" || {
+	echo "the MCP trigger failed: ${trigger_response}" >&2
+	fail_stage "MCP trigger"
+}
+if [ "${failures:-0}" -eq 0 ]; then
+	printf '%s' "$trigger_response" | python3 -c 'import json,sys; body=json.load(sys.stdin); text=body["result"]["content"][0]["text"]; created=json.loads(text); assert created["pageId"] and created["turnId"], created; print("MCP trigger page:", created["pageId"])' \
+		|| fail_stage "MCP trigger"
 fi
 
 if [ "${failures:-0}" -ne 0 ]; then

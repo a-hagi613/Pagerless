@@ -115,18 +115,20 @@ func main() {
 	}
 }
 
-// serve runs the model on :9090 and GitHub on :9091.
+// serve runs the model, GitHub, Prometheus and Grafana fixtures.
 func serve() error {
 	github := newGitHub()
 	model := &modelServer{}
-	errors := make(chan error, 2)
+	errors := make(chan error, 4)
 	go func() { errors <- http.ListenAndServe(":9090", model) }()
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/", github)
 		errors <- http.ListenAndServe(":9091", mux)
 	}()
-	log.Println("fake model on :9090, fake GitHub on :9091")
+	go func() { errors <- http.ListenAndServe(":9092", prometheusHandler()) }()
+	go func() { errors <- http.ListenAndServe(":9093", grafanaHandler()) }()
+	log.Println("fake model on :9090, fake GitHub on :9091, fake Prometheus on :9092, fake Grafana on :9093")
 	return <-errors
 }
 

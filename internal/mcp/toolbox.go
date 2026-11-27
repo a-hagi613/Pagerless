@@ -35,6 +35,9 @@ type Check struct {
 type Toolbox struct {
 	Kubernetes *Kubernetes
 	GitHub     *GitHub
+	// Extras are optional integrations (Prometheus, Grafana). They are admitted
+	// when configured and never block the core Kubernetes/GitHub path.
+	Extras []NamedAdapter
 
 	mu                   sync.Mutex
 	registry             *Registry
@@ -44,12 +47,13 @@ type Toolbox struct {
 	lastGitHub           bool
 	lastReasonKubernetes string
 	lastReasonGitHub     string
+	lastExtras           []Check
 	probedAt             time.Time
 }
 
-// NewToolbox returns a toolbox over the two integrations.
-func NewToolbox(kubernetes *Kubernetes, github *GitHub) *Toolbox {
-	return &Toolbox{Kubernetes: kubernetes, GitHub: github}
+// NewToolbox returns a toolbox over the core and optional integrations.
+func NewToolbox(kubernetes *Kubernetes, github *GitHub, extras ...NamedAdapter) *Toolbox {
+	return &Toolbox{Kubernetes: kubernetes, GitHub: github, Extras: extras}
 }
 
 // Tools returns the admitted tools, rebuilding the registry when the cached one
@@ -133,6 +137,11 @@ func (t *Toolbox) Probe(ctx context.Context) []Check {
 		t.backoff = 0
 	}
 	t.probedAt = time.Now().Add(delay)
+	extraNames := make(map[string]bool, len(t.Extras))
+	for _, extra := range t.Extras {
+		extraNames[extra.Name] = true
+	}
+	t.lastExtras = t.lastExtras[:0]
 	for _, check := range checks {
 		switch check.Name {
 		case CheckKubernetes:
@@ -141,21 +150,27 @@ func (t *Toolbox) Probe(ctx context.Context) []Check {
 		case CheckGitHubRead:
 			t.lastGitHub = check.OK
 			t.lastReasonGitHub = check.Reason
+		default:
+			if extraNames[check.Name] {
+				t.lastExtras = append(t.lastExtras, check)
+			}
 		}
 	}
 	return checks
 }
 
 func (t *Toolbox) cachedChecksLocked() []Check {
-	return []Check{
-		{Name: CheckKubernetes, OK: t.lastKubernetes, Reason: t.lastReasonKubernetes},
-		{Name: CheckGitHubRead, OK: t.lastGitHub, Reason: t.lastReasonGitHub},
-	}
+	checks := make([]Check, 0, 2+len(t.lastExtras))
+	checks = append(checks,
+		Check{Name: CheckKubernetes, OK: t.lastKubernetes, Reason: t.lastReasonKubernetes},
+		Check{Name: CheckGitHubRead, OK: t.lastGitHub, Reason: t.lastReasonGitHub},
+	)
+	return append(checks, t.lastExtras...)
 }
 
 // probe performs both capability checks without the cache.
 func (t *Toolbox) probe(ctx context.Context) []Check {
-	checks := make([]Check, 0, 2)
+	checks := make([]Check, 0, 2+len(t.lastExtras))
 	if t.Kubernetes == nil {
 		checks = append(checks, Check{Name: CheckKubernetes, Reason: "the Kubernetes integration is not configured"})
 	} else if tools, err := t.Kubernetes.Tools(ctx); err != nil {
@@ -167,26 +182,32 @@ func (t *Toolbox) probe(ctx context.Context) []Check {
 	}
 	if t.GitHub == nil {
 		checks = append(checks, Check{Name: CheckGitHubRead, Reason: "the GitHub integration is not configured"})
-		return checks
-	}
-	if _, err := t.GitHub.Tools(ctx); err != nil {
+	} else if _, err := t.GitHub.Tools(ctx); err != nil {
 		checks = append(checks, Check{Name: CheckGitHubRead,
 			Reason: "the GitHub MCP server did not answer with admitted read tools"})
-		return checks
-	}
-	result, err := t.GitHub.Call(ctx, "github_repository", json.RawMessage(`{}`))
-	if err != nil {
+	} else if result, err := t.GitHub.Call(ctx, "github_repository", json.RawMessage(`{}`)); err != nil {
 		checks = append(checks, Check{Name: CheckGitHubRead,
 			Reason: "the configured repository could not be read"})
-		return checks
-	}
-	if result.IsError {
+	} else if result.IsError {
 		checks = append(checks, Check{Name: CheckGitHubRead,
 			Reason: "the configured repository read was refused"})
-		return checks
+	} else {
+		checks = append(checks, Check{Name: CheckGitHubRead, OK: true,
+			Reason: "the configured repository is readable"})
 	}
-	checks = append(checks, Check{Name: CheckGitHubRead, OK: true,
-		Reason: "the configured repository is readable"})
+	for _, extra := range t.Extras {
+		if extra.Adapter == nil {
+			continue
+		}
+		tools, err := extra.Adapter.Tools(ctx)
+		if err != nil {
+			checks = append(checks, Check{Name: extra.Name,
+				Reason: "the " + extra.Name + " MCP server did not answer with admitted read tools"})
+			continue
+		}
+		checks = append(checks, Check{Name: extra.Name, OK: true,
+			Reason: fmt.Sprintf("%d read tools admitted", len(tools))})
+	}
 	return checks
 }
 
@@ -209,6 +230,17 @@ func (t *Toolbox) refreshLocked(ctx context.Context) ([]Tool, error) {
 		} else if len(tools) > 0 {
 			adapters["github"] = t.GitHub
 			fetched["github"] = tools
+		}
+	}
+	for _, extra := range t.Extras {
+		if extra.Adapter == nil {
+			continue
+		}
+		if tools, err := extra.Adapter.Tools(ctx); err != nil {
+			reasons = append(reasons, extra.Name+": "+err.Error())
+		} else if len(tools) > 0 {
+			adapters[extra.Name] = extra.Adapter
+			fetched[extra.Name] = tools
 		}
 	}
 	if len(adapters) == 0 {

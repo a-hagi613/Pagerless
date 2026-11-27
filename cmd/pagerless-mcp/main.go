@@ -17,8 +17,10 @@ import (
 
 	"github.com/a-hagi613/pagerless/internal/config"
 	"github.com/a-hagi613/pagerless/internal/githubmcp"
+	"github.com/a-hagi613/pagerless/internal/grafanamcp"
 	"github.com/a-hagi613/pagerless/internal/kubemcp"
 	"github.com/a-hagi613/pagerless/internal/mcpserver"
+	"github.com/a-hagi613/pagerless/internal/prometheusmcp"
 )
 
 func main() {
@@ -29,9 +31,13 @@ func main() {
 }
 
 func run() error {
-	provider := flag.String("provider", "", "kubernetes or github")
+	provider := flag.String("provider", "", "kubernetes, github, prometheus or grafana")
 	listen := flag.String("listen", ":8091", "listen address")
 	tokenFile := flag.String("token-file", "", "file holding the installer-provided bearer credential")
+	apiTokenFile := flag.String("api-token-file", "",
+		"optional file holding the upstream Prometheus or Grafana bearer token")
+	prometheusURL := flag.String("prometheus-url", "", "Prometheus base URL (prometheus)")
+	grafanaURL := flag.String("grafana-url", "", "Grafana base URL (grafana)")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig file; empty uses the in-cluster identity")
 	repository := flag.String("repository", "", "owner/name repository (github)")
 	baseBranch := flag.String("base-branch", "main", "source base branch to resolve to a commit (github)")
@@ -50,6 +56,10 @@ func run() error {
 		return fmt.Errorf("read the integration token: %w", err)
 	}
 	server := &mcpserver.Server{Name: "pagerless-" + *provider, Token: token, Tools: nil}
+	var upstreamToken func(context.Context) (string, error)
+	if *apiTokenFile != "" {
+		upstreamToken = config.ContextToken(config.ReadToken(*apiTokenFile))
+	}
 	switch strings.ToLower(*provider) {
 	case "kubernetes":
 		kubernetes, err := kubemcp.New(*kubeconfig, split(*namespaces))
@@ -69,8 +79,28 @@ func run() error {
 		}
 		server.Tools = github.Tools()
 		server.Name = "pagerless-github-mcp"
+	case "prometheus":
+		if *prometheusURL == "" {
+			return errors.New("--prometheus-url is required for the prometheus provider")
+		}
+		prometheus, err := prometheusmcp.New(*prometheusURL, upstreamToken, nil)
+		if err != nil {
+			return err
+		}
+		server.Tools = prometheus.Tools()
+		server.Name = "pagerless-prometheus-mcp"
+	case "grafana":
+		if *grafanaURL == "" {
+			return errors.New("--grafana-url is required for the grafana provider")
+		}
+		grafana, err := grafanamcp.New(*grafanaURL, upstreamToken, nil)
+		if err != nil {
+			return err
+		}
+		server.Tools = grafana.Tools()
+		server.Name = "pagerless-grafana-mcp"
 	default:
-		return errors.New("--provider must be kubernetes or github")
+		return errors.New("--provider must be kubernetes, github, prometheus or grafana")
 	}
 
 	httpServer := &http.Server{

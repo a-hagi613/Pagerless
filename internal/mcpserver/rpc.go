@@ -42,6 +42,10 @@ type Server struct {
 	Tools []Tool
 	// Token returns the installer-provided bearer credential.
 	Token func() (string, error)
+	// Notifications handles a client-to-server MCP notification by method. A
+	// notification has no response, so a handler error cannot be reported to
+	// the caller; the automation log is the right place for it.
+	Notifications map[string]func(ctx context.Context, params json.RawMessage) error
 }
 
 // Handler serves POST /mcp and GET /healthz.
@@ -79,6 +83,9 @@ func (s *Server) handle(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if len(envelope.ID) == 0 {
+		if handler, found := s.Notifications[envelope.Method]; found {
+			_ = handler(request.Context(), envelope.Params)
+		}
 		response.WriteHeader(http.StatusAccepted)
 		return
 	}

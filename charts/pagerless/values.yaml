@@ -60,6 +60,20 @@ agent:
   extraEnv: []
 
 # The repository that owns the cluster's source configuration.
+# Optional read-only observability integrations. Each enabled integration
+# deploys its own MCP process; the server admits only the tools named above.
+observability:
+  prometheus:
+    enabled: false
+    url: ""
+    # Optional Secret key holding a Prometheus bearer token.
+    tokenSecretKey: ""
+  grafana:
+    enabled: false
+    url: ""
+    # Optional Secret key holding a Grafana service-account token.
+    tokenSecretKey: ""
+
 github:
   repository: ""
   baseBranch: main
