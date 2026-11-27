@@ -244,7 +244,7 @@ Exit codes:
 	persistent.StringVar(&opts.kubeContext, "context", "", "kubeconfig context to use")
 	persistent.StringVar(&opts.releaseNamespace, "release-namespace", "pagerless",
 		"namespace that holds the Pagerless service")
-	persistent.StringVar(&opts.service, "service", "pagerless-server",
+	persistent.StringVar(&opts.service, "service", defaultServiceName,
 		"installed Service name to discover")
 	persistent.StringVarP(&opts.namespace, "namespace", "n", "",
 		"optional namespace hint for the investigation")

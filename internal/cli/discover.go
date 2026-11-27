@@ -26,6 +26,19 @@ import (
 // forwardReadyTimeout bounds the wait for a local port-forward to accept.
 const forwardReadyTimeout = 15 * time.Second
 
+// loopbackAddress is the only interface a discovery tunnel binds. The client
+// forwards the operator token through it, so it must never listen publicly.
+const loopbackAddress = "127.0.0.1"
+
+// Service discovery constants. The chart selects the public API pods with the
+// component label, while the fixed Service name stays the documented default.
+const (
+	defaultServiceName = "pagerless-server"
+	componentLabel     = "app.kubernetes.io/component"
+	nameLabel          = "app.kubernetes.io/name"
+	serverComponent    = "server"
+)
+
 // tunnel is an in-process port-forward to the installed service. It lives as
 // long as the command that needs it.
 type tunnel struct {
@@ -107,9 +120,48 @@ func kubeConfig(opts *options) (*rest.Config, string, error) {
 	return restConfig, namespace, nil
 }
 
-// findService looks for the documented fixed service name, then for any
-// pagerless service in the candidate namespaces.
+// findService looks for the documented fixed service name, then for the one
+// Pagerless API Service in the candidate namespaces. It never guesses among
+// several installs: the operator token goes to whichever address this returns.
 func findService(
+	ctx context.Context, clientset kubernetes.Interface, namespaces []string, name string,
+) (*corev1.Service, error) {
+	service, err := serviceNamed(ctx, clientset, namespaces, name)
+	if err != nil {
+		return nil, err
+	}
+	if service != nil {
+		return service, nil
+	}
+	if name != defaultServiceName {
+		return nil, fmt.Errorf(
+			"no Pagerless service named %q in %s: check --service, pass --release-namespace, "+
+				"or pass --address to reach an existing service",
+			name, strings.Join(namespaces, " or "))
+	}
+	candidates, err := apiServerServices(ctx, clientset, namespaces)
+	if err != nil {
+		return nil, err
+	}
+	if len(candidates) == 1 {
+		return &candidates[0], nil
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf(
+			"no Pagerless API service named %q in %s: install the chart, pass --release-namespace, "+
+				"pass --service with the installed Service name, or pass --address to reach an "+
+				"existing service",
+			name, strings.Join(namespaces, " or "))
+	}
+	return nil, fmt.Errorf(
+		"found %d Pagerless API services (%s): pass --service with one name, "+
+			"--release-namespace to narrow the namespace, or --address to reach a known one",
+		len(candidates), strings.Join(serviceNames(candidates), ", "))
+}
+
+// serviceNamed returns the Service with exactly this name, or nil when none of
+// the candidate namespaces has it.
+func serviceNamed(
 	ctx context.Context, clientset kubernetes.Interface, namespaces []string, name string,
 ) (*corev1.Service, error) {
 	for _, namespace := range namespaces {
@@ -121,29 +173,84 @@ func findService(
 			return nil, fmt.Errorf("read service %s/%s: %w", namespace, name, err)
 		}
 	}
+	return nil, nil
+}
+
+// apiServerServices lists the Services that front Pagerless's public API, and
+// only those. A release also exposes agent and MCP Services; selecting one by a
+// loose name match would send the operator token to the wrong workload.
+func apiServerServices(
+	ctx context.Context, clientset kubernetes.Interface, namespaces []string,
+) ([]corev1.Service, error) {
+	var candidates []corev1.Service
+	seen := make(map[string]bool, len(namespaces))
 	for _, namespace := range namespaces {
+		if seen[namespace] {
+			continue
+		}
+		seen[namespace] = true
 		list, err := clientset.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("list services in %s: %w", namespace, err)
 		}
-		candidates := make([]corev1.Service, 0, len(list.Items))
 		for i := range list.Items {
 			item := list.Items[i]
-			if strings.Contains(strings.ToLower(item.Name), "pagerless") && len(item.Spec.Ports) > 0 {
+			if len(item.Spec.Ports) > 0 && isAPIService(item) {
 				candidates = append(candidates, item)
 			}
 		}
-		slices.SortFunc(candidates, func(left, right corev1.Service) int {
-			return strings.Compare(left.Name, right.Name)
-		})
-		if len(candidates) > 0 {
-			return &candidates[0], nil
+	}
+	slices.SortFunc(candidates, func(left, right corev1.Service) int {
+		if left.Namespace != right.Namespace {
+			return strings.Compare(left.Namespace, right.Namespace)
+		}
+		return strings.Compare(left.Name, right.Name)
+	})
+	return candidates, nil
+}
+
+// isAPIService reports whether the Service fronts the public API. The current
+// chart labels the selector, not the Service metadata, with the component; the
+// earlier chart named and selected the API Service by the fixed name. A Service
+// must also carry a Pagerless identity, so another chart's "server" component
+// can never receive the operator token.
+func isAPIService(service corev1.Service) bool {
+	if service.Spec.Selector[nameLabel] == defaultServiceName {
+		return true
+	}
+	if service.Spec.Selector[componentLabel] != serverComponent &&
+		service.Labels[componentLabel] != serverComponent {
+		return false
+	}
+	return identifiesPagerless(service)
+}
+
+// identifiesPagerless reports whether the Service's name or standard labels
+// name this project. The Service name and every standard label count, so a
+// release still matches when the chart's name is overridden.
+func identifiesPagerless(service corev1.Service) bool {
+	for _, value := range []string{
+		service.Name,
+		service.Labels[nameLabel],
+		service.Labels["app.kubernetes.io/instance"],
+		service.Labels["helm.sh/chart"],
+		service.Spec.Selector[nameLabel],
+		service.Spec.Selector["app.kubernetes.io/instance"],
+	} {
+		if strings.Contains(strings.ToLower(value), "pagerless") {
+			return true
 		}
 	}
-	return nil, fmt.Errorf(
-		"no Pagerless service named %q in %s: install the chart, pass --release-namespace, "+
-			"or pass --address to reach an existing service",
-		name, strings.Join(namespaces, " or "))
+	return false
+}
+
+// serviceNames lists candidates as namespace/name for a diagnostic.
+func serviceNames(services []corev1.Service) []string {
+	names := make([]string, len(services))
+	for i := range services {
+		names[i] = services[i].Namespace + "/" + services[i].Name
+	}
+	return names
 }
 
 // findPod selects a ready running pod behind the service.
@@ -230,6 +337,12 @@ func httpServicePort(service *corev1.Service) (corev1.ServicePort, bool) {
 	return corev1.ServicePort{}, false
 }
 
+// portForwardSpec returns the listen addresses and local:remote port pairs for
+// one discovered pod port.
+func portForwardSpec(port int32) (addresses, ports []string) {
+	return []string{loopbackAddress}, []string{fmt.Sprintf("0:%d", port)}
+}
+
 // forwardPod opens a loopback port-forward to one pod and waits until it is
 // ready to accept connections.
 func forwardPod(
@@ -249,8 +362,11 @@ func forwardPod(
 	stop := make(chan struct{})
 	ready := make(chan struct{})
 	failures := make(chan error, 1)
-	forwarder, err := portforward.New(dialer,
-		[]string{fmt.Sprintf("127.0.0.1:0:%d", port)}, stop, ready, io.Discard, io.Discard)
+	addresses, forwardPorts := portForwardSpec(port)
+	// client-go keeps the listen address separate from the port pair; an
+	// address inside the pair ("127.0.0.1:0:8080") is an invalid port format.
+	forwarder, err := portforward.NewOnAddresses(dialer, addresses, forwardPorts,
+		stop, ready, io.Discard, io.Discard)
 	if err != nil {
 		return "", nil, fmt.Errorf("prepare the port-forward: %w", err)
 	}
