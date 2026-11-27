@@ -25,9 +25,7 @@ export function HistorySidebar({
       <div className="flex items-center gap-2 px-3 py-3">
         {heading ? (
           <h2 className="text-sm font-semibold tracking-tight text-foreground">History</h2>
-        ) : (
-          <span className="text-sm font-semibold tracking-tight text-foreground">History</span>
-        )}
+        ) : null}
         <Button
           variant="ghost"
           size="icon-sm"
