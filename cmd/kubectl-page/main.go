@@ -1,5 +1,6 @@
-// Command kubectl-page is the kubectl plugin that starts, lists, and shows
-// Pages. kubectl runs it as `kubectl page`.
+// Command kubectl-page is the kubectl plugin for Pagerless. kubectl runs it as
+// `kubectl page`. Ctrl-C detaches from a streamed turn; stopping work is an
+// explicit `kubectl page stop`.
 package main
 
 import (
@@ -19,7 +20,7 @@ func main() {
 		// The root command silences cobra's own error printing so that the exit
 		// code is the only contract, so the message is printed here once and the
 		// documented code is returned to the shell.
-		fmt.Fprintln(os.Stderr, "kubectl-page:", err)
+		fmt.Fprintln(os.Stderr, "kubectl-page:", cli.ErrorText(err))
 		os.Exit(cli.ExitCode(err))
 	}
 }
