@@ -117,6 +117,11 @@ func readEvents(ctx context.Context, body io.Reader, outcome *streamOutcome, han
 		data = nil
 		eventID = 0
 		if current.Seq <= outcome.LastSeq {
+			// A replaying server may resend the terminal event; its status still
+			// ends this stream.
+			if status := terminalStatus(current); status != "" {
+				return status, true, nil
+			}
 			return "", false, nil
 		}
 		outcome.LastSeq = current.Seq
@@ -161,6 +166,15 @@ func readEvents(ctx context.Context, body io.Reader, outcome *streamOutcome, han
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if len(data) > 0 {
+		status, done, err := dispatch()
+		if err != nil {
+			return "", err
+		}
+		if done {
+			return status, nil
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("read the event stream: %w", err)

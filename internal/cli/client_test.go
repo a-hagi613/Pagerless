@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -280,6 +281,48 @@ func TestResponseSizeIsBounded(t *testing.T) {
 	res := runCLI(t, context.Background(), "--address", server.URL, "list")
 	requireCode(t, res.err, ExitFailure)
 	containsAll(t, ErrorText(res.err), "exceeds")
+}
+
+func TestStreamAcceptsATerminalEventWithoutATrailingBlankLine(t *testing.T) {
+	prepare(t)
+	server := newServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(writer, "id: 1\ndata: %s\n", eventJSON(t, 1, eventTurnFinished,
+			map[string]any{fieldStatus: statusCompleted}))
+	}))
+	res := runCLI(t, context.Background(), "--address", server.URL, "follow", "p1", "--from-start", "--json")
+	if res.err != nil {
+		t.Fatalf("follow: %v", res.err)
+	}
+	if decode[event](t, strings.TrimSpace(res.stdout)).Seq != 1 {
+		t.Fatalf("event = %q", res.stdout)
+	}
+}
+
+func TestStreamTreatsAReplayedTerminalEventAsFinished(t *testing.T) {
+	prepare(t)
+	var calls int
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/pages/p1/events", func(writer http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			writeSSE(t, writer, []sseEvent{
+				{1, eventJSON(t, 1, eventToolStarted, map[string]any{fieldCallID: "c1", fieldTool: testTool})},
+			})
+			return
+		}
+		writeSSE(t, writer, []sseEvent{
+			{1, eventJSON(t, 1, eventTurnFinished, map[string]any{fieldStatus: statusCompleted})},
+		})
+	})
+	server := newServer(t, mux)
+	res := runCLI(t, context.Background(), "--address", server.URL, "follow", "p1", "--from-start", "--json")
+	if res.err != nil {
+		t.Fatalf("follow: %v", res.err)
+	}
+	if calls != 2 {
+		t.Fatalf("connections = %d", calls)
+	}
 }
 
 func TestActivityAcceptsBothDocumentedShapes(t *testing.T) {
