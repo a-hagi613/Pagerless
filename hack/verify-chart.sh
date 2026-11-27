@@ -176,6 +176,16 @@ print("cli:", body["id"], body["status"], len(body["messages"]), "messages")
 open(os.environ["E2E_PAGE_FILE"], "w").write(body["id"])
 PY
 page_id="$(cat "$STATE/page-id")"
+call_id="$(python3 - "$STATE/cli.json" <<'PY'
+import json, sys
+body = json.load(open(sys.argv[1]))
+for message in body["messages"]:
+    if message["role"] == "assistant" and message["citations"]:
+        print(message["citations"][0]["callId"])
+        break
+PY
+)"
+[ -n "$call_id" ] || die "the CLI answer has no citation"
 
 echo "==> opening a second investigation through the browser API"
 kc -n "$NAMESPACE" exec "$fake_pod" -- env \
@@ -259,6 +269,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const token = process.env.PAGERLESS_E2E_TOKEN ?? "";
 const title = process.env.PAGERLESS_E2E_PAGE_TITLE ?? "Why is checkout failing?";
+const callId = process.env.PAGERLESS_E2E_CALL_ID ?? "";
 
 async function history(page: Page, testInfo: TestInfo) {
   if (testInfo.project.name.startsWith("mobile")) {
@@ -281,7 +292,10 @@ test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ pag
 
   const answers = page.getByRole("article", { name: "Pagerless answer" });
   await expect(answers.first()).toContainText("no memory limit");
-  await page.getByRole("button", { name: "Open evidence for call-1" }).click();
+  const initialAnswers = await answers.count();
+  expect(initialAnswers).toBeGreaterThan(0);
+  expect(callId).not.toBe("");
+  await page.getByRole("button", { name: `Open evidence for ${callId}` }).first().click();
   const evidence = page.getByRole("dialog", { name: "Tool evidence" });
   await expect(evidence).toContainText("resources_get");
   await expect(evidence).toContainText("[redacted:credential]");
@@ -305,9 +319,10 @@ test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ pag
     .getByRole("textbox")
     .fill("What changed?");
   await page.getByRole("button", { name: "Send follow-up" }).click();
-  await expect(page.getByRole("article", { name: "Pagerless answer" })).toHaveCount(2, {
-    timeout: 180_000,
-  });
+  await expect(page.getByRole("article", { name: "Pagerless answer" })).toHaveCount(
+    initialAnswers + 1,
+    { timeout: 180_000 },
+  );
 });
 SPEC
 	if [ ! -d "$REPO_ROOT/dashboard/node_modules" ]; then
@@ -318,12 +333,18 @@ SPEC
 		PAGERLESS_PORTAL_URL="http://127.0.0.1:${LOCAL_PORT}" \
 			PAGERLESS_E2E_TOKEN="$operator_token" \
 			PAGERLESS_E2E_PAGE_TITLE="Why is checkout failing?" \
+			PAGERLESS_E2E_CALL_ID="$call_id" \
 			npx playwright test e2e/real-backend.generated.spec.ts
 	)
 fi
 
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ] && [ "${negative:-1}" != "1" ]; then
+	echo "kind integration: negative readiness probe failed; every other group ran." >&2
+	exit 1
+fi
+
 echo
-if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ] && [ "${negative:-1}" = "1" ]; then
 	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, readiness recovery, RBAC, and draft PR verified."
 else
 	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, RBAC, and draft PR verified."
