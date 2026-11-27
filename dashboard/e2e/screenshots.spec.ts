@@ -88,6 +88,23 @@ test.describe("pull request screenshots", () => {
     await capture(page, "fixture-evidence-1280x900");
   });
 
+  test("captures the mobile evidence dialog with a large real-shaped response", async ({ page }, testInfo) => {
+    test.skip(!enabled, "set PAGERLESS_SCREENSHOTS=1 to capture the PR images");
+    test.skip(!testInfo.project.name.startsWith("mobile"), "the 390x844 evidence layout is the regression");
+    await reset(page);
+    await signIn(page);
+    await page.goto("/pages/p-large-evidence");
+    await expect(page.getByTestId("page-status")).toContainText("Complete");
+
+    await page.getByRole("button", { name: "Open evidence for c-large at /items/0/status" }).tap();
+    const dialog = page.getByRole("dialog", { name: "Tool evidence" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("region", { name: "Sanitized result" })).toContainText(
+      "inventory-setting",
+    );
+    await capture(page, "fixture-evidence-390x844");
+  });
+
   test("captures the mobile history drawer", async ({ page }, testInfo) => {
     test.skip(!enabled, "set PAGERLESS_SCREENSHOTS=1 to capture the PR images");
     test.skip(!testInfo.project.name.startsWith("mobile"), "narrow-viewport history sheet");

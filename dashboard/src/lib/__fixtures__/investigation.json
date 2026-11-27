@@ -36,6 +36,15 @@
       "status": "interrupted",
       "updatedAt": "2026-11-26T10:02:00Z",
       "activeTurnId": null
+    },
+    {
+      "id": "p-large-evidence",
+      "title": "Why is the inventory pod stuck in Pending?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:01:00Z",
+      "activeTurnId": null,
+      "namespace": "inventory",
+      "target": "Pod/inventory"
     }
   ],
   "details": {
@@ -149,6 +158,47 @@
           "citations": []
         }
       ]
+    },
+    "p-large-evidence": {
+      "id": "p-large-evidence",
+      "title": "Why is the inventory pod stuck in Pending?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:01:00Z",
+      "activeTurnId": null,
+      "namespace": "inventory",
+      "target": "Pod/inventory",
+      "lastEventId": 5,
+      "messages": [
+        {
+          "id": "m1",
+          "turnId": "t1",
+          "role": "user",
+          "content": "Why is the inventory pod stuck in Pending? Inspect the live workload and cite the evidence.",
+          "createdAt": "2026-11-26T10:00:00Z",
+          "citations": []
+        },
+        {
+          "id": "m2",
+          "turnId": "t1",
+          "role": "assistant",
+          "content": "The pod is Pending because its container waits on a ConfigMap named inventory-setting, while the namespace only defines inventory-settings. The live pod spec carries the singular reference, and the container has never started. Point the envFrom reference at inventory-settings.",
+          "createdAt": "2026-11-26T10:01:00Z",
+          "citations": [
+            {
+              "callId": "c-large",
+              "pointer": "/items/0/status"
+            },
+            {
+              "callId": "c-large",
+              "pointer": "/items/0/spec/containers/0/envFrom"
+            },
+            {
+              "callId": "c-large",
+              "pointer": "/items/0/spec/containers/0/volumeMounts/0/mountPath"
+            }
+          ]
+        }
+      ]
     }
   },
   "events": {
@@ -193,6 +243,13 @@
       { "seq": 7, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.finished", "time": "2026-11-26T10:06:03Z", "data": { "callId": "c42", "tool": "resources_get", "status": "ok", "durationMs": 39 } },
       { "seq": 8, "pageId": "p-reconnect", "turnId": "t5", "type": "answer", "time": "2026-11-26T10:06:10Z", "data": { "messageId": "m8", "content": "Webhook deliveries retry because the CronJob uses a fixed backoff after the first two denials; the retry is recorded as its own attempt.", "citations": [{ "callId": "c42", "pointer": "/spec/schedule" }] } },
       { "seq": 9, "pageId": "p-reconnect", "turnId": "t5", "type": "turn.finished", "time": "2026-11-26T10:06:10Z", "data": { "status": "completed" } }
+    ],
+    "p-large-evidence": [
+      {"seq": 1, "pageId": "p-large-evidence", "turnId": "t1", "type": "turn.started", "time": "2026-11-26T10:00:00Z", "data": {}},
+      {"seq": 2, "pageId": "p-large-evidence", "turnId": "t1", "type": "tool.started", "time": "2026-11-26T10:00:02Z", "data": {"callId": "c-large", "tool": "resources_list", "arguments": {"kind": "Pod", "namespace": "inventory"}}},
+      {"seq": 3, "pageId": "p-large-evidence", "turnId": "t1", "type": "tool.finished", "time": "2026-11-26T10:00:02Z", "data": {"callId": "c-large", "tool": "resources_list", "status": "ok", "durationMs": 17}},
+      {"seq": 4, "pageId": "p-large-evidence", "turnId": "t1", "type": "answer", "time": "2026-11-26T10:01:00Z", "data": {"messageId": "m2", "content": "The pod is Pending because its container waits on a ConfigMap named inventory-setting, while the namespace only defines inventory-settings. The live pod spec carries the singular reference, and the container has never started. Point the envFrom reference at inventory-settings.", "citations": [{"callId": "c-large", "pointer": "/items/0/status"}, {"callId": "c-large", "pointer": "/items/0/spec/containers/0/envFrom"}, {"callId": "c-large", "pointer": "/items/0/spec/containers/0/volumeMounts/0/mountPath"}]}},
+      {"seq": 5, "pageId": "p-large-evidence", "turnId": "t1", "type": "turn.finished", "time": "2026-11-26T10:01:00Z", "data": {"status": "completed"}}
     ]
   },
   "diffs": {
@@ -298,6 +355,231 @@
       "result": { "status": "running" },
       "status": "running",
       "durationMs": 0,
+      "redacted": false,
+      "truncated": false
+    },
+    "c-large": {
+      "callId": "c-large",
+      "tool": "resources_list",
+      "arguments": {
+        "kind": "Pod",
+        "namespace": "inventory"
+      },
+      "result": {
+        "items": [
+          {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+              "creationTimestamp": "2026-11-27T05:25:11Z",
+              "generateName": "inventory-6fdcc87654-",
+              "generation": 1,
+              "labels": {
+                "app": "inventory",
+                "pod-template-hash": "6fdcc87654"
+              },
+              "name": "inventory-6fdcc87654-8mlmc",
+              "namespace": "inventory",
+              "ownerReferences": [
+                {
+                  "apiVersion": "apps/v1",
+                  "blockOwnerDeletion": true,
+                  "controller": true,
+                  "kind": "ReplicaSet",
+                  "name": "inventory-6fdcc87654",
+                  "uid": "0099f136-055d-41e4-814a-17e02bc05094"
+                }
+              ],
+              "resourceVersion": "2034",
+              "uid": "75279cdb-d983-4501-ad53-41f40fd16536"
+            },
+            "spec": {
+              "containers": [
+                {
+                  "command": [
+                    "/bin/sh",
+                    "-c",
+                    "while true; do sleep 600; done"
+                  ],
+                  "envFrom": [
+                    {
+                      "configMapRef": {
+                        "name": "inventory-setting"
+                      }
+                    }
+                  ],
+                  "image": "pagerless-e2e:e2e",
+                  "imagePullPolicy": "Never",
+                  "name": "worker",
+                  "resources": {},
+                  "terminationMessagePath": "/dev/termination-log",
+                  "terminationMessagePolicy": "File",
+                  "volumeMounts": [
+                    {
+                      "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                      "name": "kube-api-access-clzv8",
+                      "readOnly": true
+                    }
+                  ]
+                }
+              ],
+              "dnsPolicy": "ClusterFirst",
+              "enableServiceLinks": true,
+              "nodeName": "pagerless-accept-control-plane",
+              "preemptionPolicy": "PreemptLowerPriority",
+              "priority": 0,
+              "restartPolicy": "Always",
+              "schedulerName": "default-scheduler",
+              "securityContext": {},
+              "serviceAccount": "default",
+              "serviceAccountName": "default",
+              "terminationGracePeriodSeconds": 30,
+              "tolerations": [
+                {
+                  "effect": "NoExecute",
+                  "key": "node.kubernetes.io/not-ready",
+                  "operator": "Exists",
+                  "tolerationSeconds": 300
+                },
+                {
+                  "effect": "NoExecute",
+                  "key": "node.kubernetes.io/unreachable",
+                  "operator": "Exists",
+                  "tolerationSeconds": 300
+                }
+              ],
+              "volumes": [
+                {
+                  "name": "kube-api-access-clzv8",
+                  "projected": {
+                    "defaultMode": 420,
+                    "sources": [
+                      {
+                        "serviceAccountToken": {
+                          "expirationSeconds": 3607,
+                          "path": "token"
+                        }
+                      },
+                      {
+                        "configMap": {
+                          "items": [
+                            {
+                              "key": "ca.crt",
+                              "path": "ca.crt"
+                            }
+                          ],
+                          "name": "kube-root-ca.crt"
+                        }
+                      },
+                      {
+                        "downwardAPI": {
+                          "items": [
+                            {
+                              "fieldRef": {
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.namespace"
+                              },
+                              "path": "namespace"
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "status": {
+              "conditions": [
+                {
+                  "lastProbeTime": null,
+                  "lastTransitionTime": "2026-11-27T05:25:12Z",
+                  "observedGeneration": 1,
+                  "status": "True",
+                  "type": "PodReadyToStartContainers"
+                },
+                {
+                  "lastProbeTime": null,
+                  "lastTransitionTime": "2026-11-27T05:25:11Z",
+                  "observedGeneration": 1,
+                  "status": "True",
+                  "type": "Initialized"
+                },
+                {
+                  "lastProbeTime": null,
+                  "lastTransitionTime": "2026-11-27T05:25:11Z",
+                  "message": "containers with unready status: [worker]",
+                  "observedGeneration": 1,
+                  "reason": "ContainersNotReady",
+                  "status": "False",
+                  "type": "Ready"
+                },
+                {
+                  "lastProbeTime": null,
+                  "lastTransitionTime": "2026-11-27T05:25:11Z",
+                  "message": "containers with unready status: [worker]",
+                  "observedGeneration": 1,
+                  "reason": "ContainersNotReady",
+                  "status": "False",
+                  "type": "ContainersReady"
+                },
+                {
+                  "lastProbeTime": null,
+                  "lastTransitionTime": "2026-11-27T05:25:11Z",
+                  "observedGeneration": 1,
+                  "status": "True",
+                  "type": "PodScheduled"
+                }
+              ],
+              "containerStatuses": [
+                {
+                  "image": "pagerless-e2e:e2e",
+                  "imageID": "",
+                  "lastState": {},
+                  "name": "worker",
+                  "ready": false,
+                  "restartCount": 0,
+                  "started": false,
+                  "state": {
+                    "waiting": {
+                      "message": "configmap \"inventory-setting\" not found",
+                      "reason": "CreateContainerConfigError"
+                    }
+                  },
+                  "volumeMounts": [
+                    {
+                      "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                      "name": "kube-api-access-clzv8",
+                      "readOnly": true,
+                      "recursiveReadOnly": "Disabled"
+                    }
+                  ]
+                }
+              ],
+              "hostIP": "172.30.0.2",
+              "hostIPs": [
+                {
+                  "ip": "172.30.0.2"
+                }
+              ],
+              "observedGeneration": 1,
+              "phase": "Pending",
+              "podIP": "10.244.0.14",
+              "podIPs": [
+                {
+                  "ip": "10.244.0.14"
+                }
+              ],
+              "qosClass": "BestEffort",
+              "resources": {},
+              "startTime": "2026-11-27T05:25:11Z"
+            }
+          }
+        ],
+        "truncated": false
+      },
+      "status": "ok",
+      "durationMs": 17,
       "redacted": false,
       "truncated": false
     }

@@ -39,8 +39,11 @@ function DialogContent({ className, children, ...props }: ComponentProps<typeof 
         {...props}
       >
         {children}
+        {/* Focus the close control first so keyboard dismissal is deterministic even when the
+            evidence body later fills with focusable content (for example the copy-call-ID button). */}
         <DialogPrimitive.Close
-          className="absolute top-3.5 right-3.5 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          autoFocus
+          className="absolute top-3.5 right-3.5 z-10 rounded-md p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
           aria-label="Close"
         >
           <X className="size-4" />
@@ -51,7 +54,8 @@ function DialogContent({ className, children, ...props }: ComponentProps<typeof 
 }
 
 function DialogHeader({ className, ...props }: ComponentProps<"div">) {
-  return <div data-slot="dialog-header" className={cn("flex flex-col gap-1 pr-6", className)} {...props} />;
+  // Leave room for the absolutely positioned Close control so a long title can never sit under it.
+  return <div data-slot="dialog-header" className={cn("flex flex-col gap-1 pr-12", className)} {...props} />;
 }
 
 function DialogFooter({ className, ...props }: ComponentProps<"div">) {
