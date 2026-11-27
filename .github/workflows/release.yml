@@ -294,7 +294,9 @@ jobs:
 
   access:
     name: Anonymous install gate
-    needs: publish
+    # validate is needed directly: the job reads its version, tag, and commit
+    # outputs, and a transitive dependency does not expose them.
+    needs: [validate, publish]
     # This job needs no registry credential and no write permission. It proves
     # that an anonymous operator can install the release. If GHCR visibility is
     # still private, only this job is re-run after the owner makes the packages
