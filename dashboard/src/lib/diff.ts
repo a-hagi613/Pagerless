@@ -10,7 +10,7 @@ export interface DiffLine {
 
 const hunkHeader = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
-// The server derives the diff, so the Portal only has to read it. Anything that is not an addition, a
+// The server derives the diff, so the dashboard only has to read it. Anything that is not an addition, a
 // removal, or a context line is chrome and is labelled as such, never guessed into a change.
 export function parseUnifiedDiff(diff: string): DiffLine[] {
   const lines: DiffLine[] = [];

@@ -4,11 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <title>Pagerless — cluster pages</title>
+    <title>Pagerless — investigations</title>
     <script>
-      // Resolve Light, Dark, or System before the first paint so the Portal never flashes the other
+      // Resolve Light, Dark, or System before the first paint so the dashboard never flashes the other
       // palette. The stored choice wins; ?theme= is a per-load override for screenshots and deep links
-      // and is never persisted.
+      // and is never persisted. The theme is the only preference kept in local storage; the operator
+      // session is an HttpOnly cookie and is never written here.
       (() => {
         const root = document.documentElement;
         const stored = (() => {

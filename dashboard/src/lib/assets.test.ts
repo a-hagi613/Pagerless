@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-// The Portal's images are produced by hack/brand-assets.sh. This test keeps the
+// The dashboard's images are produced by hack/brand-assets.sh. This test keeps the
 // references in index.html and the components honest about the files the build
 // actually serves, and catches an asset that shrank, emptied, or changed shape.
 const dashboardRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -59,7 +59,7 @@ function readPngHeader(path: string): PngHeader {
   };
 }
 
-describe("Portal brand assets", () => {
+describe("dashboard brand assets", () => {
   it("references exactly the images the pipeline produces", () => {
     expect(referencedAssets()).toEqual([...expected.keys()].sort());
   });

@@ -1,4 +1,4 @@
-import type { PageSummary, Phase, Severity, TargetReference } from "./types";
+import type { Citation, PageStatus } from "./contract";
 
 const minute = 60_000;
 const hour = 60 * minute;
@@ -46,113 +46,126 @@ export function timeOfDay(iso: string): string {
   return new Date(parsed).toLocaleTimeString(undefined, { hour12: false });
 }
 
-const phaseLabels: Record<Phase, string> = {
-  Pending: "Pending",
-  Investigating: "Investigating",
-  Proposed: "Proposed",
-  Approved: "Approved",
-  PullRequestOpen: "PR open",
-  Verifying: "Verifying",
-  Recovered: "Recovered",
-  NotRecovered: "Not recovered",
-  Diagnosed: "Diagnosed",
-  Rejected: "Rejected",
-  Expired: "Expired",
-  Invalid: "Invalid",
-  Superseded: "Superseded",
-  Failed: "Failed",
+export function elapsedLabel(milliseconds: number | undefined): string {
+  if (milliseconds === undefined || !Number.isFinite(milliseconds) || milliseconds < 0) {
+    return "";
+  }
+  if (milliseconds < 1000) {
+    return `${String(Math.round(milliseconds))} ms`;
+  }
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)} s`;
+}
+
+const statusLabels: Record<PageStatus, string> = {
+  running: "Running",
+  completed: "Complete",
+  stopped: "Stopped",
+  failed: "Failed",
+  interrupted: "Interrupted",
 };
 
-export function phaseLabel(phase: Phase): string {
-  return phaseLabels[phase];
-}
-
-const terminalPhases: ReadonlySet<Phase> = new Set<Phase>([
-  "Recovered",
-  "NotRecovered",
-  "Diagnosed",
-  "Rejected",
-  "Expired",
-  "Invalid",
-  "Superseded",
-  "Failed",
-]);
-
-export function isTerminal(phase: Phase): boolean {
-  return terminalPhases.has(phase);
-}
-
-export function isLive(phase: Phase): boolean {
-  return phase === "Investigating" || phase === "Verifying";
-}
-
-// A Page records its own Severity. A Page that predates the field, or one that has not been ranked yet,
-// falls back to a Phase-derived rank so the inbox still orders it deterministically.
-export function pageSeverity(page: Pick<PageSummary, "phase" | "severity">): Severity {
-  if (page.severity === "critical" || page.severity === "warning" || page.severity === "info") {
-    return page.severity;
+export function statusLabel(status: PageStatus | string): string {
+  if (status in statusLabels) {
+    return statusLabels[status as PageStatus];
   }
-  switch (page.phase) {
-    case "Failed":
-    case "NotRecovered":
-    case "Invalid":
-      return "critical";
-    case "Pending":
-    case "Investigating":
-    case "Proposed":
-    case "Approved":
-    case "PullRequestOpen":
-    case "Verifying":
-      return "warning";
-    default:
+  return humanizeToken(status);
+}
+
+export function isTerminalStatus(status: PageStatus | string): boolean {
+  return status === "completed" || status === "stopped" || status === "failed" || status === "interrupted";
+}
+
+export type StatusTone = "success" | "warning" | "danger" | "info" | "muted";
+
+export function statusTone(status: PageStatus | string): StatusTone {
+  switch (status) {
+    case "running":
       return "info";
+    case "completed":
+      return "success";
+    case "stopped":
+      return "warning";
+    case "interrupted":
+      return "warning";
+    case "failed":
+      return "danger";
+    default:
+      return "muted";
   }
 }
 
-export function severityLabel(severity: Severity): string {
-  if (severity === "critical") {
-    return "Critical";
+// Tool outcomes come from the contract: ok, error, denied, truncated, timed_out and budget_exhausted. A
+// new outcome still reads as a word beside its colour rather than as an unlabelled dot.
+export function toolStatusLabel(status: string): string {
+  switch (status) {
+    case "ok":
+      return "ok";
+    case "error":
+      return "error";
+    case "denied":
+      return "denied";
+    case "truncated":
+      return "truncated";
+    case "timed_out":
+      return "timed out";
+    case "budget_exhausted":
+      return "budget exhausted";
+    case "running":
+      return "running";
+    default:
+      return humanizeToken(status);
   }
-  if (severity === "warning") {
-    return "Warning";
-  }
-  return "Info";
 }
 
-// The target, in the order an operator says it: kind, namespace, name. A Node is cluster-scoped.
-export function targetLabel(target: TargetReference): string {
-  const kind = target.kind.toLowerCase();
-  if (target.kind === "Node" || target.namespace === "") {
-    return `${kind}/${target.name}`;
+export function toolStatusTone(status: string): StatusTone {
+  if (status === "ok" || status === "completed") {
+    return "success";
   }
-  return `${kind}/${target.namespace}/${target.name}`;
-}
-
-export function shortHash(hash: string | undefined): string {
-  if (hash === undefined || hash === "") {
-    return "none";
+  if (status === "running") {
+    return "info";
   }
-  const digest = hash.startsWith("sha256:") ? hash.slice("sha256:".length) : hash;
-  return digest.slice(0, 8);
-}
-
-// The card headline is the Target, because a Page is one investigation of one Target.
-export function pageTitle(page: PageSummary): string {
-  return page.target.name;
-}
-
-export function pageSignal(page: PageSummary): string {
-  const scope =
-    page.target.kind === "Node" || page.target.namespace === ""
-      ? page.target.kind
-      : `${page.target.kind} in ${page.target.namespace}`;
-  const trigger = page.trigger.pod === undefined ? "" : ` · pod ${page.trigger.pod}`;
-  return `${scope} · ${page.trigger.source}${trigger}`;
-}
-
-export function proposalTitle(action: string, path: string | undefined): string {
-  if (action === "NoAction" || path === undefined || path === "") {
-    return "No file change";
+  if (status === "truncated" || status === "budget_exhausted" || status === "timed_out") {
+    return "warning";
   }
-  return path;
+  return "danger";
+}
+
+export function humanizeToken(value: string): string {
+  const words = value.replaceAll("_", " ").replaceAll("-", " ").trim();
+  return words === "" ? "unknown" : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+export function shortId(value: string): string {
+  return value.length <= 12 ? value : value.slice(0, 8);
+}
+
+// A server-supplied link is untrusted like any other field. Only an absolute HTTP(S) URL may become an
+// anchor target; anything else is dropped rather than rendered as a clickable scheme.
+export function safeExternalURL(value: string | undefined): string | undefined {
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // A relative or malformed value is not a publishable pull-request link.
+  }
+  return undefined;
+}
+
+export function citationLabel(citation: Citation): string {
+  const pointer = citation.pointer ?? citation.jsonPointer;
+  return pointer === undefined || pointer === "" ? citation.callId : `${citation.callId} ${pointer}`;
+}
+
+// A signal is a compact, human-readable summary for a conversation that has no title yet.
+export function conversationTitle(message: string): string {
+  const line = message.replaceAll(/\s+/g, " ").trim();
+  if (line.length <= 80) {
+    return line;
+  }
+  return `${line.slice(0, 77)}…`;
 }
