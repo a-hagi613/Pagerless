@@ -270,6 +270,7 @@ import { expect, test, type Page, type TestInfo } from "@playwright/test";
 const token = process.env.PAGERLESS_E2E_TOKEN ?? "";
 const title = process.env.PAGERLESS_E2E_PAGE_TITLE ?? "Why is checkout failing?";
 const callId = process.env.PAGERLESS_E2E_CALL_ID ?? "";
+const titlePattern = new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 
 async function history(page: Page, testInfo: TestInfo) {
   if (testInfo.project.name.startsWith("mobile")) {
@@ -288,7 +289,7 @@ test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ pag
   await expect(page.getByRole("heading", { name: "Ask the cluster a question" })).toBeVisible();
 
   const scope = await history(page, testInfo);
-  await scope.getByRole("link", { name: title }).first().click();
+  await scope.getByRole("link", { name: titlePattern }).first().click();
 
   const answers = page.getByRole("article", { name: "Pagerless answer" });
   await expect(answers.first()).toContainText("no memory limit");
