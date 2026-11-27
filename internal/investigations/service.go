@@ -953,7 +953,7 @@ func validateRequest(request Request) (string, string, transcript.Target, *Error
 		if target.Kind == "" || target.Name == "" {
 			return "", "", transcript.Target{}, invalid("The target requires kind and name.")
 		}
-		if !validName(target.Kind) || !validResourceName(target.Name) {
+		if !validKind(target.Kind) || !validResourceName(target.Name) {
 			return "", "", transcript.Target{}, invalid("The target kind or name is not valid.")
 		}
 		if request.Target.Namespace != "" {
@@ -1176,6 +1176,24 @@ func validName(name string) bool {
 			continue
 		}
 		return false
+	}
+	return true
+}
+
+// validKind accepts a Kubernetes Kind, which is PascalCase (Deployment,
+// CronJob), unlike a namespace or a resource name.
+func validKind(kind string) bool {
+	if len(kind) == 0 || len(kind) > 253 {
+		return false
+	}
+	for index, character := range kind {
+		switch {
+		case character >= 'A' && character <= 'Z':
+		case character >= 'a' && character <= 'z':
+		case character >= '0' && character <= '9' && index > 0:
+		default:
+			return false
+		}
 	}
 	return true
 }

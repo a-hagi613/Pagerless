@@ -41,6 +41,7 @@ const (
 	testKeyObject  = "object"
 	keyNamespace   = "namespace"
 	keyName        = "name"
+	testKind       = "Deployment"
 	keyInputSchema = "inputSchema"
 	testNamespace  = "shop"
 )
@@ -500,7 +501,7 @@ func TestCreateAndFollowOneInvestigation(t *testing.T) {
 	t.Parallel()
 	scenario := func(ctx context.Context, request agentclient.Request, _ *fakeAgent) agentclient.Terminal {
 		result, status, err := callback(ctx, request, "call-1", "resources_get",
-			map[string]string{keyKindHint: "Deployment", keyNamespace: testNamespace, keyName: "checkout"})
+			map[string]string{keyKindHint: testKind, keyNamespace: testNamespace, keyName: "checkout"})
 		if err != nil || status != http.StatusOK {
 			return agentclient.Terminal{Status: transcript.StatusFailed, Error: &agentclient.Failure{
 				Code: "callback_failed", Message: fmt.Sprintf("%v %d", err, status),
@@ -877,7 +878,7 @@ func TestToolCallbacksAreBoundToTheTurn(t *testing.T) {
 	h2 := newHarness(t, harnessOptions{
 		scenario: func(ctx context.Context, request agentclient.Request, _ *fakeAgent) agentclient.Terminal {
 			first, status, _ := callback(ctx, request, "call-1", "resources_get",
-				map[string]string{keyKindHint: "Deployment", keyNamespace: testNamespace, keyName: "checkout"})
+				map[string]string{keyKindHint: testKind, keyNamespace: testNamespace, keyName: "checkout"})
 			if status != http.StatusOK || first.Status != transcript.EvidenceOK {
 				duplicate <- status
 				return agentclient.Terminal{Status: transcript.StatusFailed, Error: &agentclient.Failure{Code: "tool", Message: "tool failed"}}
@@ -928,4 +929,19 @@ func TestSecurityHeadersAndLoginLimit(t *testing.T) {
 	if code := errorCode(t, last); code != "rate_limited" {
 		t.Fatalf("error code %q", code)
 	}
+}
+
+func TestCamelCaseTargetKindIsAccepted(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, harnessOptions{})
+	response := h.request(http.MethodPost, "/api/v1/pages", Request{
+		Message: "Why is inventory failing?", Namespace: testNamespace,
+		Target: &Target{Kind: testKind, Name: "inventory"},
+	}, map[string]string{headerIdempotency: "target-key"})
+	if response.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("a Kubernetes Kind was refused (%d): %s", response.StatusCode, body)
+	}
+	created := decodeBody[Created](t, response)
+	h.waitTurn(created.TurnID)
 }

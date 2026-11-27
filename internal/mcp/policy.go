@@ -14,11 +14,12 @@ var ErrDenied = errors.New("denied")
 
 // JSON argument keys shared by the Kubernetes and GitHub policies.
 const (
-	keyKind       = "kind"
-	keyName       = "name"
-	keyNamespace  = "namespace"
-	keyAPIVersion = "apiVersion"
-	pathAppsV1    = "apps/v1"
+	keyKind           = "kind"
+	keyName           = "name"
+	keyNamespace      = "namespace"
+	keyAPIVersion     = "apiVersion"
+	pathAppsV1        = "apps/v1"
+	toolListDirectory = "github_list_directory"
 )
 
 // Tool budgets applied by the policies.
@@ -413,11 +414,21 @@ func (g *GitHub) Call(ctx context.Context, name string, arguments json.RawMessag
 	}
 	canonical := map[string]any{}
 	if name != "github_repository" {
-		path, err := g.path(boundedString(raw, "path", 512))
-		if err != nil {
-			return Result{}, err
+		requested := boundedString(raw, "path", 512)
+		if requested == "" && name == toolListDirectory {
+			// An empty directory path means the configured scope, which may be the
+			// repository root when no prefix is configured.
+			requested = strings.Trim(strings.TrimSpace(g.PathPrefix), "/")
 		}
-		canonical["path"] = path
+		if requested != "" {
+			path, err := g.path(requested)
+			if err != nil {
+				return Result{}, err
+			}
+			canonical["path"] = path
+		} else if name != toolListDirectory {
+			return Result{}, fmt.Errorf("%w: the repository path is required", ErrDenied)
+		}
 		if ref := boundedString(raw, "ref", 128); ref != "" {
 			canonical["ref"] = ref
 		}
@@ -449,7 +460,7 @@ func (g *GitHub) path(requested string) (string, error) {
 
 func admittedGitHubTool(name string) bool {
 	switch name {
-	case "github_repository", "github_get_file", "github_list_directory":
+	case "github_repository", "github_get_file", toolListDirectory:
 		return true
 	default:
 		return false

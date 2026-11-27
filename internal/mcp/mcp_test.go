@@ -24,6 +24,7 @@ const (
 	toolList           = "resources_list"
 	toolLogs           = "pods_log"
 	keyProtocolVersion = "protocolVersion"
+	keyContent         = "content"
 )
 
 // fakeMCP is a minimal Streamable HTTP server for the client tests.
@@ -88,7 +89,7 @@ func TestClientHandshakeListAndCall(t *testing.T) {
 				return nil, errors.New("unexpected call")
 			}
 			return map[string]any{
-				"content": []map[string]string{{testKeyType: testKeyText, "text": `{"kind":"Service"}`}},
+				keyContent: []map[string]string{{testKeyType: testKeyText, testKeyText: `{"kind":"Service"}`}},
 			}, nil
 		default:
 			return nil, errors.New("unexpected method")
@@ -258,7 +259,7 @@ func TestKubernetesPolicyBoundsLogs(t *testing.T) {
 		}
 		_ = json.Unmarshal(params, &call)
 		received = call.Arguments
-		return map[string]any{"content": []map[string]string{{testKeyType: testKeyText, "text": "ok"}}}, nil
+		return map[string]any{keyContent: []map[string]string{{testKeyType: testKeyText, testKeyText: "ok"}}}, nil
 	})
 	policy := &Kubernetes{Client: New("kubernetes", server.URL, token, nil)}
 	if _, err := policy.Call(context.Background(), toolLogs,
@@ -285,5 +286,41 @@ func TestGitHubPolicyBoundsPaths(t *testing.T) {
 	}
 	if _, err := policy.path("environments/staging/app.yaml"); err != nil {
 		t.Fatalf("an allowed path was refused: %v", err)
+	}
+}
+
+func TestGitHubPolicyAllowsTheScopedDirectoryRoot(t *testing.T) {
+	t.Parallel()
+	var received map[string]any
+	server := fakeMCP(t, func(method string, params json.RawMessage) (any, error) {
+		if method == methodToolsList {
+			return map[string]any{keyTools: []map[string]any{
+				{keyToolName: "github_list_directory", keyInputSchema: map[string]any{}},
+				{keyToolName: "github_get_file", keyInputSchema: map[string]any{}},
+			}}, nil
+		}
+		var call struct {
+			Arguments map[string]any `json:"arguments"`
+		}
+		_ = json.Unmarshal(params, &call)
+		received = call.Arguments
+		return map[string]any{keyContent: []map[string]string{{testKeyType: testKeyText, testKeyText: "[]"}}}, nil
+	})
+	policy := &GitHub{
+		Client:     New("github", server.URL, token, nil),
+		PathPrefix: "apps/checkout",
+	}
+	if _, err := policy.Call(context.Background(), "github_list_directory", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("the scoped root was refused: %v", err)
+	}
+	if received["path"] != "apps/checkout" {
+		t.Fatalf("the root path was %v", received["path"])
+	}
+	if _, err := policy.Call(context.Background(), "github_get_file", json.RawMessage(`{}`)); !errors.Is(err, ErrDenied) {
+		t.Fatalf("an empty file path was accepted: %v", err)
+	}
+	unrestricted := &GitHub{Client: New("github", server.URL, token, nil)}
+	if _, err := unrestricted.Call(context.Background(), "github_list_directory", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("the unrestricted root was refused: %v", err)
 	}
 }
