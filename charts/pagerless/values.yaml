@@ -1,241 +1,101 @@
-# Default values for charts/pagerless.
-#
-# This chart installs one pagerless-server Deployment into one namespace. It
-# needs no other cluster service: no database, no identity provider, no message
-# broker, no MCP gateway. Remediation is a pull request, so the cluster identity
-# is strictly read-only (see rbac.yaml and ADR-0037).
+# Pagerless installs one investigation service, its private agent and two
+# read-only MCP integrations. Every credential is a reference to an externally
+# provisioned Secret; the chart never creates or edits a Secret.
 
-# --- Images -----------------------------------------------------------------
+# The Secret must exist before install and carry every key named below.
+existingSecret: ""
 
-images:
-  server:
-    repository: ghcr.io/a-hagi613/pagerless-server
-    # Empty uses .Chart.AppVersion.
-    tag: ""
-    pullPolicy: IfNotPresent
-  agent:
-    repository: ghcr.io/a-hagi613/pagerless-agent
-    tag: ""
-    pullPolicy: IfNotPresent
-  # Names of imagePullSecrets in the release namespace.
-  pullSecrets: []
+secretKeys:
+  operatorToken: operator-token
+  internalToken: internal-token
+  mcpToken: mcp-token
+  githubReadToken: github-read-token
+  githubWriteToken: github-write-token
+  modelApiKey: model-api-key
 
-# --- Identity and access ----------------------------------------------------
+image:
+  repository: ghcr.io/a-hagi613/pagerless-server
+  # A digest wins over a tag. Leaving both empty installs the chart appVersion.
+  digest: ""
+  tag: ""
+  pullPolicy: IfNotPresent
 
-serviceAccount:
-  create: true
-  # Fixed: the read ClusterRoleBinding and the documented RBAC checks refer to it.
-  name: pagerless-server
-  # Annotations for IRSA, EKS Pod Identity, or a workload identity binding when
-  # a connector authenticates with an instance role instead of a token.
-  annotations: {}
-  # Disable only when another controller projects the token.
-  automountServiceAccountToken: true
+agentImage:
+  repository: ghcr.io/a-hagi613/pagerless-agent
+  digest: ""
+  tag: ""
+  pullPolicy: IfNotPresent
 
-rbac:
-  create: true
-  # Mode A: one read ClusterRole and ClusterRoleBinding, so the watcher sees
-  # failures in every namespace.
-  watchAllNamespaces: true
-  # Mode B: an explicit allowlist. Every entry receives an equivalent read Role
-  # and RoleBinding, with the cluster-scoped rules omitted. It is mutually
-  # exclusive with watchAllNamespaces and must be non-empty when used.
-  watchNamespaces: []
+# The SQLite transcript has one writer, so the service runs as one replica.
+replicaCount: 1
 
-# Optional approver Role binding. Anyone who can patch Pages can record a
-# decision on one, which is the intended single-operator authority model
-# (ADR-0031). Empty renders no binding; bind Role <release>-pagerless-approver
-# yourself when reviewers differ from the installer.
-approvers:
-  subjects: []
+# The OpenAI-compatible endpoint and a model that supports tool calls. The key
+# is mounted from existingSecret.
+model:
+  baseUrl: ""
+  name: ""
 
-# --- Portal authentication --------------------------------------------------
-# Authentication has no external prerequisite (ADR-0032). In token mode the
-# chart generates a bootstrap token and a session signing key; in disabled mode
-# every request is anonymous, or attributed by an authenticating proxy.
+agent:
+  # Empty installs the bundled agent Service.
+  url: ""
+  port: 8090
+  maxConcurrency: 4
+  budget:
+    toolCalls: 16
+    modelCalls: 8
+    inputTokens: 120000
+    seconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  extraEnv: []
 
-auth:
-  # token (the default) or disabled. Nothing else is accepted.
-  mode: token
-  # The bootstrap token Secret. `helm install` prints the command that decodes it.
-  adminSecret:
-    # Render the Secret. Set false to supply it out of band in GitOps; name must
-    # then refer to an existing Secret and a sync never rotates the token.
-    create: true
-    name: pagerless-admin-secret
-    key: token
-    # Length of the generated alphanumeric token.
-    length: 48
-    # Keep the Secret across `helm uninstall`, so reinstalling does not rotate it.
-    keep: true
-  # The HMAC-SHA256 key that signs session cookies. Rotating it signs every
-  # session out.
-  session:
-    secretName: pagerless-session-key
-    key: key
-    # Lifetime of a signed session cookie.
-    ttl: 8h
-    # Secure attribute of the cookie: "" derives it from dashboard.baseUrl,
-    # which marks it Secure whenever the URL is https.
-    secure: ""
-  # Accept Authorization: Bearer <bootstrap token> on /api/* for scripted calls.
-  bearerToken: false
-  # The authenticating reverse proxy used with mode: disabled.
-  proxy:
-    # Trusted header that names the operator, such as X-Auth-Request-User. It
-    # attributes the action and never authorizes it.
-    identityHeader: ""
+# The repository that owns the cluster's source configuration.
+github:
+  repository: ""
+  baseBranch: main
+  # When set, reads and proposals are bounded to this repository directory.
+  pathPrefix: ""
+  apiUrl: https://api.github.com
 
-# --- Target Repository ------------------------------------------------------
-
-targetRepository:
-  # Resolve the Target Repository from GITHUB_REPO in the credentials Secret
-  # and open the pull request for an approved Proposal. Set false for an
-  # air-gapped installation with no repository: Pagerless then diagnoses Pages
-  # and records decisions without opening a pull request.
+kubernetes:
   enabled: true
+  # Empty reads every namespace with the read-only ClusterRole. A list installs
+  # one Role and RoleBinding per namespace and refuses cluster-wide reads.
+  namespaceAllowlist: []
 
-# --- Credentials ------------------------------------------------------------
-
-credentials:
-  # Name of an existing Secret that holds every credential, for an external
-  # secret manager. When it is set the chart creates no Secret, and the Portal
-  # and CLI refuse to write one.
-  existingSecret: ""
-  # Name used when existingSecret is empty. The chart creates this Secret with
-  # every documented key present and empty; the operator or the Portal fills it.
-  secretName: pagerless-credentials
-  # Directory where the Secret is mounted read-only.
-  mountPath: /var/run/pagerless/credentials
-
-# --- Connectors -------------------------------------------------------------
-
-connectors:
-  # Non-secret Connector configuration, rendered into ConfigMap
-  # pagerless-connectors. Credentials are references to the credentials
-  # Secret's keys, never values (ADR-0040).
-  logs:
-    # Native Kubernetes log collection is mandatory: it is the only evidence
-    # source that needs no external service, so enabled must stay true and the
-    # chart fails to render when it is disabled.
-    nativeKubernetes:
-      enabled: true
-      tailLines: 500
-      limitBytes: 262144
-      sinceSeconds: 3600
-      maxPods: 5
-      maxContainersPerPod: 4
-      concurrency: 8
-    # An empty body disables the optional Connectors. Each one takes only a
-    # URL, query template, bounds, and a reference to credentials by key.
-    loki:
-      enabled: false
-    grafana:
-      enabled: false
-    cloudwatchLogs:
-      enabled: false
-    datadogLogs:
-      enabled: false
-    opensearch:
-      enabled: false
-    mcp:
-      enabled: false
-  metrics:
-    prometheus:
-      enabled: false
-    grafana:
-      enabled: false
-    cloudwatch:
-      enabled: false
-    datadog:
-      enabled: false
-    mcp:
-      enabled: false
-  alertState:
-    alertmanager:
-      enabled: false
-    grafana:
-      enabled: false
-  subject:
-    rules: []
-  redaction:
-    patterns: []
-  # When non-empty, the only hosts a Connector may reach.
-  allowedHosts: []
-  # Substituted for {{ .ClusterName }} and {{ .Environment }} in query templates.
-  clusterName: ""
-  environment: ""
-  alerting:
-    # SNS topic ARNs are the only topics the receiver accepts. An empty list
-    # refuses every SNS delivery.
-    snsTopics: []
-    verifySNSSignature: false
-    maxAlerts: 50
-    requestsPerSecond: 10
-    burst: 20
-
-# --- Storage and exposure ---------------------------------------------------
-
-persistence:
-  # The append-only Page history, which survives a pod restart.
-  size: 1Gi
-  # StorageClass of the history claim. Empty uses the cluster default.
-  storageClassName: ""
-  accessModes:
-    - ReadWriteOnce
+mcp:
+  port: 8091
 
 service:
   type: ClusterIP
-  # Port of the Portal.
   port: 8080
-  # Port of the agent report API. It is separate from the Portal so that an
-  # agent Job never depends on the browser-facing surface.
-  reportPort: 8082
 
-dashboard:
-  # Browser-facing base URL of the Portal. It scopes the session cookie, marks
-  # it Secure when the URL is https, and is used for absolute links.
-  baseUrl: http://localhost:8080
-
-# Optional Ingress in front of the Portal. Combining it with auth.mode=disabled
-# and no auth.proxy.identityHeader fails at render time, because that
-# configuration would expose an anonymous approval surface.
-ingress:
-  enabled: false
-  className: ""
-  host: ""
-  annotations: {}
-  tls: []
-
-# An in-cluster model endpoint is served over plain HTTP: an OpenAI-compatible
-# gateway, a vLLM or Ollama pod, or a laptop reached through a tunnel. The server
-# refuses a non-HTTPS base URL unless this is set, because it cannot tell a
-# cluster-local address from a mistake, so the override is explicit and off by
-# default.
-model:
-  allowInsecureEndpoint: false
-
-# --- Scheduling -------------------------------------------------------------
-
-# Egress policy for the agent Job. The Job has exactly two destinations: the
-# server's tool API and the model endpoint, with link-local excluded so the
-# instance metadata service is unreachable. It is enforced only on a CNI that
-# implements NetworkPolicy.
-agentEgress:
+persistence:
   enabled: true
-  # Port of the model endpoint (443 for every hosted provider).
-  modelPort: 443
+  size: 5Gi
+  storageClass: ""
+  existingClaim: ""
+
+# Retention and turn bounds. The transcript expires a page and its events,
+# evidence and proposal after this window.
+retention: 168h
+turnTimeout: 10m
+toolTimeout: 30s
+stopGrace: 10s
+maxActiveTurns: 4
+maxToolCalls: 16
+maxResultBytes: 65536
 
 resources:
   requests:
-    cpu: 50m
-    memory: 64Mi
-  limits:
+    cpu: 100m
     memory: 256Mi
-
-# The server is the single writer of Page status, so it never runs more than one
-# pod and replaces it only after the old one has stopped.
-replicaCount: 1
+  limits:
+    memory: 1Gi
 
 podSecurityContext:
   runAsNonRoot: true
@@ -252,10 +112,9 @@ securityContext:
     drop:
       - ALL
 
+networkPolicy:
+  enabled: true
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
-podAnnotations: {}
-podLabels: {}
-commonLabels: {}
-commonAnnotations: {}

@@ -1,63 +1,132 @@
-{{- /*
-The agent Job's egress policy. An investigation reads only through
-pagerless-server's tool broker and calls only the model endpoint, so the Job has
-exactly two egress destinations (spec §2.6):
-
-  1. pagerless-server, plus the cluster DNS it needs to resolve the model host;
-  2. the model endpoint, expressed as the IPv4 and IPv6 default routes with
-     link-local excluded, so the instance metadata service at 169.254.169.254
-     and every other link-local address is unreachable.
-
-No other rule exists. A compromised agent binary therefore cannot reach the
-Kubernetes API, a Connector, GitHub, or the metadata service, whatever the model
-asks it to do. Enable this policy only where the CNI enforces NetworkPolicy; the
-chart does not pretend it protects a cluster that ignores it.
-*/ -}}
-{{- if .Values.agentEgress.enabled }}
+{{- if .Values.networkPolicy.enabled }}
+# The server is reachable inside the cluster and through a port-forward; every
+# request still needs the installer's operator token. The agent and the MCP
+# integrations accept traffic only from the server.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: pagerless-agent-egress
-  namespace: {{ .Release.Namespace }}
+  name: {{ include "pagerless.fullname" . }}-server
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-agent") | nindent 4 }}
+    {{- include "pagerless.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: pagerless-agent
+      {{- include "pagerless.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    - ports:
+        - port: {{ .Values.service.port }}
+          protocol: TCP
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
-          podSelector:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
             matchLabels:
-              app.kubernetes.io/name: pagerless-server
+              {{- include "pagerless.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.agent.port }}
+          protocol: TCP
+        - port: {{ .Values.mcp.port }}
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pagerless.fullname" . }}-agent
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pagerless.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "pagerless.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.agent.port }}
+          protocol: TCP
+  egress:
+    # The agent calls a model endpoint the operator supplies, whose address and
+    # port the chart cannot know. DNS plus the public web ports cover the
+    # documented endpoints; an in-cluster endpoint on another port needs an
+    # additional egress rule.
+    - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
-          podSelector:
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: 80
+          protocol: TCP
+        - port: 443
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pagerless.fullname" . }}-mcp
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - {{ include "pagerless.name" . }}
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - kubernetes-mcp
+          - github-mcp
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
             matchLabels:
-              k8s-app: kube-dns
+              {{- include "pagerless.selectorLabels" . | nindent 14 }}
       ports:
-        - protocol: TCP
-          port: {{ .Values.service.port }}
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
+        - port: {{ .Values.mcp.port }}
+          protocol: TCP
+  egress:
     - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-            except:
-              - 169.254.0.0/16
-        - ipBlock:
-            cidr: ::/0
-            except:
-              - fe80::/10
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
       ports:
-        - protocol: TCP
-          port: {{ .Values.agentEgress.modelPort }}
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 6443
+          protocol: TCP
 {{- end }}

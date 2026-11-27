@@ -1,17 +1,29 @@
 name: CI
 
+# A pull request runs once. Pushing to the pull-request head does not start a
+# second copy: the pull_request event already covers it. Pushes to the default
+# branch, the integration branch, integration candidates and tags are verified
+# explicitly.
 on:
   pull_request:
+    branches:
+      - main
+      - overhaul-simplify-project-scope
   push:
-    branches: [main, a-hagi613/overhaul-simplify-project-scope, "integration/**", "combined/**"]
-    tags: ["v*.*.*"]
+    branches:
+      - main
+      - overhaul-simplify-project-scope
+      - "integration/**"
+      - "combined/**"
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
 
-# A newer push to the same branch or pull request supersedes the older run.
-# Tag verification retains its own run.
+# A newer push to the same pull request supersedes the older run. Default and
+# integration branch runs are never cancelled.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -26,9 +38,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # Lint reads the source only: it needs neither kubectl, Helm, nor a
-      # cluster. Splitting it from the test job keeps the two in parallel so the
-      # pipeline waits for the slower one, not for their sum.
+          cache: true
       - run: make lint-go
 
   go-test:
@@ -37,34 +47,12 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.8"
-          python-version: "3.14.10"
-          # This job runs no uv command, so a cache miss would leave no directory to
-          # save and fail the post step whenever agent/uv.lock changes.
-          enable-cache: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install pinned kubectl and Helm
-        run: |
-          set -euo pipefail
-          . hack/versions.env
-          curl --fail --silent --show-error --location "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
-          curl --fail --silent --show-error --location "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
-          chmod +x kubectl
-          sudo install kubectl /usr/local/bin/kubectl
-          # The envtest harness renders charts/pagerless, so the chart's template
-          # functions are exercised by the Go suite as well.
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
-          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
-          tar -xzf helm.tar.gz linux-amd64/helm
-          sudo install linux-amd64/helm /usr/local/bin/helm
+          cache: true
+      # The Go suite uses fake MCP and GitHub endpoints over localhost. It needs
+      # no cluster, kubectl, Helm, or envtest.
       - run: make test-go
 
   agent:
@@ -76,13 +64,15 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: "0.13.8"
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
       - run: make lint-agent
       - run: make test-agent
 
   dashboard:
-    name: Dashboard typecheck and build
+    name: Dashboard typecheck, test, and build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -92,14 +82,19 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: make dashboard-check
       - run: make dashboard-build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dashboard-dist
+          path: dashboard/dist
+          retention-days: 2
 
   manifests:
-    name: Manifest validation
+    name: Helm lint, render, and schema
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install pinned Helm, kubeconform, and kubectl
+      - name: Install pinned Helm, kubeconform, and jq
         run: |
           set -euo pipefail
           . hack/versions.env
@@ -116,24 +111,24 @@ jobs:
           echo "${KUBECONFORM_LINUX_AMD64_SHA256}  kubeconform.tar.gz" | sha256sum --check --status
           tar -xzf kubeconform.tar.gz kubeconform
           sudo install kubeconform /usr/local/bin/kubeconform
-          curl --fail --silent --show-error --location \
-            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
-          curl --fail --silent --show-error --location \
-            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
-          chmod +x kubectl
-          sudo install kubectl /usr/local/bin/kubectl
+          sudo apt-get update -qq && sudo apt-get install -y -qq jq
       - run: make validate
 
   kind:
-    name: Chart, read-only grant, and decision parity on kind
+    name: Packaged kind integration (chat, CLI, RBAC, PR)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: dashboard/.nvmrc
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
       - name: Install pinned Helm, kind, and kubectl
         run: |
           set -euo pipefail
@@ -157,12 +152,21 @@ jobs:
           echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
           chmod +x kubectl
           sudo install kubectl /usr/local/bin/kubectl
-      - run: make verify-chart
+      - name: Install the dashboard browser dependencies
+        run: |
+          set -euo pipefail
+          cd dashboard
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run the packaged integration
+        env:
+          PAGERLESS_E2E_BROWSER: "1"
+        run: make verify-chart
 
   release:
     name: Release configuration and snapshot
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,11 +174,9 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache: true
       - name: Lint the release scripts
         run: shellcheck -x scripts/release/*.sh
-      # The same command a release runs locally before the tag. Keeping one
-      # command means CI cannot check a different set from the one an operator
-      # relies on, and a drift between them shows up here rather than at a tag.
       - name: Run the release preflight
         run: make release-preflight
       - name: Check the snapshot inventory
@@ -188,53 +190,38 @@ jobs:
   links:
     name: Markdown links
     runs-on: ubuntu-24.04
-    # Shell, git, and coreutils only: the check never fetches an external URL,
-    # so it needs no network beyond the checkout.
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make check-links
 
-  portal:
-    name: Portal browser suite
+  # One stable required status. It reports every failed, cancelled, or
+  # unexpectedly skipped job instead of trusting the first failure.
+  ci:
+    name: CI
+    if: always()
+    needs: [go-lint, go-test, agent, dashboard, manifests, kind, release, links]
     runs-on: ubuntu-24.04
-    # Builds the dashboard, downloads the pinned envtest assets, starts the real
-    # server, and runs the Playwright suite once per viewport. The browser
-    # download and the two server startups dominate the wall clock.
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: dashboard/.nvmrc
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-      - name: Install pinned Helm
-        # The envtest harness renders charts/pagerless with `helm template`, so
-        # the same pinned Helm the Go job installs is required here. `make
-        # portal-e2e` sets KUBEBUILDER_ASSETS through `go tool setup-envtest`
-        # itself, the same mechanism `make test-go` uses.
+      - name: Report every job
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
           set -euo pipefail
-          . hack/versions.env
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
-          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
-          tar -xzf helm.tar.gz linux-amd64/helm
-          sudo install linux-amd64/helm /usr/local/bin/helm
-      - name: Install the dashboard dependencies and the Chromium browser
-        # The Playwright version is the one dashboard/package-lock.json pins, so
-        # the browser is installed after npm ci. `make portal-e2e` runs npm ci
-        # again through dashboard-build; this step only makes node_modules and
-        # the matching Chromium build present before the suite starts.
-        run: |
-          set -euo pipefail
-          cd dashboard
-          npm ci
-          npx playwright install --with-deps chromium
-      - run: make portal-e2e
+          python3 - <<'PY'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          failed = []
+          lines = ["| job | result |", "| --- | --- |"]
+          for name in sorted(results):
+              result = results[name]["result"]
+              lines.append(f"| {name} | {result} |")
+              if result != "success":
+                  failed.append(f"{name}={result}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          if failed:
+              print("required job(s) did not pass: " + ", ".join(failed), file=sys.stderr)
+              sys.exit(1)
+          print("every required job passed")
+          PY

@@ -1,22 +1,17 @@
 name: Release
 
-# One tag publishes every artifact at one version: the kubectl-page archives,
-# checksums, and SBOMs from GoReleaser, the Krew index Pull Request, the two
-# multi-arch images, the chart as an OCI artifact, and the Homebrew formula. The
-# final jobs install those published artifacts - on kind and on macOS - so a
-# release is proven rather than assumed.
-#
-# Required secrets:
-#   KREW_INDEX_TOKEN    Write access to the a-hagi613/krew-index fork. Without
-#                       it the Krew publisher skips the index Pull Request and
-#                       the release still publishes the archives, the checksums,
-#                       and the rendered manifest.
-#   HOMEBREW_TAP_TOKEN  Write access to a-hagi613/homebrew-tap. Without it the
-#                       formula is still published as a release asset, and the
-#                       tap Pull Request is skipped.
+# A tag builds and proves every artifact, then a separately approved job
+# publishes them. No job creates a tag, merges a pull request, or rewrites an
+# existing release. Public distribution coordinates are frozen until the owner
+# approves fresh ones.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version without the leading v; the tree must already carry it
+        required: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -34,35 +29,27 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - id: version
-        name: Strip the tag prefix
-        run: echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-      - name: Check that the tag, the chart, and the plugin manifest agree
         run: |
           set -euo pipefail
-          scripts/release/check-versions.sh --version "${{ steps.version.outputs.version }}"
-          bash scripts/release/tools.sh goreleaser
-          bin/release-tools/goreleaser check
-          bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          case "$version" in
+          '' | *[!0-9.]*) echo "the version is not a release version" >&2; exit 1 ;;
+          esac
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the version wiring
+        run: bash scripts/release/check-versions.sh --version "${{ steps.version.outputs.version }}"
+      - name: Lint the release scripts
+        run: shellcheck -x scripts/release/*.sh
 
-  release:
-    name: GoReleaser archives, checksums, SBOMs, and Krew
+  verify:
+    name: Build and verify every artifact
     needs: validate
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: write
-      pull-requests: write
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-      # GoReleaser's Krew publisher accepts only single environment references
-      # in its templated fields, so both values are decided here rather than in
-      # .goreleaser.yaml.
-      KREW_BRANCH: page-${{ needs.validate.outputs.version }}
-      KREW_SKIP_UPLOAD: ${{ secrets.KREW_INDEX_TOKEN == '' && 'true' || 'false' }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -70,339 +57,86 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      # GoReleaser writes each SBOM by running syft, whose name it resolves on
-      # PATH rather than taking a path. Publishing the directory the pinned tools
-      # were installed into puts both binaries on PATH for the steps that follow.
-      - name: Install the pinned GoReleaser and Syft
+          cache: true
+      - name: Run the local release preflight
+        run: make release-preflight
+      - name: Build the images without pushing
         run: |
           set -euo pipefail
-          bash scripts/release/tools.sh
-          echo "$PWD/bin/release-tools" >>"$GITHUB_PATH"
-      # A re-run must not collide with what the previous attempt uploaded:
-      # GitHub refuses a second asset with the same name, and GoReleaser's
-      # replace mode recreates the release without clearing its assets. The tag
-      # is kept, because it is what this job is publishing.
-      - name: Remove a release left by an earlier attempt
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          docker build --file Dockerfile.pagerless-server \
+            --build-arg "VERSION=${{ needs.validate.outputs.version }}" \
+            --tag "pagerless-server:${{ needs.validate.outputs.version }}" .
+          docker build --file Dockerfile.pagerless-agent \
+            --build-arg "VERSION=${{ needs.validate.outputs.version }}" \
+            --tag "pagerless-agent:${{ needs.validate.outputs.version }}" .
+      - name: Package the chart
         run: |
           set -euo pipefail
-          gh release delete "v${VERSION}" --yes --cleanup-tag=false 2>/dev/null || true
-      # The Krew publisher pushes a per-release branch to the fork and opens the
-      # index Pull Request. On a re-run that branch already exists: skip the
-      # publisher when its pull request is open, and clear the branch when it is
-      # not, so a first attempt that died before opening the request can be
-      # retried instead of wedging the release.
-      - name: Reconcile the Krew index branch with an earlier attempt
-        env:
-          GH_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          mkdir -p dist/chart
+          helm package charts/pagerless --destination dist/chart
+      - name: Record the artifact inventory
         run: |
           set -euo pipefail
-          if [ -z "${KREW_INDEX_TOKEN:-}" ]; then
-            echo "KREW_INDEX_TOKEN is not configured; the index step is skipped."
-            exit 0
-          fi
-          branch="page-${VERSION}"
-          if ! gh api "repos/a-hagi613/krew-index/branches/${branch}" >/dev/null 2>&1; then
-            echo "The fork has no ${branch} branch yet; the publisher will create it."
-            exit 0
-          fi
-          if gh pr list --repo kubernetes-sigs/krew-index --head "a-hagi613:${branch}" \
-              --state open --json number --jq '.[].number' | grep -q .; then
-            echo "An open index Pull Request already carries ${branch}; skipping the publisher."
-            echo "KREW_SKIP_UPLOAD=true" >>"$GITHUB_ENV"
-          else
-            echo "No open index Pull Request for ${branch}; clearing the branch so the publisher can retry."
-            gh api -X DELETE "repos/a-hagi613/krew-index/git/refs/heads/${branch}"
-          fi
-      - name: Publish the archives, checksums, SBOMs, and Krew index Pull Request
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
-        run: bin/release-tools/goreleaser release --clean
-      - name: Record whether the Krew index Pull Request was published
-        env:
-          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -n "$KREW_INDEX_TOKEN" ]; then
-            echo "The Krew index Pull Request was opened by the GoReleaser Krew publisher." >>"$GITHUB_STEP_SUMMARY"
-          else
-            echo "KREW_INDEX_TOKEN is not configured: the Krew index Pull Request was skipped. The archives, the checksums, and the rendered manifest were still published." >>"$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Render and lint the repository plugin manifest from the release checksums
-        run: |
-          set -euo pipefail
-          scripts/release/render-krew-manifest.sh \
-            --checksums dist/checksums.txt --version "$VERSION" --output plugins/page.yaml
-          scripts/release/lint-krew-manifest.sh plugins/page.yaml dist/checksums.txt
-          scripts/release/check-versions.sh --version "$VERSION" \
-            --manifest plugins/page.yaml \
-            --plugin dist/kubectl-page_linux_amd64_v1/kubectl-page
-      - name: Publish the rendered plugin manifest and the Homebrew formula as release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh release upload "v${VERSION}" plugins/page.yaml --clobber
-          scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" \
-            --output dist/homebrew/Formula/kubectl-page.rb
-          gh release upload "v${VERSION}" dist/homebrew/Formula/kubectl-page.rb --clobber
-          if [ -n "$HOMEBREW_TAP_TOKEN" ]; then
-            scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" --pull-request
-          else
-            echo "HOMEBREW_TAP_TOKEN is not configured: the tap Pull Request was skipped. The formula was published as kubectl-page.rb." >>"$GITHUB_STEP_SUMMARY"
-          fi
-      - name: Open a Pull Request when the committed plugin manifest is stale
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- plugins/page.yaml; then
-            echo "plugins/page.yaml already matches the v${VERSION} release checksums."
-            exit 0
-          fi
-          branch="release/v${VERSION}-plugin-manifest"
-          git config user.name "pagerless-release"
-          git config user.email "release@pagerless.dev"
-          # A release can be re-run, so both the branch and the pull request have
-          # to tolerate their own earlier output: reset the branch instead of
-          # failing when it exists, and report the existing pull request rather
-          # than trying to open a second one.
-          git checkout -B "$branch"
-          git add plugins/page.yaml
-          git commit --message "Refresh plugins/page.yaml for v${VERSION}" \
-            --message "The release checksums are the authoritative ones, so the manifest a checkout installs is regenerated from them."
-          git push --force-with-lease origin "$branch"
-          existing="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"
-          if [ -n "$existing" ]; then
-            echo "Pull request #${existing} already refreshes plugins/page.yaml for v${VERSION}; left as it is."
-            exit 0
-          fi
-          gh pr create --base main --head "$branch" \
-            --title "Refresh plugins/page.yaml for v${VERSION}" \
-            --body "Regenerated from the v${VERSION} release checksum file by the release workflow."
+          find dist -type f -maxdepth 3 -printf '%P %s bytes\n' | sort
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-artifacts-${{ needs.validate.outputs.version }}
+          path: dist
+          retention-days: 7
 
-  images:
-    name: Multi-arch images
-    # The publish step is the one that fails on a tag, and a multi-arch build
-    # costs more than ten minutes. Waiting for it means a failed release stops
-    # before that build starts instead of burning it in parallel and then
-    # reporting that the artifacts were never going to be published.
-    needs: [validate, release]
+  publish:
+    name: Publish approved artifacts
+    needs: [validate, verify]
+    # Publication waits for a human approval on the release environment. The
+    # job creates no tag and merges nothing.
+    environment: release
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 40
     permissions:
-      contents: read
+      contents: write
       packages: write
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         with:
-          platforms: arm64
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push pagerless-server
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.pagerless-server
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            VCS_REF=${{ github.sha }}
-          tags: ghcr.io/a-hagi613/pagerless-server:${{ env.VERSION }}
-      - name: Build and push pagerless-agent
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.pagerless-agent
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ env.VERSION }}
-            VCS_REF=${{ github.sha }}
-          tags: ghcr.io/a-hagi613/pagerless-agent:${{ env.VERSION }}
-
-  chart:
-    name: OCI chart
-    # Same reasoning as the images job: the chart is cheap, but publishing it
-    # for a release whose archives failed helps nobody, and the ordering is what
-    # makes the first failure the only one the run spends time on.
-    needs: [validate, release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-      packages: write
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the pinned Helm
+      - name: Publish the images
         run: |
           set -euo pipefail
-          . hack/versions.env
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
-          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
-          tar -xzf helm.tar.gz linux-amd64/helm
-          sudo install linux-amd64/helm /usr/local/bin/helm
-      - name: Package and push the chart
+          version="${{ needs.validate.outputs.version }}"
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --file Dockerfile.pagerless-server --build-arg "VERSION=${version}" \
+            --tag "ghcr.io/a-hagi613/pagerless-server:${version}" .
+          docker buildx build --push --platform linux/amd64,linux/arm64 \
+            --file Dockerfile.pagerless-agent --build-arg "VERSION=${version}" \
+            --tag "ghcr.io/a-hagi613/pagerless-agent:${version}" .
+      - name: Publish the chart
         run: |
           set -euo pipefail
-          helm lint charts/pagerless
-          mkdir -p dist/chart
+          version="${{ needs.validate.outputs.version }}"
           helm package charts/pagerless --destination dist/chart
-          echo "${{ secrets.GITHUB_TOKEN }}" |
-            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
-          # A registry tag is immutable through helm, so a re-run of a tag that
-          # failed after this step must not push the same version twice.
-          if helm show chart oci://ghcr.io/a-hagi613/charts/pagerless \
-              --version "${VERSION}" >/dev/null 2>&1; then
-            echo "the chart ${VERSION} is already published; nothing to push"
-          else
-            helm push "dist/chart/pagerless-${VERSION}.tgz" oci://ghcr.io/a-hagi613/charts
-          fi
-
-  verify:
-    name: Install the published artifacts on kind
-    needs: [validate, release, images, chart]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-      packages: read
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-      KIND_CLUSTER_NAME: pagerless-release-verify
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install the pinned Helm, kind, kubectl, and Krew
-        run: |
-          set -euo pipefail
-          . hack/versions.env
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" --output helm.tar.gz
-          curl --fail --silent --show-error --location \
-            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz.sha256sum" --output helm.sha256sum
-          echo "$(awk '{print $1}' helm.sha256sum)  helm.tar.gz" | sha256sum --check --status
-          tar -xzf helm.tar.gz linux-amd64/helm
-          sudo install linux-amd64/helm /usr/local/bin/helm
-          curl --fail --silent --show-error --location \
-            "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" --output kind
-          echo "${KIND_LINUX_AMD64_SHA256}  kind" | sha256sum --check --status
-          chmod +x kind
-          sudo install kind /usr/local/bin/kind
-          curl --fail --silent --show-error --location \
-            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" --output kubectl
-          curl --fail --silent --show-error --location \
-            "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl.sha256" --output kubectl.sha256
-          echo "$(cat kubectl.sha256)  kubectl" | sha256sum --check --status
-          chmod +x kubectl
-          sudo install kubectl /usr/local/bin/kubectl
-          bash scripts/release/tools.sh krew
-          sudo install bin/release-tools/krew /usr/local/bin/kubectl-krew
-      - name: Log in to GHCR
-        run: |
-          set -euo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" |
-            helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
-          echo "${{ secrets.GITHUB_TOKEN }}" |
-            docker login ghcr.io --username "${{ github.actor }}" --password-stdin
-      - name: Create a throwaway cluster
-        run: |
-          set -euo pipefail
-          . hack/versions.env
-          kind create cluster --name "$KIND_CLUSTER_NAME" --image "$KIND_NODE_IMAGE" --wait 180s
-      - name: Install the chart from GHCR
-        run: |
-          set -euo pipefail
-          kubectl create namespace pagerless
-          kubectl --namespace pagerless create secret generic pagerless-credentials \
-            --from-literal=AI_BASE_URL= --from-literal=AI_API_KEY= --from-literal=AI_MODEL= \
-            --from-literal=GITHUB_TOKEN= --from-literal=GITHUB_REPO= --from-literal=GITHUB_API_URL=
-          helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless \
-            --namespace pagerless --version "$VERSION" \
-            --set credentials.existingSecret=pagerless-credentials
-          kubectl --namespace pagerless rollout status deployment/pagerless-server --timeout=300s
-          deployments="$(kubectl --namespace pagerless get deployments --no-headers | wc -l)"
-          [ "$deployments" = "1" ] || { echo "expected one Deployment, found $deployments"; exit 1; }
-          names="$(kubectl --namespace pagerless get deployments --output name)"
-          [ "$names" = "deployment.apps/pagerless-server" ] ||
-            { echo "expected deployment.apps/pagerless-server, found $names"; exit 1; }
-          statefulsets="$(kubectl --namespace pagerless get statefulsets --no-headers 2>/dev/null | wc -l)"
-          [ "$statefulsets" = "0" ] || { echo "the chart rendered $statefulsets StatefulSets"; exit 1; }
-          listing="$(helm list --namespace pagerless --output json)"
-          grep --quiet --extended-regexp "\"version\": *\"${VERSION}\"" <<<"$listing" ||
-            { echo "the installed chart version is not ${VERSION}"; exit 1; }
-          grep --quiet --extended-regexp "\"app_version\": *\"${VERSION}\"" <<<"$listing" ||
-            { echo "the installed chart appVersion is not ${VERSION}"; exit 1; }
-      # The published install uses credentials.existingSecret, so the chart
-      # renders no Secret rule and the server must be denied every verb on the
-      # named Secret. The same matrix runs against the local chart in the kind
-      # job, in the managed shape.
-      - name: Prove the published chart's read-only grant
-        run: |
-          set -euo pipefail
-          bash hack/verify-read-only-grants.sh --shape existing \
-            --context "kind-${KIND_CLUSTER_NAME}" --namespace pagerless \
-            --secret-name pagerless-credentials
-      - name: Download the published plugin manifest and formula
+          helm push "dist/chart/pagerless-${version}.tgz" oci://ghcr.io/a-hagi613/charts
+      - name: Publish the CLI archives, checksums, and SBOMs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KREW_SKIP_UPLOAD: "true"
+          KREW_BRANCH: page-${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          mkdir -p dist/release
-          gh release download "v${VERSION}" --dir dist/release --pattern page.yaml --pattern kubectl-page.rb
-      - name: Verify the published archives, checksums, SBOMs, and Krew manifest
+          make release-tools
+          PATH="${PWD}/bin/release-tools:${PATH}" goreleaser release --clean
+      - name: Verify the published checksums and artifacts
         run: |
           set -euo pipefail
-          scripts/release/verify-artifacts.sh --version "$VERSION" --manifest dist/release/page.yaml
-          scripts/release/check-versions.sh --version "$VERSION" --formula dist/release/kubectl-page.rb
-      - name: Check that both images publish both architectures
-        run: |
-          set -euo pipefail
-          for image in pagerless-server pagerless-agent; do
-            platforms="$(docker buildx imagetools inspect "ghcr.io/a-hagi613/${image}:${VERSION}")"
-            grep --quiet "linux/amd64" <<<"$platforms"
-            grep --quiet "linux/arm64" <<<"$platforms"
-          done
-      - name: Delete the throwaway cluster
-        if: always()
-        run: kind delete cluster --name "$KIND_CLUSTER_NAME"
-
-  formula:
-    name: Homebrew formula on macOS
-    needs: [validate, release]
-    runs-on: macos-15
-    timeout-minutes: 20
-    env:
-      VERSION: ${{ needs.validate.outputs.version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Generate, audit, and install the formula
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          gh release download "v${VERSION}" --dir dist --pattern checksums.txt
-          scripts/release/homebrew-formula.sh --checksums dist/checksums.txt --version "$VERSION" \
-            --output dist/kubectl-page.rb
-          brew tap a-hagi613/tap
-          tap_dir="$(brew --repository)/Library/Taps/a-hagi613/homebrew-tap"
-          cp dist/kubectl-page.rb "$tap_dir/Formula/kubectl-page.rb"
-          brew audit --strict a-hagi613/tap/kubectl-page
-          brew install --build-from-source a-hagi613/tap/kubectl-page
-          kubectl-page version | grep --quiet "^kubectl-page ${VERSION}$"
+          bash scripts/release/verify-artifacts.sh \
+            --version "${{ needs.validate.outputs.version }}" \
+            --checksums dist/checksums.txt --dist dist --skip-krew

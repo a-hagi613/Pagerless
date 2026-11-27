@@ -1,0 +1,86 @@
+{{- if not .Values.agent.url }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pagerless.agentServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pagerless.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: agent
+    spec:
+      serviceAccountName: {{ include "pagerless.agentServiceName" . }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "pagerless.agentImage" . }}
+          imagePullPolicy: {{ .Values.agentImage.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.agent.port }}
+              protocol: TCP
+          env:
+            - name: PAGERLESS_LISTEN_ADDR
+              value: ":{{ .Values.agent.port }}"
+            {{- include "pagerless.commonEnv" . | nindent 12 }}
+            - name: PAGERLESS_CALLBACK_ORIGIN
+              value: {{ printf "http://%s-server:%v" (include "pagerless.fullname" .) .Values.service.port | quote }}
+            - name: PAGERLESS_AGENT_MAX_CONCURRENCY
+              value: {{ .Values.agent.maxConcurrency | quote }}
+            - name: PAGERLESS_MODEL_BASE_URL
+              value: {{ required "model.baseUrl must name the OpenAI-compatible endpoint" .Values.model.baseUrl | quote }}
+            - name: PAGERLESS_MODEL_NAME
+              value: {{ required "model.name must name a tool-calling model" .Values.model.name | quote }}
+            - name: PAGERLESS_MODEL_API_KEY_FILE
+              value: /var/run/pagerless/secret/model-api-key
+            - name: PAGERLESS_BUDGET_TOOL_CALLS
+              value: {{ .Values.agent.budget.toolCalls | quote }}
+            - name: PAGERLESS_BUDGET_MODEL_CALLS
+              value: {{ .Values.agent.budget.modelCalls | quote }}
+            - name: PAGERLESS_BUDGET_INPUT_TOKENS
+              value: {{ .Values.agent.budget.inputTokens | quote }}
+            - name: PAGERLESS_BUDGET_SECONDS
+              value: {{ .Values.agent.budget.seconds | quote }}
+            {{- with .Values.agent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            {{- include "pagerless.credentialsMount" . | nindent 12 }}
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

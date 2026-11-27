@@ -1,0 +1,144 @@
+{{- if .Values.kubernetes.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pagerless.kubernetesMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kubernetes-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pagerless.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: kubernetes-mcp
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kubernetes-mcp
+    spec:
+      serviceAccountName: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" .) }}
+      automountServiceAccountToken: true
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: kubernetes-mcp
+          image: {{ include "pagerless.serverImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --provider=kubernetes
+            - --listen=:{{ .Values.mcp.port }}
+            - --token-file=/var/run/pagerless/secret/mcp-token
+            {{- if .Values.kubernetes.namespaceAllowlist }}
+            - --namespace-allowlist={{ join "," .Values.kubernetes.namespaceAllowlist }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          volumeMounts:
+            {{- include "pagerless.credentialsMount" . | nindent 12 }}
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pagerless.githubMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: github-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pagerless.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: github-mcp
+  template:
+    metadata:
+      labels:
+        {{- include "pagerless.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: github-mcp
+    spec:
+      serviceAccountName: {{ printf "%s-github-mcp" (include "pagerless.fullname" .) }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: github-mcp
+          image: {{ include "pagerless.serverImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --provider=github
+            - --listen=:{{ .Values.mcp.port }}
+            - --token-file=/var/run/pagerless/secret/mcp-token
+            - --repository={{ required "github.repository must name the repository that owns the cluster's source" .Values.github.repository }}
+            - --github-token-file=/var/run/pagerless/secret/github-read-token
+            - --github-api-url={{ .Values.github.apiUrl }}
+            - --path-prefix={{ .Values.github.pathPrefix }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcp.port }}
+              protocol: TCP
+          volumeMounts:
+            {{- include "pagerless.credentialsMount" . | nindent 12 }}
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 4
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      volumes:
+        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        - name: tmp
+          emptyDir: {}

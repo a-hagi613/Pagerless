@@ -1,21 +1,17 @@
-{{- /*
-The append-only Page history. The server appends one status snapshot per Phase
-change and never rewrites one, so the PVC keeps the audit trail across a pod
-restart and a Page's deletion.
-*/ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: pagerless-data
-  namespace: {{ .Release.Namespace }}
+  name: {{ printf "%s-transcript" (include "pagerless.fullname" .) }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" . | nindent 4 }}
 spec:
   accessModes:
-    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
-  {{- with .Values.persistence.storageClassName }}
-  storageClassName: {{ . | quote }}
-  {{- end }}
+    - ReadWriteOnce
   resources:
     requests:
       storage: {{ .Values.persistence.size }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+{{- end }}

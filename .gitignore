@@ -41,5 +41,6 @@ dashboard/playwright-report/
 tfplan
 crash.log
 
-# Workstation-only agent instructions
+# Workstation-only agent instructions and harness state
 /AGENTS.md
+opencode.json

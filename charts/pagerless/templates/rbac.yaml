@@ -1,196 +1,69 @@
-{{- /*
-The cluster identity is strictly read-only (ADR-0037). It reads the cluster to
-diagnose failures and writes only its own Pages, the agent Jobs that investigate
-them, and the two Secrets the operator owns. Remediation is a pull request, so
-no write verb on a workload, Event, or Node is ever rendered.
-
-The same namespaced rules are rendered twice: once inside one cluster-wide read
-ClusterRole (Mode A), and once as a read Role per allowlisted namespace (Mode B),
-without the cluster-scoped rules. The two modes are mutually exclusive and are
-validated before anything renders.
-*/ -}}
-{{- include "pagerless.validateWatch" . }}
-{{- if .Values.rbac.create }}
-{{- /*
-Agent authentication is the same in both watch modes: the server creates one
-TokenReview per agent report or tool call. The grant is a separate ClusterRole
-so allowlist mode, which renders no cluster-wide read role, cannot lose it.
-*/}}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ .Release.Name }}-pagerless-agent-auth
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-rules:
-  {{- include "pagerless.tokenReviewRules" . | nindent 2 }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ .Release.Name }}-pagerless-agent-auth
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ .Release.Name }}-pagerless-agent-auth
-subjects:
-  - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name }}
-    namespace: {{ .Release.Namespace }}
----
-{{- if .Values.rbac.watchAllNamespaces }}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ .Release.Name }}-pagerless-read
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-rules:
-  {{- include "pagerless.namespacedReadRules" . | nindent 2 }}
-  {{- include "pagerless.clusterReadRules" . | nindent 2 }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ .Release.Name }}-pagerless-read
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ .Release.Name }}-pagerless-read
-subjects:
-  - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name }}
-    namespace: {{ .Release.Namespace }}
-{{- else }}
-{{- range $namespace := .Values.rbac.watchNamespaces }}
+# The Kubernetes integration reads workloads, Events and bounded logs. It has
+# no Secret, exec, attach, proxy or mutating verb. Discovery is provided by the
+# cluster's system:discovery binding to every authenticated identity.
+{{- if .Values.kubernetes.enabled }}
+{{- $readRules := list
+  (dict "apiGroups" (list "") "resources" (list "pods" "services" "configmaps" "events" "namespaces" "nodes" "persistentvolumeclaims" "serviceaccounts") "verbs" (list "get" "list"))
+  (dict "apiGroups" (list "") "resources" (list "pods/log") "verbs" (list "get"))
+  (dict "apiGroups" (list "apps") "resources" (list "deployments" "replicasets" "statefulsets" "daemonsets") "verbs" (list "get" "list"))
+  (dict "apiGroups" (list "batch") "resources" (list "jobs" "cronjobs") "verbs" (list "get" "list"))
+  (dict "apiGroups" (list "networking.k8s.io") "resources" (list "ingresses" "networkpolicies") "verbs" (list "get" "list"))
+  (dict "apiGroups" (list "autoscaling") "resources" (list "horizontalpodautoscalers") "verbs" (list "get" "list"))
+  (dict "apiGroups" (list "policy") "resources" (list "poddisruptionbudgets") "verbs" (list "get" "list"))
+-}}
+{{- if .Values.kubernetes.namespaceAllowlist }}
+{{- range .Values.kubernetes.namespaceAllowlist }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ $.Release.Name }}-pagerless-read
-  namespace: {{ $namespace }}
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" $) }}
+  namespace: {{ . }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" $ | nindent 4 }}
 rules:
-  {{- include "pagerless.namespacedReadRules" $ | nindent 2 }}
+  {{- toYaml $readRules | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ $.Release.Name }}-pagerless-read
-  namespace: {{ $namespace }}
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" $) }}
+  namespace: {{ . }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ $.Release.Name }}-pagerless-read
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" $) }}
 subjects:
   - kind: ServiceAccount
-    name: {{ $.Values.serviceAccount.name }}
+    name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" $) }}
     namespace: {{ $.Release.Namespace }}
 {{- end }}
-{{- end }}
+{{- else }}
 ---
-{{- /*
-The release-namespace Role. Pages and their status are the product's own objects,
-the agent Jobs are the investigations, and the credentials Secret is the only
-Secret the server may write. `pods` is read again here so that Mode B can still
-read the agent pod that presents a token.
-*/}}
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: pagerless-server
-  namespace: {{ .Release.Namespace }}
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" .) }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" . | nindent 4 }}
 rules:
-  # `patch` lets the Portal record a decision as annotations on the Page under
-  # the server's identity. `spec` is immutable and `status` is a separate
-  # subresource, so a patch cannot change the investigation (ADR-0031).
-  - apiGroups: [pagerless.dev]
-    resources: [pages]
-    verbs: [create, get, list, watch, patch, delete]
-  - apiGroups: [pagerless.dev]
-    resources: [pages/status]
-    verbs: [get, update, patch]
-  # Setting blockOwnerDeletion on the agent Job's owner reference.
-  - apiGroups: [pagerless.dev]
-    resources: [pages/finalizers]
-    verbs: [update]
-  - apiGroups: [batch]
-    resources: [jobs]
-    verbs: [create, get, list, watch, delete]
-  - apiGroups: [""]
-    resources: [pods]
-    verbs: [get, list, watch]
-  {{- if not .Values.credentials.existingSecret }}
-  # The one Secret the server may write: the credentials Secret, by name. A
-  # credential write reads it, merges the submitted keys, and updates with the
-  # observed resource version. `create`, `list`, and `watch` are never granted,
-  # because `resourceNames` cannot constrain them; the bootstrap token and the
-  # session key are read from their mounted volumes instead.
-  - apiGroups: [""]
-    resources: [secrets]
-    resourceNames: [{{ .Values.credentials.secretName }}]
-    verbs: [get, patch, update]
-  {{- end }}
+  {{- toYaml $readRules | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
-  name: pagerless-server
-  namespace: {{ .Release.Namespace }}
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" .) }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-server
+  kind: ClusterRole
+  name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" .) }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.serviceAccount.name }}
+    name: {{ printf "%s-kubernetes-mcp" (include "pagerless.fullname" .) }}
     namespace: {{ .Release.Namespace }}
----
-{{- /*
-The approver Role. A decision is an annotation patch on the Page, so `patch` on
-`pages` is the only write an approver holds; `spec` is immutable and `status` is
-a separate subresource, so the decision cannot change the investigation
-(ADR-0031).
-*/}}
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: pagerless-approver
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-approver") | nindent 4 }}
-rules:
-  - apiGroups: [pagerless.dev]
-    resources: [pages]
-    verbs: [get, list, watch]
-  - apiGroups: [pagerless.dev]
-    resources: [pages]
-    verbs: [patch]
-{{- with .Values.approvers.subjects }}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: pagerless-approvers
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-approver") | nindent 4 }}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: pagerless-approver
-subjects:
-  {{- toYaml . | nindent 2 }}
 {{- end }}
 {{- end }}

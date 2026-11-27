@@ -66,12 +66,12 @@ krews:
     ids:
       - kubectl-page
     homepage: https://github.com/a-hagi613/pagerless
-    short_description: Investigate a failing Kubernetes Target as a Page
+    short_description: Investigate a Kubernetes symptom and follow the evidence
     description: |
-      kubectl page starts, lists, and shows Pagerless Pages. Pagerless watches a
-      cluster for failing Targets, diagnoses them with an AI agent, and proposes
-      every remediation as a pull request against the repository that owns the
-      Target. The cluster identity is strictly read-only.
+      kubectl page opens an investigation from a terminal question. Pagerless
+      records the model's read-only tool calls, streams the evidence, and opens
+      a draft pull request when a source change is justified. The cluster
+      identity is strictly read-only and a human merges every change.
     caveats: |
       Pagerless must already be installed in the cluster. Install the chart with
       helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
@@ -128,32 +128,30 @@ release:
     name: pagerless
   draft: false
   prerelease: auto
-  # A release that fails after the release object exists must be re-runnable.
-  # GoReleaser's default refuses a second run for the same tag, which turns one
-  # bad step into a manual cleanup before any retry; replace recreates the
-  # release and its assets from the tag's tree instead.
-  mode: replace
+  # A re-run must never delete a published release. keep-existing adds only what
+  # is missing, so an interrupted publish can resume without removing assets a
+  # person may already have downloaded.
+  mode: keep-existing
   # The four facts an operator needs before installing: what a single install
   # contains, how to supply credentials, what the cluster identity may do, and
   # how a change reaches a cluster. The changelog below them is generated; this
   # is not.
   header: |
-    Pagerless {{ .Version }} — a standalone, read-only Kubernetes remediation
-    operator.
+    Pagerless {{ .Version }} — a read-only Kubernetes investigation service.
 
-    - **Standalone install.** One Helm chart, the `pagerless-server` and
-      `pagerless-agent` images, and the `kubectl page` plugin at one version.
-      Pagerless needs no database, identity provider, message broker, admission
-      webhook, gateway, or MCP server.
-    - **Three onboarding paths.** Fill the credentials Secret by hand, with
-      `kubectl page config set`, or from a secret manager.
-    - **A read-only boundary.** The cluster identity reads workloads, Events,
-      logs, and the OpenAPI schema and never writes a workload; the agent Job
-      holds no cluster RBAC at all.
-    - **A pull request is the only way Pagerless changes a cluster.** A human
-      approves one Proposal hash, the isolated writer opens one pull request, and
-      the repository's own CI decides the merge. Pagerless never merges, patches,
-      or execs.
+    - **One install.** A Helm chart, the `pagerless-server` and `pagerless-agent`
+      images, and the `kubectl page` plugin at one version. An operator supplies
+      an OpenAI-compatible model endpoint, a source repository and read-only
+      cluster access.
+    - **A durable transcript.** Every page, turn, sanitized tool attempt and
+      evidence item is stored in order. Both clients replay from the same event
+      cursor after a reconnect or restart.
+    - **A read-only boundary.** The Kubernetes integration reads approved
+      workloads, Events and bounded logs through its own identity. Secrets,
+      exec, attach, proxy and every mutating verb are outside its grants.
+    - **A draft pull request, never a merge.** The service validates the base,
+      the source path and the diff, then opens exactly one draft pull request
+      through an isolated write credential. A human reviews and merges.
   footer: |
     The release also publishes the chart at
     oci://ghcr.io/a-hagi613/charts/pagerless and the images at

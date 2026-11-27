@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pagerless-fake
+  namespace: pagerless
+  labels:
+    app.kubernetes.io/name: pagerless-fake
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pagerless-fake
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pagerless-fake
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fake
+          image: pagerless-e2e:e2e
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: model
+              containerPort: 9090
+            - name: github
+              containerPort: 9091
+          readinessProbe:
+            httpGet:
+              path: /v1/models
+              port: model
+            periodSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pagerless-fake
+  namespace: pagerless
+  labels:
+    app.kubernetes.io/name: pagerless-fake
+spec:
+  selector:
+    app.kubernetes.io/name: pagerless-fake
+  ports:
+    - name: model
+      port: 9090
+      targetPort: model
+    - name: github
+      port: 9091
+      targetPort: github
