@@ -58,7 +58,7 @@ func (a *app) dashboard(ctx context.Context) error {
 			return err
 		}
 	} else {
-		presentation := &printer{writer: a.out()}
+		presentation := newPrinter(a.out())
 		presentation.field("Dashboard", url)
 		if tunneled {
 			presentation.field("Tunnel", "local port-forward; it closes when this command exits")

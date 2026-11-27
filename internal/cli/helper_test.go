@@ -24,7 +24,6 @@ const (
 	testAnswer      = "The Service has no endpoints."
 	testReleaseNS   = "pagerless"
 	portHTTP        = "http"
-	roleAssistant   = "assistant"
 
 	fieldCallID     = "callId"
 	fieldTool       = "tool"

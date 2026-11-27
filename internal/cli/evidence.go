@@ -37,7 +37,7 @@ func (a *app) showEvidence(ctx context.Context, pageID, callID string) error {
 	if a.opts.json {
 		return writeJSON(a.out(), record)
 	}
-	presentation := &printer{writer: a.out()}
+	presentation := newPrinter(a.out())
 	presentation.field("Call", sanitize(orPlaceholder(record.CallID)))
 	presentation.field("Tool", sanitize(orPlaceholder(record.Tool)))
 	presentation.field("Status", sanitize(orPlaceholder(record.Status)))

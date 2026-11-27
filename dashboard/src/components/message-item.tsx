@@ -1,12 +1,14 @@
 import { FileSearch } from "lucide-react";
 
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import type { Citation, PageMessage } from "@/lib/contract";
 import { citationPointer } from "@/lib/contract";
 import { timeOfDay } from "@/lib/format";
 
-// Messages are plain text on purpose: model output is untrusted, so it is rendered as text and never as
-// HTML. Citations are buttons that open the sanitized tool evidence they point at.
+// An assistant answer is untrusted, so it is parsed as Markdown into React elements with raw HTML
+// skipped and link schemes restricted. A user message stays plain text. Citations are buttons that
+// open the sanitized tool evidence they point at.
 export function MessageItem({
   message,
   onEvidence,
@@ -33,9 +35,13 @@ export function MessageItem({
             {timeOfDay(message.createdAt)}
           </time>
         </div>
-        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
-          {message.content}
-        </p>
+        {assistant ? (
+          <Markdown>{message.content}</Markdown>
+        ) : (
+          <p className="text-sm leading-relaxed break-words whitespace-pre-wrap text-foreground">
+            {message.content}
+          </p>
+        )}
         {message.citations.length > 0 && (
           <div className="mt-2 flex flex-wrap items-center gap-1.5" aria-label="Citations">
             {message.citations.map((citation) => {
