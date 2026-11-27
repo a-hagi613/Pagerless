@@ -2,119 +2,103 @@ package cli
 
 import (
 	"context"
-	"fmt"
-	"io"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	"github.com/a-hagi613/pagerless/api/v1alpha1"
+	"github.com/spf13/cobra"
 )
 
-// follower prints the step events of one Page, and its phase changes, as
-// the status of the Page shows them.
-type follower struct {
-	cl  client.WithWatch
-	key client.ObjectKey
-	out *printer
-	// seenSteps is the step count that the follower has already printed.
-	seenSteps int32
-	// phase is the phase that the follower has last printed.
-	phase v1alpha1.Phase
-}
-
-// follow watches the status of a Page and prints each new step and phase
-// change. It returns the Page once the Page is Proposed, which is when the
-// agent has finished and a human decision is next, or once it has ended.
-func follow(ctx context.Context, cl client.WithWatch, key client.ObjectKey, w io.Writer) (*v1alpha1.Page, error) {
-	f := &follower{cl: cl, key: key, out: &printer{w: w}}
-	for {
-		var tr v1alpha1.Page
-		if err := cl.Get(ctx, key, &tr); err != nil {
-			return nil, pageError(err, key.Name, key.Namespace)
-		}
-		if f.observe(&tr) {
-			return &tr, nil
-		}
-		done, err := f.watch(ctx, tr.ResourceVersion)
-		if err != nil {
-			return nil, err
-		}
-		if done != nil {
-			return done, nil
-		}
-		// The watch ended without a verdict, so the loop reads the Page again and resumes from there.
+// newFollowCommand resumes and follows one conversation's event stream.
+func newFollowCommand(a *app) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "follow <pageId>",
+		Short: "Replay a conversation's events and follow new ones",
+		Long: `Replays the durable event log and keeps the stream open. Without --after it
+resumes after the last event this machine read, so a detached or interrupted
+follow continues without losing or repeating entries. With --json each event is
+one JSON object on its own line.`,
+		Args: exactlyOneArgument,
+		RunE: a.run(func(ctx context.Context, args []string) error {
+			return a.followPage(ctx, args[0])
+		}),
 	}
+	cmd.Flags().Int64Var(&a.opts.after, "after", -1,
+		"resume after this sequence (default: the stored resume point)")
+	cmd.Flags().BoolVar(&a.opts.fromStart, "from-start", false,
+		"ignore the stored resume point and replay from sequence zero")
+	return cmd
 }
 
-// watch consumes the events of one watch that starts after resourceVersion. It
-// returns the Page once it is done, or nil when the watch ended first.
-func (f *follower) watch(ctx context.Context, resourceVersion string) (*v1alpha1.Page, error) {
-	events, err := f.cl.Watch(ctx, &v1alpha1.PageList{},
-		client.InNamespace(f.key.Namespace),
-		client.MatchingFields{"metadata.name": f.key.Name},
-		&client.ListOptions{Raw: &metav1.ListOptions{ResourceVersion: resourceVersion}})
+// followPage replays the durable log and keeps the stream open until the turn
+// finishes or the operator detaches.
+func (a *app) followPage(ctx context.Context, pageID string) error {
+	api, err := a.connect(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("watch Page %q: %w", f.key.Name, err)
+		return err
 	}
-	defer events.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case event, ok := <-events.ResultChan():
-			if !ok {
-				return nil, nil
-			}
-			switch event.Type {
-			case watch.Added, watch.Modified:
-				tr, ok := event.Object.(*v1alpha1.Page)
-				if ok && f.observe(tr) {
-					return tr, nil
-				}
-			case watch.Deleted:
-				return nil, fmt.Errorf("page %q was deleted while it was followed", f.key.Name)
-			case watch.Error:
-				return nil, nil
-			}
-		}
+	start := startingSequence(pageID, a.opts.after, a.opts.fromStart)
+	if start > 0 {
+		a.progressf("resuming after event %d\n", start)
 	}
+	outcome, err := a.consume(ctx, api, pageID, start, true)
+	if err != nil {
+		return err
+	}
+	if !outcome.Detached {
+		return nil
+	}
+	if a.opts.json {
+		a.progressf("\nDetached at event %d; the turn is still running.\n", outcome.LastSeq)
+		a.progressf("  Resume: kubectl page follow %s --after %d\n", pageID, outcome.LastSeq)
+		a.progressf("  Stop:   kubectl page stop %s\n", pageID)
+		return nil
+	}
+	return a.reportDetach(pageID, "", outcome)
 }
 
-// observe prints what has changed since the previous observation. It reports
-// whether the Page has reached a point where the watch ends.
-func (f *follower) observe(tr *v1alpha1.Page) bool {
-	f.printNewSteps(tr)
-	if tr.Status.Phase != f.phase {
-		f.phase = tr.Status.Phase
-		f.out.printf("phase: %s\n", phaseLabel(f.phase))
+// newActivityCommand prints the trace once, without following.
+func newActivityCommand(a *app) *cobra.Command {
+	var after int64
+	cmd := &cobra.Command{
+		Use:   "activity <pageId>",
+		Short: "Print a conversation's recorded tool activity",
+		Long: `Prints the recorded events once, without following. With --json the output is
+one document with an events array.`,
+		Args: exactlyOneArgument,
+		RunE: a.run(func(ctx context.Context, args []string) error {
+			return a.activity(ctx, args[0], after)
+		}),
 	}
-	return tr.Status.Phase == v1alpha1.PhaseProposed || tr.Status.Phase.IsTerminal()
+	cmd.Flags().Int64Var(&after, "after", 0, "start after this sequence")
+	return cmd
 }
 
-// printNewSteps prints the steps that the Page has recorded since the previous observation.
-func (f *follower) printNewSteps(tr *v1alpha1.Page) {
-	fresh := tr.Status.StepCount - f.seenSteps
-	if fresh <= 0 {
-		return
+// activity prints the ordered log that the browser renders as trace details.
+func (a *app) activity(ctx context.Context, pageID string, after int64) error {
+	if after < 0 {
+		return usagef("--after must not be negative")
 	}
-	recorded := tr.Status.Steps
-	shown := min(int(fresh), len(recorded))
-	if omitted := int(fresh) - shown; omitted > 0 {
-		f.out.printf("... %d earlier steps are no longer in the step summary\n", omitted)
+	api, err := a.connect(ctx)
+	if err != nil {
+		return err
 	}
-	for _, step := range recorded[len(recorded)-shown:] {
-		f.out.printf("%s\n", stepLine(step))
+	events, err := api.events(ctx, pageID, after)
+	if err != nil {
+		return err
 	}
-	f.seenSteps = tr.Status.StepCount
-}
-
-// stepLine formats one step for the watch output.
-func stepLine(step v1alpha1.Step) string {
-	kind := string(step.Kind)
-	if step.Tool != "" {
-		kind += " " + step.Tool
+	if events == nil {
+		events = []event{}
 	}
-	return fmt.Sprintf("%s %s: %s", step.Time.Format("15:04:05"), kind, step.Summary)
+	if a.opts.json {
+		return writeJSON(a.out(), struct {
+			Events []event `json:"events"`
+		}{Events: events})
+	}
+	presentation := &printer{writer: a.out()}
+	if len(events) == 0 {
+		presentation.printf("No activity.\n")
+		return presentation.err
+	}
+	for _, current := range events {
+		writeEvent(presentation, current)
+	}
+	return presentation.err
 }
