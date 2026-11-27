@@ -31,7 +31,7 @@ usage() {
 Usage: homebrew-formula.sh --checksums FILE --version VERSION [--output PATH] [--pull-request]
 
   --checksums FILE   The release checksum file (checksums.txt).
-  --version VERSION  The release version without the leading v, such as 2.0.0.
+  --version VERSION  The release version without the leading v, such as 1.0.0.
   --output PATH      Write the formula here instead of opening a Pull Request.
   --pull-request     Commit the formula to a branch in the tap and open the PR.
                      Needs HOMEBREW_TAP_TOKEN.
@@ -100,7 +100,7 @@ checksum_for() {
 }
 
 archive_url() {
-	printf 'https://github.com/%s/releases/download/v%s/kubectl-page_%s_%s_%s.tar.gz' \
+	printf 'https://github.com/%s/releases/download/pagerless-v%s/kubectl-page_%s_%s_%s.tar.gz' \
 		"$repo" "$version" "$version" "$1" "$2"
 }
 

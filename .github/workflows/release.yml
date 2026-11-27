@@ -1,17 +1,20 @@
 name: Release
 
-# A tag builds and proves every artifact, then a separately approved job
-# publishes them. No job creates a tag, merges a pull request, or rewrites an
-# existing release. Public distribution coordinates are frozen until the owner
-# approves fresh ones.
+# One fresh immutable release tag (pagerless-vX.Y.Z) builds and proves every
+# artifact, then a separately approved job publishes them. No job creates a
+# tag, merges a pull request, or rewrites an existing release.
+#
+# The legacy v1.0.0 and v2.0.0 tags, releases, charts, and images are frozen.
+# This workflow deliberately does not listen to v-prefixed tags.
 on:
   push:
-    tags: ["v*.*.*"]
+    tags: ["pagerless-v*.*.*"]
   workflow_dispatch:
     inputs:
-      version:
-        description: Version without the leading v; the tree must already carry it
+      tag:
+        description: Exact immutable tag to publish, for example pagerless-v1.0.0
         required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,28 +25,52 @@ permissions:
 
 jobs:
   validate:
-    name: Validate the tag against the tree
+    name: Validate the immutable tag
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
-      - id: version
+      - name: Resolve the release tag
+        id: resolve
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          version="${{ inputs.version }}"
-          if [ -z "$version" ]; then
-            version="${GITHUB_REF_NAME#v}"
-          fi
-          case "$version" in
-          '' | *[!0-9.]*) echo "the version is not a release version" >&2; exit 1 ;;
+          tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
+          case "$tag" in
+          pagerless-v[0-9]*) ;;
+          *)
+            echo "the release tag must start with pagerless-v; refusing ${tag}" >&2
+            exit 1
+            ;;
           esac
-          echo "version=${version}" >>"$GITHUB_OUTPUT"
+          echo "tag=${tag}" >>"$GITHUB_OUTPUT"
+          echo "version=${tag#pagerless-v}" >>"$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+          fetch-depth: 0
+      - name: Record the tag commit
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+      - name: Guard the immutable release target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/release/check-release-target.sh \
+            --tag "${{ steps.resolve.outputs.tag }}" \
+            --version "${{ steps.resolve.outputs.version }}" --require-tag
       - name: Check the version wiring
-        run: bash scripts/release/check-versions.sh --version "${{ steps.version.outputs.version }}"
+        run: bash scripts/release/check-versions.sh --version "${{ steps.resolve.outputs.version }}"
+      - name: Check the release notes exist
+        run: test -f "docs/release-notes/${{ steps.resolve.outputs.version }}.md"
       - name: Lint the release scripts
         run: shellcheck -x scripts/release/*.sh
+      - name: Test the release guards
+        run: bash scripts/release/test-guards.sh
 
   verify:
     name: Build and verify every artifact
@@ -53,13 +80,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-      - name: Run the local release preflight
-        run: make release-preflight
+      - name: Install pinned Helm, kubectl, and Krew
+        run: |
+          set -euo pipefail
+          bash scripts/release/install-ci-tools.sh
+          echo "${PWD}/bin/ci-tools" >>"$GITHUB_PATH"
+      - name: Check the version wiring
+        run: bash scripts/release/check-versions.sh --version "${{ needs.validate.outputs.version }}"
+      - name: Validate the GoReleaser configuration
+        run: make release-check
+      - name: Build the CLI archives, checksums, and SBOMs
+        run: make release-snapshot RELEASE_SNAPSHOT_VERSION="${{ needs.validate.outputs.version }}"
       - name: Build the images without pushing
         run: |
           set -euo pipefail
@@ -69,15 +106,37 @@ jobs:
           docker build --file Dockerfile.pagerless-agent \
             --build-arg "VERSION=${{ needs.validate.outputs.version }}" \
             --tag "pagerless-agent:${{ needs.validate.outputs.version }}" .
-      - name: Package the chart
+      - name: Package the chart and its checksum
         run: |
           set -euo pipefail
           mkdir -p dist/chart
           helm package charts/pagerless --destination dist/chart
-      - name: Record the artifact inventory
+          ( cd dist/chart && sha256sum "pagerless-${{ needs.validate.outputs.version }}.tgz" \
+            >"pagerless-${{ needs.validate.outputs.version }}.tgz.sha256" )
+      - name: Record and check the artifact inventory
         run: |
           set -euo pipefail
           find dist -type f -maxdepth 3 -printf '%P %s bytes\n' | sort
+          test "$(find dist -maxdepth 1 -name 'kubectl-page_*.tar.gz' | wc -l)" = "4"
+          test "$(find dist -maxdepth 1 -name '*.tar.gz.sbom.json' | wc -l)" = "4"
+          test -f dist/checksums.txt
+          test -f dist/plugins/page.yaml
+          test -f "dist/chart/pagerless-${{ needs.validate.outputs.version }}.tgz"
+          test -f "dist/chart/pagerless-${{ needs.validate.outputs.version }}.tgz.sha256"
+      - name: Prove the archives and the Krew manifest install
+        run: |
+          set -euo pipefail
+          python3 -m http.server 18099 --bind 127.0.0.1 --directory dist >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server" >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 20); do
+            curl --fail --silent "http://127.0.0.1:18099/checksums.txt" >/dev/null && break
+            sleep 1
+          done
+          bash scripts/release/verify-artifacts.sh \
+            --version "${{ needs.validate.outputs.version }}" \
+            --base-url "http://127.0.0.1:18099" \
+            --checksums dist/checksums.txt --dist dist
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-artifacts-${{ needs.validate.outputs.version }}
@@ -88,7 +147,13 @@ jobs:
     name: Publish approved artifacts
     needs: [validate, verify]
     # Publication waits for a human approval on the release environment. The
-    # job creates no tag and merges nothing.
+    # job creates no tag and merges nothing. It publishes only the artifacts
+    # the verify job built and installed.
+    #
+    # The GitHub Release is created as a draft first. A run that fails between
+    # the two images, the chart, and the release can be re-run: existing
+    # coordinates are accepted only when their recorded digest matches, and
+    # the draft is published only after every artifact is in place.
     environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -96,47 +161,184 @@ jobs:
       contents: write
       packages: write
     steps:
+      # Checkout first: actions/checkout cleans the workspace, so a download
+      # placed before it would be deleted.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          go-version-file: go.mod
-          cache: true
+          name: release-artifacts-${{ needs.validate.outputs.version }}
+          path: dist
+      - name: Install pinned Helm, kubectl, and Krew
+        run: |
+          set -euo pipefail
+          bash scripts/release/install-ci-tools.sh
+          echo "${PWD}/bin/ci-tools" >>"$GITHUB_PATH"
+      # The final Alpine apk step and the agent's Python/uv steps execute
+      # target-architecture binaries, so arm64 needs emulation before Buildx.
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
       - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Publish the images
-        run: |
-          set -euo pipefail
-          version="${{ needs.validate.outputs.version }}"
-          docker buildx build --push --platform linux/amd64,linux/arm64 \
-            --file Dockerfile.pagerless-server --build-arg "VERSION=${version}" \
-            --tag "ghcr.io/a-hagi613/pagerless-server:${version}" .
-          docker buildx build --push --platform linux/amd64,linux/arm64 \
-            --file Dockerfile.pagerless-agent --build-arg "VERSION=${version}" \
-            --tag "ghcr.io/a-hagi613/pagerless-agent:${version}" .
-      - name: Publish the chart
-        run: |
-          set -euo pipefail
-          version="${{ needs.validate.outputs.version }}"
-          helm package charts/pagerless --destination dist/chart
-          helm push "dist/chart/pagerless-${version}.tgz" oci://ghcr.io/a-hagi613/charts
-      - name: Publish the CLI archives, checksums, and SBOMs
+      - name: Log Helm in to the registry
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KREW_SKIP_UPLOAD: "true"
-          KREW_BRANCH: page-${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
-          make release-tools
-          PATH="${PWD}/bin/release-tools:${PATH}" goreleaser release --clean
-      - name: Verify the published checksums and artifacts
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+      - name: Prepare the draft release and recover any recorded digests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          tag="${{ needs.validate.outputs.tag }}"
+          version="${{ needs.validate.outputs.version }}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            [ "$draft" = "true" ] || {
+              echo "$tag is already published; refusing to modify an immutable release" >&2
+              exit 1
+            }
+            echo "resuming the unfinished draft release for $tag"
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "Pagerless ${version}" \
+              --notes-file "docs/release-notes/${version}.md"
+          fi
+          mkdir -p dist/registry
+          for marker in image-server.digest image-agent.digest chart.sha256; do
+            if ! gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$marker" --dir dist/registry --clobber 2>"$RUNNER_TEMP/marker.err"; then
+              grep -qE 'no assets (match the file pattern|to download)' "$RUNNER_TEMP/marker.err" || {
+                cat "$RUNNER_TEMP/marker.err" >&2
+                exit 1
+              }
+            fi
+          done
+      - name: Publish or verify the server image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/release/ensure-image.sh \
+            --name server --version "${{ needs.validate.outputs.version }}" \
+            --revision "${{ needs.validate.outputs.commit }}" \
+            --digest-file dist/registry/image-server.digest
+          gh release upload "${{ needs.validate.outputs.tag }}" \
+            dist/registry/image-server.digest --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish or verify the agent image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bash scripts/release/ensure-image.sh \
+            --name agent --version "${{ needs.validate.outputs.version }}" \
+            --revision "${{ needs.validate.outputs.commit }}" \
+            --digest-file dist/registry/image-agent.digest
+          gh release upload "${{ needs.validate.outputs.tag }}" \
+            dist/registry/image-agent.digest --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish or verify the chart
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.validate.outputs.version }}"
+          bash scripts/release/ensure-chart.sh --version "$version" \
+            --chart-file "dist/chart/pagerless-${version}.tgz" \
+            --sha-file dist/registry/chart.sha256
+          gh release upload "${{ needs.validate.outputs.tag }}" \
+            dist/registry/chart.sha256 --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Upload the verified release assets to the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.validate.outputs.tag }}"
+          version="${{ needs.validate.outputs.version }}"
+          assets=(
+            "dist/kubectl-page_${version}_linux_amd64.tar.gz"
+            "dist/kubectl-page_${version}_linux_arm64.tar.gz"
+            "dist/kubectl-page_${version}_darwin_amd64.tar.gz"
+            "dist/kubectl-page_${version}_darwin_arm64.tar.gz"
+            "dist/checksums.txt"
+            "dist/plugins/page.yaml"
+            "dist/chart/pagerless-${version}.tgz"
+            "dist/chart/pagerless-${version}.tgz.sha256"
+          )
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${pair%/*}"
+            arch="${pair#*/}"
+            assets+=("dist/kubectl-page_${version}_${os}_${arch}.tar.gz.sbom.json")
+          done
+          for asset in "${assets[@]}"; do
+            test -f "$asset" || {
+              echo "verified release artifact $asset is missing" >&2
+              exit 1
+            }
+          done
+          gh release upload "$tag" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Publish and promote the fresh 1.0 line: /releases/latest must not
+          # keep pointing at the retired v2.0.0 release. No old tag is touched.
+          gh release edit "${{ needs.validate.outputs.tag }}" --draft=false --latest \
+            --repo "$GITHUB_REPOSITORY"
+
+  access:
+    name: Anonymous install gate
+    needs: publish
+    # This job needs no registry credential and no write permission. It proves
+    # that an anonymous operator can install the release. If GHCR visibility is
+    # still private, only this job is re-run after the owner makes the packages
+    # public; publication is never attempted again.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
+      - name: Install pinned Helm, kubectl, and Krew
+        run: |
+          set -euo pipefail
+          bash scripts/release/install-ci-tools.sh
+          echo "${PWD}/bin/ci-tools" >>"$GITHUB_PATH"
+      - name: Prove the published release installs anonymously
+        run: |
           bash scripts/release/verify-artifacts.sh \
-            --version "${{ needs.validate.outputs.version }}" \
-            --checksums dist/checksums.txt --dist dist --skip-krew
+            --version "${{ needs.validate.outputs.version }}"
+      - name: Check anonymous access to every coordinate
+        run: |
+          bash scripts/release/verify-public-access.sh \
+            --tag "${{ needs.validate.outputs.tag }}" \
+            --version "${{ needs.validate.outputs.version }}"
+      - name: Pull the images and the chart with no credentials
+        run: |
+          set -euo pipefail
+          . hack/versions.env
+          version="${{ needs.validate.outputs.version }}"
+          work="$(mktemp -d "${TMPDIR:-/tmp}/pagerless-anonymous.XXXXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          # Empty credential stores: a stale login on the runner must not make
+          # a private package look public.
+          mkdir -p "$work/docker" "$work/helm"
+          export DOCKER_CONFIG="$work/docker"
+          export HELM_CONFIG_HOME="$work/helm"
+          docker pull "$PAGERLESS_SERVER_IMAGE"
+          docker pull "$PAGERLESS_AGENT_IMAGE"
+          helm pull "${PAGERLESS_CHART_OCI}/${PAGERLESS_CHART_NAME}" \
+            --version "$version" --destination "$work"
+          helm template pagerless "$work/pagerless-${version}.tgz" \
+            --set existingSecret=pagerless-credentials \
+            --set model.baseUrl=https://model.example/v1 \
+            --set model.name=tool-model \
+            --set github.repository=acme/cluster >/dev/null

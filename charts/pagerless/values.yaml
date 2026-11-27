@@ -14,14 +14,14 @@ secretKeys:
   modelApiKey: model-api-key
 
 image:
-  repository: ghcr.io/a-hagi613/pagerless-server
+  repository: ghcr.io/a-hagi613/pagerless/core/server
   # A digest wins over a tag. Leaving both empty installs the chart appVersion.
   digest: ""
   tag: ""
   pullPolicy: IfNotPresent
 
 agentImage:
-  repository: ghcr.io/a-hagi613/pagerless-agent
+  repository: ghcr.io/a-hagi613/pagerless/core/agent
   digest: ""
   tag: ""
   pullPolicy: IfNotPresent

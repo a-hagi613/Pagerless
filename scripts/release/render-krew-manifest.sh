@@ -25,9 +25,9 @@ usage() {
 Usage: render-krew-manifest.sh --checksums FILE --version VERSION [--base-url URL] [--output PATH]
 
   --checksums FILE  The release checksum file (checksums.txt).
-  --version VERSION The release version without the leading v, such as 2.0.0.
+  --version VERSION The release version without the leading v, such as 1.0.0.
   --base-url URL    Where the archives are served. Default:
-                    https://github.com/a-hagi613/pagerless/releases/download/vVERSION
+                    https://github.com/a-hagi613/pagerless/releases/download/pagerless-vVERSION
   --output PATH     Where to write the manifest. Default: plugins/page.yaml
 EOF
 }
@@ -72,7 +72,7 @@ done
 [ -f "$checksums" ] || die "the checksum file $checksums does not exist."
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] ||
 	die "$version is not a release version without a leading v."
-base_url="${base_url:-https://github.com/a-hagi613/pagerless/releases/download/v${version}}"
+base_url="${base_url:-https://github.com/a-hagi613/pagerless/releases/download/pagerless-v${version}}"
 base_url="${base_url%/}"
 
 # checksum_for prints the SHA-256 recorded for one archive, or fails when the
@@ -113,7 +113,7 @@ spec:
     leaves the turn running; stopping a turn is an explicit command.
   caveats: |
     Pagerless must already be installed in the cluster. Install the chart with
-    helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
+    helm install pagerless oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless
     --namespace pagerless --create-namespace, then run kubectl page --help.
     The plugin discovers the installed Service through the current kube context
     and forwards a local port; pass --address to use a reachable address

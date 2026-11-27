@@ -19,7 +19,7 @@ spec:
     leaves the turn running; stopping a turn is an explicit command.
   caveats: |
     Pagerless must already be installed in the cluster. Install the chart with
-    helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
+    helm install pagerless oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless
     --namespace pagerless --create-namespace, then run kubectl page --help.
     The plugin discovers the installed Service through the current kube context
     and forwards a local port; pass --address to use a reachable address

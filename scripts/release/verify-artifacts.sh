@@ -28,7 +28,7 @@ Usage: verify-artifacts.sh --version VERSION [options]
 
   --version VERSION  The published version without the leading v.
   --base-url URL     Where the release assets are served. Default:
-                     https://github.com/a-hagi613/pagerless/releases/download/vVERSION
+                     https://github.com/a-hagi613/pagerless/releases/download/pagerless-vVERSION
   --checksums FILE   Use this checksum file instead of downloading checksums.txt.
   --dist DIR         Use the archives in this directory instead of downloading them.
   --manifest FILE    Install this Krew manifest instead of rendering one from the
@@ -80,7 +80,7 @@ done
 }
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] ||
 	die "$version is not a release version without a leading v."
-base_url="${base_url:-https://github.com/a-hagi613/pagerless/releases/download/v${version}}"
+base_url="${base_url:-https://github.com/a-hagi613/pagerless/releases/download/pagerless-v${version}}"
 base_url="${base_url%/}"
 release_scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -130,6 +130,14 @@ for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
 	if [ "$pair" = "linux/amd64" ]; then
 		linux_amd64="$path"
 	fi
+	# Every platform archive must carry the plugin and the license. Only
+	# linux/amd64 can be executed on the runner; the other three are proven at
+	# the packaging boundary.
+	listing="$(tar -tzf "$path")"
+	grep -qx 'kubectl-page' <<<"$listing" ||
+		die "$archive does not contain kubectl-page."
+	grep -qx 'LICENSE' <<<"$listing" ||
+		die "$archive does not contain LICENSE."
 	# The SBOM is a release artifact too; a missing one means an incomplete release.
 	fetch "$archive.sbom.json" >/dev/null
 done
@@ -159,7 +167,7 @@ fi
 
 require_commands kubectl
 kubectl krew version >/dev/null 2>&1 ||
-	die "install the Krew plugin manager before verifying the legacy plugin artifacts."
+	die "install the Krew plugin manager before verifying the plugin artifacts."
 
 if [ -z "$manifest" ]; then
 	manifest="$work/page.yaml"
