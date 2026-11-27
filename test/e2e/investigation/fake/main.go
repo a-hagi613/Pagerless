@@ -40,7 +40,7 @@ const (
 	notFound      = "Not Found"
 	toolSubmit    = "submit_answer"
 
-	baseSHA      = "base-sha"
+	baseSHA      = "1111111111111111111111111111111111111111"
 	repository   = "acme/cluster"
 	baseBranch   = "main"
 	proposalPath = "apps/checkout/deployment.yaml"
