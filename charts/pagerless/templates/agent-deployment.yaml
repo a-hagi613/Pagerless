@@ -42,6 +42,8 @@ spec:
               value: {{ printf "http://%s-server:%v" (include "pagerless.fullname" .) .Values.service.port | quote }}
             - name: PAGERLESS_AGENT_MAX_CONCURRENCY
               value: {{ .Values.agent.maxConcurrency | quote }}
+            - name: PAGERLESS_AGENT_READINESS_TTL_S
+              value: {{ .Values.agent.readinessTTLSeconds | quote }}
             - name: PAGERLESS_MODEL_BASE_URL
               value: {{ required "model.baseUrl must name the OpenAI-compatible endpoint" .Values.model.baseUrl | quote }}
             - name: PAGERLESS_MODEL_NAME

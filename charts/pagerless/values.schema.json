@@ -43,6 +43,7 @@
         "url": {"type": "string"},
         "port": {"type": "integer", "minimum": 1, "maximum": 65535},
         "maxConcurrency": {"type": "integer", "minimum": 1},
+        "readinessTTLSeconds": {"type": "number", "minimum": 1, "maximum": 3600},
         "budget": {
           "type": "object",
           "additionalProperties": false,

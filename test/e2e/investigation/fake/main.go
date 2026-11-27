@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -125,11 +126,24 @@ func serve() error {
 	return <-errors
 }
 
+// modelOutage is toggled by the integration to prove readiness turns degraded
+// without changing the Deployment or hiding behind an old ready replica.
+var modelOutage atomic.Bool
+
 // modelServer answers Chat Completions. The first request asks for one read
 // tool; a request that carries a tool result ends with a proposed change.
 type modelServer struct{}
 
 func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if request.URL.Path == "/_test/outage" {
+		modelOutage.Store(request.URL.Query().Get("on") == "1")
+		writeJSON(response, http.StatusOK, map[string]bool{"outage": modelOutage.Load()})
+		return
+	}
+	if modelOutage.Load() {
+		http.Error(response, "the model is unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if request.URL.Path == "/v1/models" {
 		writeJSON(response, http.StatusOK, map[string]any{
 			keyObject: "list", "data": []map[string]string{{"id": fakeModelName, keyObject: keyModel}},
