@@ -51,11 +51,14 @@ The pod is Pending with CreateContainerConfigError: configmap
 "inventory-setting" not found. The namespace has inventory-settings,
 and the source manifest uses the same singular name in envFrom.
 
-Proposed fix: apps/inventory/workload.yaml
-- name: inventory-setting
-+ name: inventory-settings
+Pull request: https://github.com/your-org/your-cluster-config/pull/42
 
-Opened draft pull request: https://github.com/your-org/your-cluster-config/pull/42
+apps/inventory/workload.yaml
+--- a/apps/inventory/workload.yaml
++++ b/apps/inventory/workload.yaml
+@@ -28,5 +28,5 @@
+-                name: inventory-setting
++                name: inventory-settings
 ```
 
 The operator token is read from `PAGERLESS_TOKEN_FILE` or from standard input with
