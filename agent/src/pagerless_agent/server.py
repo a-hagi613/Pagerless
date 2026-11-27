@@ -56,6 +56,14 @@ class ApiError(Exception):
         self.headers = headers
 
 
+class _BodyTooLargeError(Exception):
+    """A body crossed the ingress ceiling while the route was reading it."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(f"the request body is larger than {limit} bytes")
+        self.limit = limit
+
+
 def create_app(
     settings: ServiceSettings,
     *,
@@ -218,9 +226,10 @@ class _IngressGuard:
                 body = message.get("body", b"")
                 total += len(body)
                 if total > self._limit:
+                    # Abort the read instead of signalling a normal end-of-body. A parser
+                    # that already holds a valid prefix must not reach its route handler.
                     rejected = True
-                    # Discard the chunk; never concatenate or forward an oversized body.
-                    return {"type": "http.request", "body": b"", "more_body": False}
+                    raise _BodyTooLargeError(self._limit)
             return message
 
         async def guarded_send(message: Message) -> None:
@@ -233,6 +242,8 @@ class _IngressGuard:
 
         try:
             await self._app(scope, limited_receive, guarded_send)
+        except _BodyTooLargeError:
+            pass
         except Exception:
             if not rejected:
                 raise
@@ -353,6 +364,18 @@ def _install_error_handlers(app: FastAPI) -> None:
             status_code=error.status,
             content={"error": {"code": error.code, "message": error.message[:MAX_ERROR_BODY]}},
             headers=error.headers,
+        )
+
+    @app.exception_handler(_BodyTooLargeError)
+    async def body_too_large(_: Request, error: _BodyTooLargeError) -> JSONResponse:
+        return JSONResponse(
+            status_code=413,
+            content={
+                "error": {
+                    "code": "request_too_large",
+                    "message": f"the request body is larger than {error.limit} bytes",
+                }
+            },
         )
 
     @app.exception_handler(RequestValidationError)

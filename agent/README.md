@@ -181,7 +181,8 @@ kind or an available tool.
 ## Security boundaries
 
 - Inbound `/turn` and `/stop` authenticate in raw ASGI before FastAPI reads or validates the
-  body, using a constant-time comparison. The body cap likewise runs before route parsing.
+  body, using a constant-time comparison. The body cap aborts an oversized read before any
+  route handler can dispatch the turn.
 - The callback destination must match the configured origin; redirects and proxy
   environment settings are ignored.
 - No Kubernetes, GitHub, shell or mutation client exists in this package.
@@ -199,7 +200,8 @@ kind or an available tool.
   interrupted turns after a restart.
 - Completed-turn replay is in memory only. There is no database or local transcript.
 - The message body is capped by both a declared `Content-Length` and the actual ASGI chunks;
-  an oversized body is rejected before route parsing and never concatenated.
+  an oversized body aborts the read and is rejected before route dispatch, without being
+  concatenated.
 - A model must support function calling. Readiness reports a clear degraded reason when it
   does not.
 - Multi-turn state is limited to the `messages` Go sends for each fresh turn.

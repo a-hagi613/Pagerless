@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
+from pagerless_agent.contract import StopResult
 from pagerless_agent.readiness import ModelProbe, ProbeResult
 from pagerless_agent.server import create_app
+from pagerless_agent.turns import TurnManager
 from tests.fakes import TOKEN, FakeGateway, FakeProvider, StubProbe, response
 from tests.support import request_body, settings
 
@@ -95,12 +97,36 @@ def scope(
     }
 
 
-def app_for(settings: Any, *, provider: FakeProvider | None = None) -> Any:
+class SpyManager:
+    """Records whether an oversized request ever reached the turn manager."""
+
+    def __init__(self) -> None:
+        self.submits = 0
+
+    async def submit(self, request: Any) -> Any:
+        self.submits += 1
+        raise AssertionError("an oversized turn reached the manager")
+
+    async def stop(self, turn_id: str) -> StopResult:
+        return StopResult(status="unknown")
+
+    async def shutdown(self) -> None:
+        return None
+
+
+def app_for(
+    settings: Any,
+    *,
+    provider: FakeProvider | None = None,
+    gateway: FakeGateway | None = None,
+    manager: SpyManager | None = None,
+) -> Any:
     return create_app(
         settings,
         provider=provider or FakeProvider([]),
-        gateway=FakeGateway(),
+        gateway=gateway or FakeGateway(),
         probe=cast(ModelProbe, StubProbe(ProbeResult(True, "model tool-call probe succeeded"))),
+        manager=cast(TurnManager, manager) if manager is not None else None,
     )
 
 
@@ -163,6 +189,27 @@ async def test_actual_bytes_are_counted_beyond_a_small_declared_length(tmp_path:
     )
     assert sender.status == 413
     assert sender.body["error"]["code"] == "request_too_large"
+    assert receive.calls == 2
+
+
+async def test_overflow_cannot_dispatch_a_turn_from_an_already_valid_prefix(tmp_path: Any) -> None:
+    selected = settings(tmp_path, PAGERLESS_AGENT_MAX_REQUEST_BYTES="4096")
+    payload = json.dumps(request_body()).encode()
+    assert len(payload) < 4096
+    manager = SpyManager()
+    provider = FakeProvider([])
+    gateway = FakeGateway()
+    receive = Feeder([payload, b"x" * 4_000])
+    sender = await call(
+        app_for(selected, provider=provider, gateway=gateway, manager=manager),
+        scope(headers=[AUTH, CONTENT_TYPE]),
+        receive,
+    )
+    assert sender.status == 413
+    assert sender.body["error"]["code"] == "request_too_large"
+    assert manager.submits == 0
+    assert provider.requests == []
+    assert gateway.calls == []
     assert receive.calls == 2
 
 
