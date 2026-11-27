@@ -7,11 +7,6 @@
 <p align="center"><strong>An open-source AI SRE agent for Kubernetes.</strong></p>
 
 <p align="center">
-  Deploy it in your cluster. Ask from the CLI, the dashboard, or an observability alert.
-  It investigates with read-only tools, cites every claim, and opens a draft pull request for the fix.
-</p>
-
-<p align="center">
   <a href="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml"><img src="https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/a-hagi613/pagerless/releases/latest"><img src="https://img.shields.io/github/v/release/a-hagi613/pagerless?label=release" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
@@ -19,44 +14,58 @@
   <img src="https://img.shields.io/badge/MCP-2025--06--18-informational" alt="MCP 2025-06-18">
 </p>
 
-Pagerless runs as a namespace-scoped service inside the cluster. It exposes a CLI, a browser
-dashboard and an MCP endpoint over one investigation API. A turn reads the cluster and the
-repository that owns its configuration, records every tool call, and returns an answer with
-citations. When the evidence supports a source change it creates a branch and a **draft** pull
-request. It never writes to the cluster and never merges.
+Install Pagerless in your cluster. Trigger investigations manually from the CLI or dashboard, or
+automatically over MCP from the observability tools you already run. Pagerless investigates with
+read-only tools, cites every claim, and opens a draft pull request for the fix.
+
+Every turn keeps an ordered transcript of tool calls, arguments, statuses and bounded results. A
+finding points to the exact call and JSON pointer behind it. Pagerless has no cluster write path
+and never merges a pull request; a human reviews the draft.
+
+## Architecture
+
+<img src="docs/assets/architecture.svg" width="100%" alt="Pagerless architecture">
+
+- **Server** — authenticates operators and the MCP trigger, enforces tool policy, redacts results,
+  stores the transcript and streams ordered events.
+- **Agent** — a private service that calls an OpenAI-compatible model and forwards tool calls back
+  through the server. It holds no Kubernetes, GitHub or model credential.
+- **MCP integrations** — read-only Kubernetes, GitHub, Prometheus and Grafana processes.
+- **Publisher** — the only component with a GitHub write token; it creates branches and draft PRs.
 
 ## CLI
 
-The CLI is the shortest path from an alert to an answer.
+Run an investigation from the namespace you are debugging:
 
-```sh
-kubectl --namespace pagerless get secret pagerless-credentials \
-  --output jsonpath='{.data.operator-token}' | base64 --decode |
-  kubectl page "Why is the inventory Deployment not ready?" -n inventory --token-file -
+```console
+$ kubectl page "Why is the inventory Deployment not ready?" -n inventory
+
+Investigating inventory/Deployment/inventory
+→ resources_get    Deployment/inventory                  ok  12 ms
+→ resources_list   Pods in inventory (app=inventory)     ok   5 ms
+→ events_list      Warning events for the Pod            ok   7 ms
+→ resources_get    ConfigMap/inventory-setting           failed 4 ms
+→ resources_list   ConfigMaps in inventory               ok   6 ms
+
+The pod is Pending with CreateContainerConfigError: configmap
+"inventory-setting" not found. The namespace has inventory-settings,
+and the source manifest uses the same singular name in envFrom.
+
+Proposed fix: apps/inventory/workload.yaml
+- name: inventory-setting
++ name: inventory-settings
+
+Opened draft pull request: https://github.com/your-org/your-cluster-config/pull/42
 ```
 
-The command prints the page and turn IDs, then each tool call as it happens, the cited answer and
-a coloured diff when a proposal exists. The operator token is read from standard input or from
-`PAGERLESS_TOKEN_FILE`; it is never a command-line value.
+The operator token is read from `PAGERLESS_TOKEN_FILE` or from standard input with
+`--token-file -`; installation covers the Secret. Colour and the unified diff are automatic on a
+terminal.
 
 https://github.com/user-attachments/assets/9ffda7da-f6ba-4576-a6cd-07523c49d270
 
 *Recorded against a live installation: a Claude Haiku turn, read-only tool calls, citations and
 the proposed one-line diff.*
-
-```text
-page 6f4c... turn 2b8e...
--> resources_get (call c-4a3e...) {"kind":"Deployment","name":"inventory","namespace":"inventory"}
-<- resources_get (call c-4a3e...) ok 18ms
--> resources_list (call c-6ba9...) {"kind":"Pod","labelSelector":"app=inventory","namespace":"inventory"}
-<- resources_list (call c-6ba9...) ok 5ms
-...
-The Deployment references ConfigMap `inventory-setting`, which does not exist.
-The namespace contains `inventory-settings`. The source manifest has the same mismatch.
-citation: c-4a3e... /spec/template/spec/containers/0/envFrom
-
-Pull request: https://github.com/your-org/your-cluster-config/pull/42
-```
 
 `kubectl page list`, `show`, `follow`, `activity`, `evidence`, `diff`, `reply` and `stop` operate
 on the same page history as the dashboard. Ctrl-C detaches the stream; `kubectl page stop` cancels
@@ -81,14 +90,6 @@ https://github.com/user-attachments/assets/44875625-1ea1-4eab-8bc5-f0606b5c7a32
     </td>
   </tr>
 </table>
-
-Open the port-forward, sign in with the operator token, and start a question with an optional
-namespace or resource hint. The sign-in exchanges the token for an HttpOnly, SameSite=Strict
-session cookie; the token is not written to browser storage.
-
-```sh
-kubectl --namespace pagerless port-forward service/pagerless-server 8080:8080
-```
 
 ## Draft pull requests
 
@@ -153,30 +154,11 @@ Alertmanager integration can start an investigation without a human in the loop:
 
 `pagerless_investigate` creates a page and starts the turn. The same parameters can be delivered
 as `notifications/pagerless/investigate` for push-style MCP bridges. The endpoint authenticates
-with the trigger token in the installation Secret:
-
-```sh
-kubectl --namespace pagerless get secret pagerless-credentials \
-  --output jsonpath='{.data.trigger-token}' | base64 --decode
-```
+with the installation's `trigger-token`; the credentials step creates it.
 
 The Alertmanager/Grafana alert rules and dashboards used by the acceptance environment live in
 [`pagerless-sandbox`](https://github.com/a-hagi613/pagerless-sandbox). The shipped rules carry the
 `pagerless.dev/watch: "true"` opt-in and the namespace/deployment labels the bridge forwards.
-
-## Architecture
-
-<img src="docs/assets/architecture.svg" width="100%" alt="Pagerless architecture">
-
-- **Server** — authenticates operators and the MCP trigger, enforces tool policy, redacts results,
-  stores the transcript and streams ordered events.
-- **Agent** — a private service that calls an OpenAI-compatible model and forwards tool calls back
-  through the server. It holds no Kubernetes, GitHub or model credential.
-- **MCP integrations** — read-only Kubernetes, GitHub, Prometheus and Grafana processes.
-- **Publisher** — the only component with a GitHub write token; it creates branches and draft PRs.
-
-The Kubernetes identity can get, list, watch events and read bounded pod logs. Secrets, exec,
-attach, proxy and every mutating verb are denied. The agent never receives a cluster credential.
 
 ## Install
 
@@ -186,7 +168,8 @@ claim).
 
 ### 1. Credentials
 
-The chart never creates a Secret. Create the namespace and one Secret:
+The chart never creates a Secret. Create the namespace and one Secret. `read -rsp` reads each
+value without echoing it; the `echo` after each line restores the newline.
 
 ```sh
 kubectl create namespace pagerless
@@ -264,6 +247,15 @@ helm install pagerless \
 
 `/readyz` names any missing prerequisite. The service stays unready until the model accepts a
 tool-calling probe and the repository is readable with the configured credentials.
+
+Open the dashboard with the same operator token:
+
+```sh
+kubectl --namespace pagerless port-forward service/pagerless-server 8080:8080
+```
+
+The browser exchanges the token for an HttpOnly, SameSite=Strict session cookie; the token is never
+written to browser storage.
 
 ## Security model
 
