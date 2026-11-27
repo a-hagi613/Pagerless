@@ -118,11 +118,11 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	api := &investigations.API{
-		Service: service,
-		Auth:    investigations.NewAuth(operatorToken, internalToken),
-		Static:  NewSPA(dashboard.Assets()),
-	}
+	api := investigations.NewAPI(
+		service,
+		investigations.NewAuth(operatorToken, internalToken),
+		NewSPA(dashboard.Assets()),
+	)
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           api.Handler(),

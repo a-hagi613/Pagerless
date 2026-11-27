@@ -86,7 +86,16 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       volumes:
-        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        # The agent sees only its own internal credential and the model key.
+        - name: credentials
+          secret:
+            secretName: {{ required "existingSecret must name the externally provisioned credentials Secret" .Values.existingSecret }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.secretKeys.internalToken }}
+                path: internal-token
+              - key: {{ .Values.secretKeys.modelApiKey }}
+                path: model-api-key
         - name: tmp
           emptyDir: {}
 {{- end }}
