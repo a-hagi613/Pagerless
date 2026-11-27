@@ -125,6 +125,10 @@ observability:
 The chart deploys one read-only MCP process per integration. The server admits the tools through
 the same policy, redaction and transcript as the Kubernetes and GitHub integrations.
 
+Add the Grafana service-account token under the `grafana-token` key of the installation Secret.
+Prometheus needs a token only when its endpoint requires one; name that key in
+`observability.prometheus.tokenSecretKey`.
+
 ### Automatic investigations
 
 The server exposes an authenticated MCP endpoint at `/mcp`. An observability MCP bridge or
