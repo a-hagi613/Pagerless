@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650" width="1200" height="650" role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">Pagerless architecture</title>
+  <desc id="diagram-desc">An operator uses the dashboard or kubectl page. Both reach the Pagerless server with an operator token. The server authenticates the session, enforces tool policy, stores the transcript, and streams ordered events. It calls a private agent with an internal token; the agent calls an OpenAI-compatible model and forwards read-only tool calls back through the server. The Kubernetes integration uses a dedicated read-only identity for get, list, events and bounded logs, and cannot read Secrets or mutate objects. A separate publisher reads the source repository and opens a draft pull request from a verified base; it never pushes to the default branch and never merges. The agent holds no Kubernetes or GitHub credential.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-publish" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+    <style>
+      .box { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.5; }
+      .box-strong { fill: #ecfdf5; stroke: #0f766e; stroke-width: 2; }
+      .box-publish { fill: #fffbeb; stroke: #b45309; stroke-width: 1.5; }
+      .box-model { fill: #eff6ff; stroke: #3b82f6; stroke-width: 1.5; }
+      .title { font: 600 17px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #0f172a; }
+      .body { font: 14px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #334155; }
+      .small { font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #475569; }
+      .label { font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #334155; }
+      .publish-label { font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #92400e; }
+      .line { stroke: #475569; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .line-publish { stroke: #b45309; stroke-width: 1.8; fill: none; marker-end: url(#arrow-publish); stroke-dasharray: 6 4; }
+      .boundary { fill: none; stroke: #64748b; stroke-width: 1.4; stroke-dasharray: 8 6; }
+      .boundary-label { font: 13px ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: #475569; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" fill="#ffffff"/>
+  <text x="40" y="38" class="title">Pagerless 1.0 trust boundaries</text>
+  <text x="40" y="60" class="small">Every read is recorded; every proposed change is a draft pull request a human reviews.</text>
+
+  <!-- Operator -->
+  <rect x="40" y="108" width="220" height="168" rx="12" class="box"/>
+  <text x="60" y="136" class="title">Operator</text>
+  <text x="60" y="162" class="body">Dashboard (browser)</text>
+  <text x="60" y="186" class="body">kubectl page (CLI)</text>
+  <text x="60" y="224" class="small">Operator token, then an</text>
+  <text x="60" y="244" class="small">HttpOnly session cookie</text>
+  <text x="60" y="264" class="small">or an Authorization header.</text>
+
+  <!-- Server -->
+  <rect x="340" y="88" width="350" height="238" rx="12" class="box-strong"/>
+  <text x="362" y="116" class="title">Pagerless server (Go)</text>
+  <text x="362" y="144" class="body">Authentication and operator scope</text>
+  <text x="362" y="166" class="body">Tool policy and redaction</text>
+  <text x="362" y="188" class="body">Ordered event log and SSE</text>
+  <text x="362" y="210" class="body">SQLite transcript (PVC)</text>
+  <text x="362" y="232" class="body">Turn limits and cancellation</text>
+  <text x="362" y="268" class="small">Holds the read-only cluster identity,</text>
+  <text x="362" y="288" class="small">the internal token, and the publisher.</text>
+  <text x="362" y="308" class="small">The model never receives a credential.</text>
+
+  <!-- Agent -->
+  <rect x="780" y="88" width="370" height="116" rx="12" class="box"/>
+  <text x="802" y="116" class="title">Private investigation agent</text>
+  <text x="802" y="142" class="body">Python and LangGraph; one turn at a time</text>
+  <text x="802" y="164" class="body">No Kubernetes or GitHub credential</text>
+  <text x="802" y="186" class="body">Validates citations; returns one result</text>
+
+  <!-- Model -->
+  <rect x="780" y="232" width="370" height="94" rx="12" class="box-model"/>
+  <text x="802" y="260" class="title">OpenAI-compatible model</text>
+  <text x="802" y="286" class="body">Tool-calling Chat Completions endpoint</text>
+  <text x="802" y="308" class="body">Supplied by the operator, with its own key</text>
+
+  <!-- Kubernetes -->
+  <rect x="340" y="418" width="350" height="148" rx="12" class="box"/>
+  <text x="362" y="446" class="title">Kubernetes API</text>
+  <text x="362" y="472" class="body">Dedicated read-only identity</text>
+  <text x="362" y="494" class="body">get, list, events, bounded pod logs</text>
+  <text x="362" y="516" class="body">Secrets, exec, attach, proxy denied</text>
+  <text x="362" y="538" class="body">No create, update, patch, or delete</text>
+  <text x="362" y="558" class="small">Namespace allowlist or a read-only ClusterRole</text>
+
+  <!-- GitHub -->
+  <rect x="780" y="418" width="370" height="148" rx="12" class="box-publish"/>
+  <text x="802" y="446" class="title">Source repository (GitHub)</text>
+  <text x="802" y="472" class="body">Read token: contents read</text>
+  <text x="802" y="494" class="body">Write token: contents and pull requests</text>
+  <text x="802" y="516" class="body">Verified base commit and allowed paths</text>
+  <text x="802" y="538" class="body">One draft pull request; never a merge</text>
+  <text x="802" y="558" class="small">A human reviews and merges in GitHub</text>
+
+  <!-- Arrows -->
+  <line x1="260" y1="192" x2="334" y2="192" class="line"/>
+  <text x="286" y="184" class="small">token</text>
+
+  <line x1="690" y1="146" x2="774" y2="146" class="line"/>
+  <text x="694" y="132" class="small">internal token</text>
+  <text x="694" y="166" class="small">tool callbacks</text>
+
+  <line x1="965" y1="204" x2="965" y2="226" class="line"/>
+  <text x="976" y="222" class="small">model calls</text>
+
+  <line x1="485" y1="326" x2="485" y2="412" class="line"/>
+  <text x="497" y="360" class="label">read-only tools</text>
+  <text x="497" y="380" class="small">get · list · events · logs</text>
+
+  <path d="M 690 300 L 736 300 L 736 470 L 774 470" class="line-publish"/>
+
+  <!-- Boundary note -->
+  <rect x="40" y="600" width="1120" height="36" rx="8" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <text x="60" y="623" class="small">The agent forwards every read through the server, so policy, redaction and the transcript stay in one place. Cluster writes and merges are outside the product.</text>
+</svg>

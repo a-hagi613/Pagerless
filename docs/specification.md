@@ -1,6 +1,6 @@
 # Pagerless 1.0 release specification
 
-An operator installs Pagerless into a Kubernetes cluster, asks a question in their terminal or browser, follows the evidence, and receives a draft GitHub pull request when a source change is justified. This specification defines the intended release. The implementation on the baseline branch predates it.
+An operator installs Pagerless into a Kubernetes cluster, asks a question in their terminal or browser, follows the evidence, and receives a draft GitHub pull request when a source change is justified. This specification is the design contract for the 1.0 implementation. The release notes record what the immutable tag verified.
 
 ## Installation and access
 
@@ -28,7 +28,7 @@ Future observability MCP servers can supply evidence. A future alert adapter can
 
 ## Interfaces and history
 
-Both clients submit the same request, read the same results and resume from the same event cursor. For example, the proposed CLI accepts `kubectl page "Why is checkout timing out?" -n shop`. The dashboard opens to chat, with accessible conversation history, a prompt composer and expandable evidence. Use the existing pager branding, shadcn/ui and Tailwind. Mobile users can inspect calls and diffs without a desktop sidebar.
+Both clients submit the same request, read the same results and resume from the same event cursor. For example, the CLI accepts `kubectl page "Why is checkout timing out?" -n shop`. The dashboard opens to chat, with accessible conversation history, a prompt composer and expandable evidence. Use the existing pager branding, shadcn/ui and Tailwind. Mobile users can inspect calls and diffs without a desktop sidebar.
 
 Persist user messages, terminal answers, citations, sanitized tool attempts and PR references. A trace records tool, start time, status, duration, sanitized arguments, bounded result, and truncation or redaction indicators. Stream updates from an ordered append-only log. Reconnecting from an event ID must neither lose nor duplicate entries. An interrupted turn must have a visible status after restart. Bound retention and document expiration.
 
@@ -37,14 +37,14 @@ Persist user messages, terminal answers, citations, sanitized tool attempts and 
 | Gate | Required evidence |
 |---|---|
 | Fresh install | Install the packaged chart on a clean kind cluster. Exercise the documented minimum and a current supported Kubernetes version. Verify readiness, invalid credential recovery, browser access and the published CLI. Declare tested versions and platform limitations in release notes. |
-| Portability | Use standard Kubernetes APIs and administrator-supplied settings. Test with a deterministic OpenAI-compatible fixture in CI and separately record a real Gemini investigation locally. Tests and builds must run without a maintainer key or cloud account. |
+| Portability | Use standard Kubernetes APIs and administrator-supplied settings. Test with a deterministic OpenAI-compatible fixture in CI and separately record a real model investigation locally. Tests and builds must run without a maintainer key or cloud account. |
 | Independent investigation | Exercise a previously unseen symptom and a question with no failing target. Check cited tool evidence, ambiguous findings, follow-ups and exhaustion. Allow different valid tool sequences. |
 | Permissions | Use API authorization checks and negative integration tests for each runtime identity. Deny Secret reads and mutations. Confirm investigator credentials cannot publish and unauthorized clients cannot read history. |
 | Trace and UI | Start in CLI and resume in browser, then reverse. Verify failed calls, redaction, reconnect and restart. Run keyboard and narrow/wide viewport checks against the real backend. |
 | Pull requests | Test an allowed edit, ambiguous source, stale base, retries and a forbidden destination. Verify one draft against the intended repository and zero live cluster changes. |
 | CI and release | Gate Go formatting, lint, tests and race-sensitive paths, Python lint/types/tests, frontend lint/types/tests, browser e2e, Helm lint/render/schema and kind installation. Verify pinned dependencies, release checksums, SBOMs and published artifacts. Publish only under approved fresh coordinates. |
 
-The implementation must document concrete access and credential provisioning, retention defaults, artifact coordinates and compatibility versions before release. Those choices still need review. This specification authorizes no deletion or replacement of published tags or releases.
+The implementation must document concrete access and credential provisioning, retention defaults, artifact coordinates and compatibility versions before release. The 1.0 release notes record the chosen coordinates, retention and tested versions. This specification authorizes no deletion or replacement of published tags or releases.
 
 ### Verification workflow
 
