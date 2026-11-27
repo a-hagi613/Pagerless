@@ -70,3 +70,43 @@ spec:
       port: {{ .Values.mcp.port }}
       targetPort: http
       protocol: TCP
+{{- if .Values.observability.prometheus.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pagerless.prometheusMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus-mcp
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus-mcp
+  ports:
+    - name: http
+      port: {{ .Values.mcp.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+{{- if .Values.observability.grafana.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pagerless.grafanaMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana-mcp
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: grafana-mcp
+  ports:
+    - name: http
+      port: {{ .Values.mcp.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

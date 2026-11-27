@@ -46,3 +46,28 @@ POST /turns/{turnId}/stop returns HTTP 200 with status stopped, finished or unkn
 Python GET /readyz reports status (ready or degraded) and checks containing name, ok and sanitized reason. Python owns the model tool-calling check. Go aggregates it with Kubernetes MCP capability and GitHub repository access checks. Cache active probes with bounded refresh and backoff. Keep liveness independent.
 
 The chart and agent share PAGERLESS_INTERNAL_TOKEN_FILE, PAGERLESS_CALLBACK_ORIGIN and PAGERLESS_AGENT_MAX_CONCURRENCY. Use PAGERLESS_MODEL_BASE_URL, PAGERLESS_MODEL_NAME and PAGERLESS_MODEL_API_KEY_FILE for the model. Limits use PAGERLESS_BUDGET_TOOL_CALLS, PAGERLESS_BUDGET_MODEL_CALLS, PAGERLESS_BUDGET_INPUT_TOKENS and PAGERLESS_BUDGET_SECONDS.
+
+## MCP automation
+
+The server serves an MCP endpoint at `POST /mcp`, authenticated with the installation's
+`trigger-token` (or the operator token when the key is absent). It exposes one tool:
+
+- `pagerless_investigate` — arguments `question` (required), `namespace`, `target`
+  (`{kind, name, namespace?}`) and an optional `idempotencyKey`. It creates a page and a turn, then
+  returns `{"pageId":"...","turnId":"...","url":"/pages/..."}`. Reuse the alert fingerprint as the
+  idempotency key so a retry does not open a second page.
+
+The same payload may be sent as the `notifications/pagerless/investigate` JSON-RPC notification.
+Notifications have no response body; the server answers HTTP 202 and records a handler failure in
+its log. A bridge maps a Grafana or Prometheus alert to this payload.
+
+The observability integrations expose these read tools through the same admitted-tool registry:
+
+| Integration | Tools |
+| --- | --- |
+| Prometheus | `prometheus_query`, `prometheus_alerts`, `prometheus_targets` |
+| Grafana | `grafana_alerts`, `grafana_dashboards`, `grafana_dashboard`, `grafana_datasources` |
+
+The server admits an explicit allowlist per integration. A tool the provider adds later is not
+visible until it is named in the server. Grafana data source responses are stripped of
+`secureJsonData`, `password`, `token` and `basicAuthPassword` before they enter the transcript.

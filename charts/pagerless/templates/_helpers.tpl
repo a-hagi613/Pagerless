@@ -59,6 +59,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-github-mcp" (include "pagerless.fullname" .) -}}
 {{- end -}}
 
+{{- define "pagerless.prometheusMCPServiceName" -}}
+{{- printf "%s-prometheus-mcp" (include "pagerless.fullname" .) -}}
+{{- end -}}
+
+{{- define "pagerless.grafanaMCPServiceName" -}}
+{{- printf "%s-grafana-mcp" (include "pagerless.fullname" .) -}}
+{{- end -}}
+
 {{/* The credentials volume mounts every key of the externally provisioned Secret as a read-only file. */}}
 {{- define "pagerless.credentialsVolume" -}}
 - name: credentials

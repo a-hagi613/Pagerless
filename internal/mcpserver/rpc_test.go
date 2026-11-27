@@ -117,3 +117,32 @@ func TestServerAcceptsANotification(t *testing.T) {
 		t.Fatalf("health answered %d", health.StatusCode)
 	}
 }
+
+func TestServerDispatchesNotifications(t *testing.T) {
+	t.Parallel()
+	var received string
+	server := &Server{
+		Name:  "test",
+		Token: func() (string, error) { return "token", nil },
+		Notifications: map[string]func(context.Context, json.RawMessage) error{
+			"notifications/test/trigger": func(_ context.Context, params json.RawMessage) error {
+				received = string(params)
+				return nil
+			},
+		},
+	}
+	httpServer := httptest.NewServer(server.Handler())
+	defer httpServer.Close()
+	status, _ := rpc(t, httpServer, "token",
+		`{"jsonrpc":"2.0","method":"notifications/test/trigger","params":{"question":"why"}}`)
+	if status != http.StatusAccepted {
+		t.Fatalf("notification answered %d", status)
+	}
+	if received != `{"question":"why"}` {
+		t.Fatalf("notification params = %q", received)
+	}
+	status, _ = rpc(t, httpServer, "", `{"jsonrpc":"2.0","method":"notifications/test/trigger"}`)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated notification answered %d", status)
+	}
+}

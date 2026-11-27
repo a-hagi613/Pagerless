@@ -2,7 +2,11 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Pagerless values",
   "type": "object",
-  "required": ["existingSecret", "model", "github"],
+  "required": [
+    "existingSecret",
+    "model",
+    "github"
+  ],
   "additionalProperties": true,
   "properties": {
     "existingSecret": {
@@ -13,106 +17,264 @@
     "secretKeys": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["operatorToken", "internalToken", "mcpToken", "githubReadToken", "githubWriteToken", "modelApiKey"],
+      "required": [
+        "operatorToken",
+        "internalToken",
+        "mcpToken",
+        "githubReadToken",
+        "githubWriteToken",
+        "modelApiKey"
+      ],
       "properties": {
-        "operatorToken": {"type": "string", "minLength": 1},
-        "internalToken": {"type": "string", "minLength": 1},
-        "mcpToken": {"type": "string", "minLength": 1},
-        "githubReadToken": {"type": "string", "minLength": 1},
-        "githubWriteToken": {"type": "string", "minLength": 1},
-        "modelApiKey": {"type": "string", "minLength": 1}
+        "operatorToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "internalToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mcpToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "githubReadToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "githubWriteToken": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelApiKey": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
-    "image": {"$ref": "#/definitions/image"},
-    "agentImage": {"$ref": "#/definitions/image"},
-    "replicaCount": {"type": "integer", "const": 1},
+    "image": {
+      "$ref": "#/definitions/image"
+    },
+    "agentImage": {
+      "$ref": "#/definitions/image"
+    },
+    "replicaCount": {
+      "type": "integer",
+      "const": 1
+    },
     "model": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseUrl", "name"],
+      "required": [
+        "baseUrl",
+        "name"
+      ],
       "properties": {
-        "baseUrl": {"type": "string", "format": "uri", "pattern": "^https?://"},
-        "name": {"type": "string", "minLength": 1},
-        "allowInsecure": {"type": "boolean"}
+        "baseUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowInsecure": {
+          "type": "boolean"
+        }
       }
     },
     "agent": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "url": {"type": "string"},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535},
-        "maxConcurrency": {"type": "integer", "minimum": 1},
-        "readinessTTLSeconds": {"type": "number", "minimum": 1, "maximum": 3600},
+        "url": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "maxConcurrency": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "readinessTTLSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3600
+        },
         "budget": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "toolCalls": {"type": "integer", "minimum": 1},
-            "modelCalls": {"type": "integer", "minimum": 1},
-            "inputTokens": {"type": "integer", "minimum": 1},
-            "seconds": {"type": "integer", "minimum": 1}
+            "toolCalls": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
           }
         },
-        "resources": {"type": "object"},
-        "extraEnv": {"type": "array"}
+        "resources": {
+          "type": "object"
+        },
+        "extraEnv": {
+          "type": "array"
+        }
       }
     },
     "github": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "properties": {
-        "repository": {"type": "string", "pattern": "^[^/]+/[^/]+$"},
-        "baseBranch": {"type": "string", "minLength": 1},
-        "pathPrefix": {"type": "string"},
-        "apiUrl": {"type": "string", "format": "uri", "pattern": "^https?://"}
+        "repository": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        },
+        "baseBranch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pathPrefix": {
+          "type": "string"
+        },
+        "apiUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        }
       }
     },
     "kubernetes": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {"type": "boolean"},
-        "namespaceAllowlist": {"type": "array", "items": {"type": "string", "minLength": 1}}
+        "enabled": {
+          "type": "boolean"
+        },
+        "namespaceAllowlist": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
       }
     },
     "mcp": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
     },
     "service": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "type": {"type": "string", "enum": ["ClusterIP"]},
-        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+        "type": {
+          "type": "string",
+          "enum": [
+            "ClusterIP"
+          ]
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
     "persistence": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {"type": "boolean"},
-        "size": {"type": "string"},
-        "storageClass": {"type": "string"},
-        "existingClaim": {"type": "string"}
+        "enabled": {
+          "type": "boolean"
+        },
+        "size": {
+          "type": "string"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "existingClaim": {
+          "type": "string"
+        }
       }
     },
-    "retention": {"type": "string", "pattern": "^[0-9]+(h|m|s)$"},
-    "turnTimeout": {"type": "string", "pattern": "^[0-9]+(h|m|s)$"},
-    "toolTimeout": {"type": "string", "pattern": "^[0-9]+(h|m|s)$"},
-    "stopGrace": {"type": "string", "pattern": "^[0-9]+(h|m|s)$"},
-    "maxActiveTurns": {"type": "integer", "minimum": 1},
-    "maxToolCalls": {"type": "integer", "minimum": 1},
-    "maxResultBytes": {"type": "integer", "minimum": 1024},
+    "retention": {
+      "type": "string",
+      "pattern": "^[0-9]+(h|m|s)$"
+    },
+    "turnTimeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(h|m|s)$"
+    },
+    "toolTimeout": {
+      "type": "string",
+      "pattern": "^[0-9]+(h|m|s)$"
+    },
+    "stopGrace": {
+      "type": "string",
+      "pattern": "^[0-9]+(h|m|s)$"
+    },
+    "maxActiveTurns": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxToolCalls": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxResultBytes": {
+      "type": "integer",
+      "minimum": 1024
+    },
     "networkPolicy": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "enabled": {"type": "boolean"},
-        "extraEgress": {"type": "array", "items": {"type": "object"}}
+        "enabled": {
+          "type": "boolean"
+        },
+        "extraEgress": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prometheus": {
+          "$ref": "#/definitions/observabilityIntegration"
+        },
+        "grafana": {
+          "$ref": "#/definitions/observabilityIntegration"
+        }
       }
     }
   },
@@ -121,11 +283,66 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "repository": {"type": "string", "minLength": 1},
-        "digest": {"type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$"},
-        "tag": {"type": "string"},
-        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^$|^sha256:[a-f0-9]{64}$"
+        },
+        "tag": {
+          "type": "string"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
       }
+    },
+    "observabilityIntegration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "url": {
+          "type": "string"
+        },
+        "tokenSecretKey": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "url": {
+                "minLength": 1,
+                "pattern": "^https?://"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

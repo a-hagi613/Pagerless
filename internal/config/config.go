@@ -28,6 +28,9 @@ type Config struct {
 
 	KubernetesMCPURL string
 	GitHubMCPURL     string
+	PrometheusMCPURL string
+	GrafanaMCPURL    string
+	TriggerTokenFile string
 
 	GitHubRepository string
 	GitHubBaseBranch string
@@ -68,6 +71,9 @@ func Load() (Config, error) {
 		CallbackOrigin:    env("PAGERLESS_CALLBACK_ORIGIN", ""),
 		KubernetesMCPURL:  env("PAGERLESS_KUBERNETES_MCP_URL", ""),
 		GitHubMCPURL:      env("PAGERLESS_GITHUB_MCP_URL", ""),
+		PrometheusMCPURL:  env("PAGERLESS_PROMETHEUS_MCP_URL", ""),
+		GrafanaMCPURL:     env("PAGERLESS_GRAFANA_MCP_URL", ""),
+		TriggerTokenFile:  env("PAGERLESS_TRIGGER_TOKEN_FILE", ""),
 		GitHubRepository:  env("PAGERLESS_GITHUB_REPOSITORY", ""),
 		GitHubBaseBranch:  env("PAGERLESS_GITHUB_BASE_BRANCH", "main"),
 		GitHubPathPrefix:  env("PAGERLESS_GITHUB_PATH_PREFIX", ""),
@@ -133,6 +139,19 @@ func (c Config) validate() error {
 	}
 	if !strings.HasPrefix(c.AgentURL, "http://") && !strings.HasPrefix(c.AgentURL, "https://") {
 		return errors.New("PAGERLESS_AGENT_URL must be an http or https URL")
+	}
+	for name, value := range map[string]string{
+		"PAGERLESS_KUBERNETES_MCP_URL": c.KubernetesMCPURL,
+		"PAGERLESS_GITHUB_MCP_URL":     c.GitHubMCPURL,
+		"PAGERLESS_PROMETHEUS_MCP_URL": c.PrometheusMCPURL,
+		"PAGERLESS_GRAFANA_MCP_URL":    c.GrafanaMCPURL,
+	} {
+		if value == "" {
+			continue
+		}
+		if !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+			return fmt.Errorf("%s must be an http or https URL", name)
+		}
 	}
 	if c.GitHubRepository != "" {
 		owner, name, found := strings.Cut(c.GitHubRepository, "/")

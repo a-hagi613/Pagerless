@@ -113,6 +113,8 @@ spec:
         values:
           - kubernetes-mcp
           - github-mcp
+          - prometheus-mcp
+          - grafana-mcp
   policyTypes:
     - Ingress
     - Egress

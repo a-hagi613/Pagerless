@@ -32,6 +32,59 @@ const (
 	MaxListItems = 100
 )
 
+// ReadOnly is an explicit allowlist over one observability integration. The
+// server's tool discovery never widens it: a tool the provider adds later is
+// invisible until this list names it.
+type ReadOnly struct {
+	Client  *Client
+	Allowed []string
+}
+
+// Tools lists the provider's tools and keeps only the named read tools.
+func (r *ReadOnly) Tools(ctx context.Context) ([]Tool, error) {
+	tools, err := r.Client.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]bool, len(r.Allowed))
+	for _, name := range r.Allowed {
+		allowed[name] = true
+	}
+	admitted := make([]Tool, 0, len(r.Allowed))
+	for _, tool := range tools {
+		if allowed[tool.Name] {
+			admitted = append(admitted, tool)
+		}
+	}
+	if len(admitted) == 0 {
+		return nil, fmt.Errorf("the %s MCP server advertises none of the admitted read tools", r.Client.Name)
+	}
+	return admitted, nil
+}
+
+// Call validates the shape and forwards only an admitted tool.
+func (r *ReadOnly) Call(ctx context.Context, name string, arguments json.RawMessage) (Result, error) {
+	if !slices.Contains(r.Allowed, name) {
+		return Result{}, fmt.Errorf("%w: %q is not an admitted read tool", ErrDenied, name)
+	}
+	if len(arguments) > MaxArgumentBytes {
+		return Result{}, fmt.Errorf("%w: the arguments exceed %d bytes", ErrDenied, MaxArgumentBytes)
+	}
+	var object map[string]any
+	if len(arguments) > 0 {
+		if err := json.Unmarshal(arguments, &object); err != nil {
+			return Result{}, fmt.Errorf("%w: the arguments are not a JSON object", ErrDenied)
+		}
+	}
+	return r.Client.CallTool(ctx, name, arguments)
+}
+
+// NamedAdapter pairs an integration with the readiness check it reports.
+type NamedAdapter struct {
+	Name    string
+	Adapter Adapter
+}
+
 // Registry combines the admitted tools of every integration. A model may name
 // only a tool the registry advertises, and a name is owned by one integration.
 type Registry struct {

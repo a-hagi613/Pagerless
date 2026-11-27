@@ -1,6 +1,6 @@
 # What the demo shows
 
-The README embeds two recordings made against the 1.0.1 distribution. Both are real
+The README embeds two recordings made against the 1.1.0 distribution. Both are real
 investigations: the question is typed into the live client, the model makes its own tool calls,
 and the answer and proposal are whatever the installation returned. Nothing is a stored transcript
 and nothing is sped up.
@@ -9,7 +9,7 @@ and nothing is sped up.
 
 | Item | Value |
 | --- | --- |
-| Distribution | Pagerless `1.0.1` from the published chart, including the Markdown dashboard and colour CLI shown here |
+| Distribution | Pagerless `1.1.0` from the published chart, including the Markdown dashboard and colour CLI shown here |
 | Cluster | kind `v0.33.0`, one node, Kubernetes `1.29.14` |
 | Helm | `4.3.2` |
 | Namespace and release | `pagerless` |

@@ -71,8 +71,25 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		&http.Client{Timeout: httpTimeout})
 	githubMCP := mcp.New("github", cfg.GitHubMCPURL, config.ContextToken(mcpToken),
 		&http.Client{Timeout: httpTimeout})
+	var extras []mcp.NamedAdapter
+	if cfg.PrometheusMCPURL != "" {
+		client := mcp.New("prometheus", cfg.PrometheusMCPURL, config.ContextToken(mcpToken),
+			&http.Client{Timeout: httpTimeout})
+		extras = append(extras, mcp.NamedAdapter{Name: "prometheus_mcp", Adapter: &mcp.ReadOnly{
+			Client:  client,
+			Allowed: []string{"prometheus_query", "prometheus_alerts", "prometheus_targets"},
+		}})
+	}
+	if cfg.GrafanaMCPURL != "" {
+		client := mcp.New("grafana", cfg.GrafanaMCPURL, config.ContextToken(mcpToken),
+			&http.Client{Timeout: httpTimeout})
+		extras = append(extras, mcp.NamedAdapter{Name: "grafana_mcp", Adapter: &mcp.ReadOnly{
+			Client:  client,
+			Allowed: []string{"grafana_alerts", "grafana_dashboards", "grafana_dashboard", "grafana_datasources"},
+		}})
+	}
 	var toolbox *mcp.Toolbox
-	if cfg.KubernetesMCPURL != "" || cfg.GitHubMCPURL != "" {
+	if cfg.KubernetesMCPURL != "" || cfg.GitHubMCPURL != "" || len(extras) > 0 {
 		var kubernetes *mcp.Kubernetes
 		if cfg.KubernetesMCPURL != "" {
 			kubernetes = &mcp.Kubernetes{Client: kubernetesClient, Namespaces: cfg.NamespaceAllowlist}
@@ -81,7 +98,7 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		if cfg.GitHubMCPURL != "" {
 			github = &mcp.GitHub{Client: githubMCP, Repository: cfg.GitHubRepository, PathPrefix: cfg.GitHubPathPrefix}
 		}
-		toolbox = mcp.NewToolbox(kubernetes, github)
+		toolbox = mcp.NewToolbox(kubernetes, github, extras...)
 	}
 
 	publisher, publishCheck, err := publishing(cfg, readToken, writeToken)
@@ -123,9 +140,15 @@ func New(ctx context.Context, cfg config.Config) (*Server, error) {
 		investigations.NewAuth(operatorToken, internalToken),
 		NewSPA(dashboard.Assets()),
 	)
+	handler := api.Handler()
+	trigger := newTriggerServer(cfg, service, operatorToken)
+	root := http.NewServeMux()
+	root.Handle("/mcp", trigger.Handler())
+	root.Handle("/", handler)
+	handler = root
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       idleTimeout,
 	}

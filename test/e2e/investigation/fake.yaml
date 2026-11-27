@@ -31,6 +31,10 @@ spec:
               containerPort: 9090
             - name: github
               containerPort: 9091
+            - name: prometheus
+              containerPort: 9092
+            - name: grafana
+              containerPort: 9093
           readinessProbe:
             httpGet:
               path: /v1/models
@@ -65,3 +69,9 @@ spec:
     - name: github
       port: 9091
       targetPort: github
+    - name: prometheus
+      port: 9092
+      targetPort: prometheus
+    - name: grafana
+      port: 9093
+      targetPort: grafana
