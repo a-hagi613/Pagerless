@@ -235,8 +235,8 @@ text, never as HTML.
 
 ## Proposals are draft pull requests
 
-A proposal names the repository and a verified base commit, and may change only existing files
-inside the configured path. Pagerless validates the diff, creates a branch, commits through the
+A proposal names the repository and a verified base commit, and may change only files inside the
+configured path. Pagerless validates the diff, creates a branch, commits through the
 publisher token and opens a **draft** pull request with the question, findings, evidence references
 and expected effect. It never pushes to the default branch, never force-pushes and never merges.
 A retry recovers the branch and pull request it already created; an ambiguous source or a moved
