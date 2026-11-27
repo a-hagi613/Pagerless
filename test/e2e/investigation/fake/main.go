@@ -20,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,9 @@ const (
 	proposalPath = "apps/checkout/deployment.yaml"
 	secretValue  = "token=abcdef123456"
 )
+
+// callIDPattern reads the service-assigned callId from the agent's envelope.
+var callIDPattern = regexp.MustCompile(`"callId"\s*:\s*"([^"]+)"`)
 
 const baseManifest = `apiVersion: apps/v1
 kind: Deployment
@@ -152,10 +156,22 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	hasToolResult := false
+	callID := ""
 	for _, message := range body.Messages {
-		if message.Role == "tool" {
-			hasToolResult = true
+		if message.Role != "tool" {
+			continue
 		}
+		hasToolResult = true
+		var content string
+		if err := json.Unmarshal(message.Content, &content); err != nil {
+			content = string(message.Content)
+		}
+		if match := callIDPattern.FindStringSubmatch(content); len(match) == 2 {
+			callID = match[1]
+		}
+	}
+	if callID == "" {
+		callID = "call-1"
 	}
 	available := make(map[string]bool, len(body.Tools))
 	for _, tool := range body.Tools {
@@ -177,7 +193,7 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	answer := map[string]any{
 		keyContent: "The checkout Deployment has no memory limit and its image cannot be pulled. " +
 			"A source change is justified.",
-		"citations": []map[string]string{{"callId": "call-1"}},
+		"citations": []map[string]string{{"callId": callID}},
 		"proposal": map[string]any{
 			"baseSha": baseSHA,
 			"files":   []map[string]string{{keyPath: proposalPath, keyContent: proposedManifest}},
