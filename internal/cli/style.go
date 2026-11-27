@@ -46,11 +46,10 @@ func (s styler) bold(text string) string { return s.wrap("1", text) }
 
 // dim uses an explicit grey instead of SGR 2. Faint is widely ignored (pyte
 // drops it), while the 256-colour grey keeps labels legible in every recorder.
-func (s styler) dim(text string) string { return s.wrap("38;5;245", text) }
+func (s styler) dim(text string) string     { return s.wrap("38;5;245", text) }
 func (s styler) red(text string) string     { return s.wrap("31", text) }
 func (s styler) green(text string) string   { return s.wrap("32", text) }
 func (s styler) yellow(text string) string  { return s.wrap("33", text) }
-func (s styler) blue(text string) string    { return s.wrap("34", text) }
 func (s styler) magenta(text string) string { return s.wrap("35", text) }
 func (s styler) cyan(text string) string    { return s.wrap("36", text) }
 func (s styler) heading(text string) string { return s.wrap("1;36", text) }

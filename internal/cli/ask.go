@@ -54,7 +54,8 @@ func (a *app) ask(ctx context.Context, message, pageID string) error {
 			"the server accepted the request without returning a page and turn ID")}
 	}
 	style := newStyler(a.errOut())
-	a.progressf("%s %s %s %s\n", style.dim("page"), style.cyan(created.PageID), style.dim("turn"), style.cyan(created.TurnID))
+	a.progressf("%s %s %s %s\n",
+		style.dim("page"), style.cyan(created.PageID), style.dim("turn"), style.cyan(created.TurnID))
 	outcome, err := a.consume(ctx, api, created.PageID, 0, false)
 	if err != nil {
 		return err
