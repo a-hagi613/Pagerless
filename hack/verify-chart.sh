@@ -97,6 +97,7 @@ helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--set image.tag=1.0.0 \
 	--set agentImage.tag=1.0.0 \
 	--set agent.budget.seconds=180 \
+	--set agent.readinessTTLSeconds=2 \
 	--wait --timeout "${TIMEOUT}s" >"$STATE/install.txt" 2>&1 ||
 	{
 		kc -n "$NAMESPACE" get pods
@@ -146,10 +147,22 @@ for check in body["checks"]:
 print("readiness:", ", ".join(c["name"] for c in body["checks"]))
 PY
 
+# Setup succeeded. Run each independent group, record its result, and report
+# every failure once at the end. Only a group that truly needs another group's
+# output is marked blocked.
+failures=0
+fail_stage() {
+	echo "stage failed: $*" >&2
+	failures=$((failures + 1))
+}
+cli_ok=1
+
 echo "==> proving the read-only authorization matrix"
-bash "$REPO_ROOT/hack/verify-read-only-grants.sh" \
+if ! bash "$REPO_ROOT/hack/verify-read-only-grants.sh" \
 	--context "kind-${CLUSTER}" --namespace "$NAMESPACE" \
-	--release "$RELEASE" --workload-namespace "$WORKLOAD_NAMESPACE"
+	--release "$RELEASE" --workload-namespace "$WORKLOAD_NAMESPACE"; then
+	fail_stage "RBAC"
+fi
 
 fake_pod="$(kc -n "$NAMESPACE" get pod -l app.kubernetes.io/name=pagerless-fake -o jsonpath='{.items[0].metadata.name}')"
 
@@ -164,9 +177,10 @@ if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" --
 	kc -n "$NAMESPACE" logs deployment/pagerless-agent --tail=200 >&2 || true
 	echo "==> server logs" >&2
 	kc -n "$NAMESPACE" logs deployment/pagerless-server --tail=100 >&2 || true
-	exit 1
+	cli_ok=0
+	fail_stage "CLI investigation"
 fi
-E2E_PAGE_FILE="$STATE/page-id" python3 - "$STATE/cli.json" <<'PY'
+if [ "$cli_ok" -eq 1 ] && ! E2E_PAGE_FILE="$STATE/page-id" python3 - "$STATE/cli.json" <<'PY'
 import json, os, sys
 body = json.load(open(sys.argv[1]))
 assert body["status"] == "completed", body
@@ -175,7 +189,11 @@ assert any(m["role"] == "assistant" and m["citations"] for m in body["messages"]
 print("cli:", body["id"], body["status"], len(body["messages"]), "messages")
 open(os.environ["E2E_PAGE_FILE"], "w").write(body["id"])
 PY
-page_id="$(cat "$STATE/page-id")"
+then
+	cli_ok=0
+	fail_stage "CLI transcript"
+fi
+page_id="$(cat "$STATE/page-id" 2>/dev/null || true)"
 call_id="$(python3 - "$STATE/cli.json" <<'PY'
 import json, sys
 body = json.load(open(sys.argv[1]))
@@ -184,34 +202,52 @@ for message in body["messages"]:
         print(message["citations"][0]["callId"])
         break
 PY
-)"
-[ -n "$call_id" ] || die "the CLI answer has no citation"
+)" || true
+if [ -z "$call_id" ]; then
+	cli_ok=0
+	fail_stage "CLI citation"
+fi
 
+if [ "$cli_ok" -eq 1 ]; then
 echo "==> opening a second investigation through the browser API"
-kc -n "$NAMESPACE" exec "$fake_pod" -- env \
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- env \
 	E2E_BASE_URL=http://pagerless-server:8080 \
 	E2E_TOKEN="$operator_token" \
 	E2E_PAGE_ID="$page_id" \
 	E2E_QUESTION="Why is checkout failing?" \
 	E2E_NAMESPACE="$WORKLOAD_NAMESPACE" \
-	/usr/local/bin/fake --assert >"$STATE/assert.json"
-cat "$STATE/assert.json"
+	/usr/local/bin/fake --assert >"$STATE/assert.json"; then
+	fail_stage "browser API replay"
+fi
+cat "$STATE/assert.json" 2>/dev/null || true
 
-printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
+if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
 	/usr/local/bin/kubectl-page diff "$page_id" \
-	--address "http://pagerless-server:8080" --token-file - --json >"$STATE/diff.json"
-python3 - "$STATE/diff.json" <<'PY'
+	--address "http://pagerless-server:8080" --token-file - --json >"$STATE/diff.json"; then
+	fail_stage "diff"
+fi
+if ! python3 - "$STATE/diff.json" <<'PY'
 import json, sys
 body = json.load(open(sys.argv[1]))
 assert body.get("prUrl"), body
 assert body["files"] and body["files"][0]["path"] == "apps/checkout/deployment.yaml", body
 print("diff:", body["prUrl"], len(body["files"]), "file(s)")
 PY
+then
+	fail_stage "diff contract"
+fi
+else
+	echo "browser API replay and diff are blocked: the CLI page is unavailable" >&2
+fi
 
 echo "==> asserting one draft pull request and zero merges"
-kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/pulls >"$STATE/pulls.json"
-kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/merges >"$STATE/merges.json"
-python3 - "$STATE/pulls.json" "$STATE/merges.json" <<'PY'
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/pulls >"$STATE/pulls.json"; then
+	fail_stage "pull requests"
+fi
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/merges >"$STATE/merges.json"; then
+	fail_stage "merges"
+fi
+if ! python3 - "$STATE/pulls.json" "$STATE/merges.json" <<'PY'
 import json, sys
 pulls = json.load(open(sys.argv[1]))
 merges = json.load(open(sys.argv[2]))
@@ -223,41 +259,62 @@ assert "checkout" in pull["title"].lower(), pull
 assert merges["merges"] == 0, merges
 print("pull request:", pull["head"], "->", pull["base"], "draft", pull["draft"])
 PY
+then
+	fail_stage "pull-request contract"
+fi
 
 echo "==> asserting the workload was not changed"
 after_uid="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.metadata.uid}')"
 after_spec="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
-[ "$before_uid" = "$after_uid" ] || die "the workload was replaced; Pagerless must not mutate a cluster."
-[ "$before_spec" = "$after_spec" ] || die "the workload spec changed; Pagerless must not mutate a cluster."
-
-if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
-echo "==> proving readiness reports a broken model and recovers"
-helm upgrade "$RELEASE" "$REPO_ROOT/charts/pagerless" \
-	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" --reuse-values \
-	--set model.baseUrl=http://pagerless-fake:9090/v1-broken --wait --timeout "${TIMEOUT}s" >/dev/null
-degraded=0
-for _ in $(seq 1 60); do
-	status=$(curl --silent -o "$STATE/degraded.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
-	if [ "$status" = "503" ] && grep -q '"name":"model"' "$STATE/degraded.json"; then
-		degraded=1
-		break
-	fi
-	sleep 3
-done
-[ "$degraded" -eq 1 ] || { echo "readiness did not report the broken model:"; cat "$STATE/degraded.json"; exit 1; }
-helm upgrade "$RELEASE" "$REPO_ROOT/charts/pagerless" \
-	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" --reuse-values \
-	--set model.baseUrl=http://pagerless-fake:9090/v1 --wait --timeout "${TIMEOUT}s" >/dev/null
-for _ in $(seq 1 60); do
-	status=$(curl --silent -o "$STATE/ready.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
-	[ "$status" = "200" ] && break
-	sleep 3
-done
-[ "$status" = "200" ] || { echo "the installation did not recover:"; cat "$STATE/ready.json"; exit 1; }
-
+if [ "$before_uid" != "$after_uid" ]; then
+	fail_stage "workload identity changed"
+fi
+if [ "$before_spec" != "$after_spec" ]; then
+	fail_stage "workload spec changed"
 fi
 
-if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
+negative=1
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
+	echo "==> proving readiness reports a model outage and recovers"
+	# Toggle the fixture that is actually serving, so the observation is not
+	# hidden by a rolling update or a different URL. The agent's readiness TTL is
+	# lowered only for this install; the working model is restored in every path.
+	kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://127.0.0.1:9090/_test/outage?on=1" >/dev/null
+	degraded=0
+	for _ in $(seq 1 80); do
+		status=$(curl --silent -o "$STATE/degraded.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
+		if [ "$status" = "503" ] && grep -q '"name":"model","ok":false' "$STATE/degraded.json"; then
+			degraded=1
+			break
+		fi
+		sleep 3
+	done
+	kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://127.0.0.1:9090/_test/outage?on=0" >/dev/null
+	recovered=0
+	for _ in $(seq 1 80); do
+		status=$(curl --silent -o "$STATE/ready.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
+		if [ "$status" = "200" ]; then
+			recovered=1
+			break
+		fi
+		sleep 3
+	done
+	if [ "$degraded" -ne 1 ]; then
+		echo "readiness did not report the model outage:" >&2
+		cat "$STATE/degraded.json" >&2
+		negative=0
+		fail_stage "negative readiness"
+	fi
+	if [ "$recovered" -ne 1 ]; then
+		echo "the installation did not recover:" >&2
+		cat "$STATE/ready.json" >&2
+		die "the installation did not recover after the model outage"
+	fi
+fi
+
+if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ] && [ "$cli_ok" -eq 1 ]; then
 	echo "==> opening the embedded dashboard against the installed backend"
 	# The generated spec runs against the real service through the same client
 	# code the embedded dashboard ships. It opens the CLI-created page, its
@@ -268,9 +325,8 @@ if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 
 const token = process.env.PAGERLESS_E2E_TOKEN ?? "";
-const title = process.env.PAGERLESS_E2E_PAGE_TITLE ?? "Why is checkout failing?";
+const pageId = process.env.PAGERLESS_E2E_PAGE_ID ?? "";
 const callId = process.env.PAGERLESS_E2E_CALL_ID ?? "";
-const titlePattern = new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 
 async function history(page: Page, testInfo: TestInfo) {
   if (testInfo.project.name.startsWith("mobile")) {
@@ -288,8 +344,10 @@ test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ pag
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Ask the cluster a question" })).toBeVisible();
 
+  expect(pageId).not.toBe("");
   const scope = await history(page, testInfo);
-  await scope.getByRole("link", { name: titlePattern }).first().click();
+  // The page id is stable even after a turn changes the visible title.
+  await scope.locator(`[data-page-id="${pageId}"]`).first().click();
 
   const answers = page.getByRole("article", { name: "Pagerless answer" });
   await expect(answers.first()).toContainText("no memory limit");
@@ -302,7 +360,7 @@ test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ pag
   await expect(evidence).toContainText("[redacted:credential]");
   await evidence.getByRole("button", { name: "Close" }).click();
 
-  const proposal = page.getByRole("region", { name: "Proposed change" });
+  const proposal = page.getByRole("region", { name: "Proposed change" }).first();
   await expect(proposal).toBeVisible();
   await expect(proposal.getByRole("link", { name: "Open draft pull request" })).toHaveAttribute(
     "href",
@@ -333,14 +391,16 @@ SPEC
 		cd "$REPO_ROOT/dashboard"
 		PAGERLESS_PORTAL_URL="http://127.0.0.1:${LOCAL_PORT}" \
 			PAGERLESS_E2E_TOKEN="$operator_token" \
-			PAGERLESS_E2E_PAGE_TITLE="Why is checkout failing?" \
+			PAGERLESS_E2E_PAGE_ID="$page_id" \
 			PAGERLESS_E2E_CALL_ID="$call_id" \
 			npx playwright test e2e/real-backend.generated.spec.ts
-	)
+	) || fail_stage "browser"
+elif [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
+	echo "browser is blocked: the CLI page is unavailable" >&2
 fi
 
-if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ] && [ "${negative:-1}" != "1" ]; then
-	echo "kind integration: negative readiness probe failed; every other group ran." >&2
+if [ "${failures:-0}" -ne 0 ]; then
+	echo "kind integration: ${failures} stage(s) failed; every independent group ran." >&2
 	exit 1
 fi
 

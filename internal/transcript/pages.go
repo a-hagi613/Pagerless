@@ -235,9 +235,9 @@ func (s *Store) AddTurn(
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE pages SET status = ?, active_turn_id = ?, updated_at = ?, title = ?,
+		`UPDATE pages SET status = ?, active_turn_id = ?, updated_at = ?,
 			namespace = ?, target_kind = ?, target_name = ?, target_api_version = ? WHERE id = ?`,
-		StatusRunning, turn.ID, formatTime(turn.CreatedAt), titleOf(message.Content),
+		StatusRunning, turn.ID, formatTime(turn.CreatedAt),
 		namespace, target.Kind, target.Name, target.APIVersion, pageID); err != nil {
 		return fmt.Errorf("start the turn of the page %s: %w", pageID, err)
 	}
@@ -945,19 +945,6 @@ func (s *Store) DeleteExpired(ctx context.Context, cutoff time.Time) (int, error
 
 // Ping verifies the database answers.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
-
-// titleOf shortens a first message into a page title.
-func titleOf(text string) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
-	runes := []rune(line)
-	if len(runes) > 120 {
-		return string(runes[:117]) + "..."
-	}
-	if len(runes) == 0 {
-		return "Untitled investigation"
-	}
-	return string(runes)
-}
 
 func mustJSON(value any) json.RawMessage {
 	encoded, err := json.Marshal(value)

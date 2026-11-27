@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+const (
+	testTitle = "why"
+	testRole  = "user"
+)
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	store, err := Open(context.Background(), Options{Path: Path(t.TempDir())})
@@ -22,10 +27,10 @@ func openTestStore(t *testing.T) *Store {
 func newPage(t *testing.T, store *Store, id string) (Page, Turn) {
 	t.Helper()
 	now := time.Now().UTC()
-	page := Page{ID: id, Title: "why", Status: StatusRunning, CreatedAt: now, UpdatedAt: now}
+	page := Page{ID: id, Title: testTitle, Status: StatusRunning, CreatedAt: now, UpdatedAt: now}
 	turn := Turn{ID: id + "-t1", PageID: id, Status: StatusRunning, CreatedAt: now, UpdatedAt: now}
 	page.ActiveTurnID = turn.ID
-	message := Message{ID: id + "-m1", PageID: id, TurnID: turn.ID, Role: "user", Content: "why", CreatedAt: now}
+	message := Message{ID: id + "-m1", PageID: id, TurnID: turn.ID, Role: testRole, Content: testTitle, CreatedAt: now}
 	if err := store.CreatePage(context.Background(), page, message, turn); err != nil {
 		t.Fatalf("create the page: %v", err)
 	}
@@ -108,7 +113,7 @@ func TestEvidenceAttemptsAreNeverOverwrittenAcrossTurns(t *testing.T) {
 	_, first := newPage(t, store, "p1")
 	now := time.Now().UTC()
 	second := Turn{ID: "p1-t2", PageID: "p1", Status: StatusRunning, CreatedAt: now, UpdatedAt: now}
-	message := Message{ID: "p1-m2", PageID: "p1", TurnID: second.ID, Role: "user", Content: "again", CreatedAt: now}
+	message := Message{ID: "p1-m2", PageID: "p1", TurnID: second.ID, Role: testRole, Content: "again", CreatedAt: now}
 	if err := store.FinishTurn(context.Background(), "p1", first.ID, StatusCompleted, nil, nil, "", ""); err != nil {
 		t.Fatalf("finish the first turn: %v", err)
 	}
@@ -203,5 +208,30 @@ func TestRetentionDeletesTerminalPagesAndKeepsActiveOnes(t *testing.T) {
 	}
 	if _, err := store.Page(context.Background(), "active"); err != nil {
 		t.Fatalf("the active page was deleted: %v", err)
+	}
+}
+
+func TestAFollowUpKeepsTheFirstQuestionAsTheTitle(t *testing.T) {
+	t.Parallel()
+	store := openTestStore(t)
+	_, first := newPage(t, store, "p1")
+	if err := store.FinishTurn(context.Background(), "p1", first.ID, StatusCompleted, nil, nil, "", ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	now := time.Now().UTC()
+	second := Turn{ID: "p1-t2", PageID: "p1", Status: StatusRunning, CreatedAt: now, UpdatedAt: now}
+	message := Message{
+		ID: "p1-m2", PageID: "p1", TurnID: second.ID, Role: testRole,
+		Content: "What changed?", CreatedAt: now,
+	}
+	if err := store.AddTurn(context.Background(), "p1", message, second, "", Target{}); err != nil {
+		t.Fatalf("add turn: %v", err)
+	}
+	page, err := store.Page(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	if page.Title != testTitle {
+		t.Fatalf("the follow-up renamed the page to %q", page.Title)
 	}
 }

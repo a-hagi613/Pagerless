@@ -43,6 +43,9 @@ agent:
   url: ""
   port: 8090
   maxConcurrency: 4
+  # How long the agent caches its model tool-call probe. The packaged integration
+  # lowers it to observe a fixture outage promptly; production keeps the default.
+  readinessTTLSeconds: 300
   budget:
     toolCalls: 16
     modelCalls: 8

@@ -169,3 +169,27 @@ func TestFakeGitHubPublishesOneDraftAndNeverMerges(t *testing.T) {
 		t.Fatalf("the base content changed: %s", base.Body.String())
 	}
 }
+
+func TestTheOutageToggleFailsTheModelAndRecovers(t *testing.T) {
+	modelOutage.Store(false)
+	t.Cleanup(func() { modelOutage.Store(false) })
+	handler := &modelServer{}
+	toggle := httptest.NewRecorder()
+	handler.ServeHTTP(toggle, httptest.NewRequest(http.MethodGet, "/_test/outage?on=1", nil))
+	if toggle.Code != http.StatusOK {
+		t.Fatalf("toggle answered %d", toggle.Code)
+	}
+	failed := httptest.NewRecorder()
+	handler.ServeHTTP(failed, httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewReader(modelRequest([]map[string]any{{keyRole: roleUser, keyContent: testQuestion}}, "resources_get"))))
+	if failed.Code != http.StatusServiceUnavailable {
+		t.Fatalf("the outage answered %d", failed.Code)
+	}
+	recoverToggle := httptest.NewRecorder()
+	handler.ServeHTTP(recoverToggle, httptest.NewRequest(http.MethodGet, "/_test/outage?on=0", nil))
+	recovered := askModel(t, modelRequest(
+		[]map[string]any{{keyRole: roleUser, keyContent: testQuestion}}, "resources_get"))
+	if recovered["choices"] == nil {
+		t.Fatalf("the model did not recover: %+v", recovered)
+	}
+}
