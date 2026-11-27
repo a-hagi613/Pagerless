@@ -31,8 +31,10 @@ spec:
               containerPort: {{ .Values.agent.port }}
               protocol: TCP
           env:
-            - name: PAGERLESS_LISTEN_ADDR
-              value: ":{{ .Values.agent.port }}"
+            - name: PAGERLESS_AGENT_HOST
+              value: "0.0.0.0"
+            - name: PAGERLESS_AGENT_PORT
+              value: {{ .Values.agent.port | quote }}
             {{- include "pagerless.commonEnv" . | nindent 12 }}
             - name: PAGERLESS_CALLBACK_ORIGIN
               value: {{ printf "http://%s-server:%v" (include "pagerless.fullname" .) .Values.service.port | quote }}

@@ -33,6 +33,7 @@ cleanup() {
 		echo "keeping kind cluster ${CLUSTER} for inspection"
 		return
 	fi
+	rm -f "$REPO_ROOT/dashboard/e2e/real-backend.generated.spec.ts"
 	kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 	rm -rf "$STATE"
 }
@@ -68,7 +69,8 @@ kc -n "$NAMESPACE" create secret generic pagerless-credentials \
 	--from-literal=model-api-key=e2e-model-key \
 	--dry-run=client -o yaml | kc apply -f -
 
-before_workload="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o json | python3 -c 'import json,sys,hashlib; print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True).encode()).hexdigest())')"
+before_uid="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.metadata.uid}')"
+before_spec="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
 
 cat >"$STATE/values.yaml" <<'EOF'
 # The fake model and GitHub endpoints run inside this cluster on test ports.
@@ -205,8 +207,10 @@ print("pull request:", pull["head"], "->", pull["base"], "draft", pull["draft"])
 PY
 
 echo "==> asserting the workload was not changed"
-after_workload="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o json | python3 -c 'import json,sys,hashlib; print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True).encode()).hexdigest())')"
-[ "$before_workload" = "$after_workload" ] || die "the cluster workload changed; Pagerless must not mutate a cluster."
+after_uid="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.metadata.uid}')"
+after_spec="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
+[ "$before_uid" = "$after_uid" ] || die "the workload was replaced; Pagerless must not mutate a cluster."
+[ "$before_spec" = "$after_spec" ] || die "the workload spec changed; Pagerless must not mutate a cluster."
 
 if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
 echo "==> proving readiness reports a broken model and recovers"
@@ -236,11 +240,78 @@ done
 fi
 
 if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
-	echo "==> running the dashboard browser suite against the installed backend"
-	( cd "$REPO_ROOT/dashboard" && npm ci && npx playwright install --with-deps chromium )
-	PAGERLESS_PORTAL_URL="http://127.0.0.1:${LOCAL_PORT}" \
-		PAGERLESS_E2E_TOKEN="$operator_token" \
-		make -C "$REPO_ROOT" dashboard-e2e
+	echo "==> opening the embedded dashboard against the installed backend"
+	# The generated spec runs against the real service through the same client
+	# code the embedded dashboard ships. It opens the CLI-created page, its
+	# citation and evidence, the proposal diff, a reload (resume), and a
+	# follow-up. It is generated here so the fixture suite is never pointed at a
+	# real installation.
+	cat >"$REPO_ROOT/dashboard/e2e/real-backend.generated.spec.ts" <<'SPEC'
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
+
+const token = process.env.PAGERLESS_E2E_TOKEN ?? "";
+const title = process.env.PAGERLESS_E2E_PAGE_TITLE ?? "Why is checkout failing?";
+
+async function history(page: Page, testInfo: TestInfo) {
+  if (testInfo.project.name.startsWith("mobile")) {
+    await page.getByRole("button", { name: "Open investigation history" }).click();
+    return page.getByRole("dialog");
+  }
+  return page.getByRole("region", { name: "Investigation history" }).first();
+}
+
+test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ page }, testInfo) => {
+  expect(token).not.toBe("");
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Sign in to Pagerless" })).toBeVisible();
+  await page.locator("#operator-token").fill(token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Ask the cluster a question" })).toBeVisible();
+
+  const scope = await history(page, testInfo);
+  await scope.getByRole("link", { name: title }).first().click();
+
+  const answers = page.getByRole("article", { name: "Pagerless answer" });
+  await expect(answers.first()).toContainText("no memory limit");
+  await page.getByRole("button", { name: "Open evidence for call-1" }).click();
+  const evidence = page.getByRole("dialog", { name: "Tool evidence" });
+  await expect(evidence).toContainText("resources_get");
+  await expect(evidence).toContainText("[redacted:credential]");
+  await evidence.getByRole("button", { name: "Close" }).click();
+
+  const proposal = page.getByRole("region", { name: "Proposed change" });
+  await expect(proposal).toBeVisible();
+  await expect(proposal.getByRole("link", { name: "Open draft pull request" })).toHaveAttribute(
+    "href",
+    /pull\//,
+  );
+
+  // A reload resumes the same page from the durable cursor.
+  await page.reload();
+  await expect(page.getByRole("article", { name: "Pagerless answer" }).first()).toContainText(
+    "no memory limit",
+  );
+
+  await page
+    .getByRole("form", { name: "Investigation composer" })
+    .getByRole("textbox")
+    .fill("What changed?");
+  await page.getByRole("button", { name: "Send follow-up" }).click();
+  await expect(page.getByRole("article", { name: "Pagerless answer" })).toHaveCount(2, {
+    timeout: 180_000,
+  });
+});
+SPEC
+	if [ ! -d "$REPO_ROOT/dashboard/node_modules" ]; then
+		( cd "$REPO_ROOT/dashboard" && npm ci )
+	fi
+	(
+		cd "$REPO_ROOT/dashboard"
+		PAGERLESS_PORTAL_URL="http://127.0.0.1:${LOCAL_PORT}" \
+			PAGERLESS_E2E_TOKEN="$operator_token" \
+			PAGERLESS_E2E_PAGE_TITLE="Why is checkout failing?" \
+			npx playwright test e2e/real-backend.generated.spec.ts
+	)
 fi
 
 echo
