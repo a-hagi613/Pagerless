@@ -17,6 +17,8 @@ const (
 	eventProposal     = "proposal"
 	eventTurnFinished = "turn.finished"
 
+	statusOK          = "ok"
+	roleAssistant     = "assistant"
 	statusCompleted   = "completed"
 	statusStopped     = "stopped"
 	statusFailed      = "failed"

@@ -155,7 +155,13 @@ func activeTurn(id *string) string {
 // writes reports a failure once, at the end.
 type printer struct {
 	writer io.Writer
+	style  styler
 	err    error
+}
+
+// newPrinter builds a printer that colours only a terminal destination.
+func newPrinter(writer io.Writer) *printer {
+	return &printer{writer: writer, style: newStyler(writer)}
 }
 
 // printf writes one formatted line unless an earlier write failed.
@@ -168,12 +174,12 @@ func (p *printer) printf(format string, args ...any) {
 
 // field writes one labelled line of a presentation.
 func (p *printer) field(label, value string) {
-	p.printf("%-12s %s\n", label+":", value)
+	p.printf("%s %s\n", p.style.dim(fmt.Sprintf("%-12s", label+":")), value)
 }
 
 // section writes the heading of a presentation section, after a blank line.
 func (p *printer) section(title string) {
-	p.printf("\n%s\n", title)
+	p.printf("\n%s\n", p.style.heading(title))
 }
 
 // block writes every line of text with the indent in front of it. Empty text
@@ -186,5 +192,145 @@ func (p *printer) block(indent, text string) {
 	}
 	for line := range strings.SplitSeq(text, "\n") {
 		p.printf("%s%s\n", indent, line)
+	}
+}
+
+// markdown renders the small, safe subset of Markdown that model answers use:
+// headings, bullets, quotes, bold, inline code and links. It never interprets
+// HTML, and it only changes presentation, never the text the line carries.
+func (p *printer) markdown(indent, text string) {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		p.printf("%s%s\n", indent, placeholder)
+		return
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		p.printf("%s%s\n", indent, p.markdownLine(line))
+	}
+}
+
+// markdownLine styles one line of a model answer.
+func (p *printer) markdownLine(line string) string {
+	trimmed := strings.TrimLeft(line, " ")
+	lead := line[:len(line)-len(trimmed)]
+
+	if heading, ok := markdownHeading(trimmed); ok {
+		heading = strings.ReplaceAll(strings.ReplaceAll(heading, "`", ""), "**", "")
+		return lead + p.style.heading(heading)
+	}
+	switch {
+	case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "), strings.HasPrefix(trimmed, "+ "):
+		return lead + p.style.cyan("•") + " " + p.inline(strings.TrimSpace(trimmed[2:]))
+	case strings.HasPrefix(trimmed, "> "):
+		return lead + p.style.dim("│ ") + p.inline(strings.TrimSpace(trimmed[2:]))
+	}
+	if number, rest, ok := markdownNumber(trimmed); ok {
+		return lead + p.style.bold(number) + " " + p.inline(rest)
+	}
+	return lead + p.inline(trimmed)
+}
+
+// markdownHeading strips an ATX heading marker, if present.
+func markdownHeading(line string) (string, bool) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return "", false
+	}
+	return strings.TrimSpace(line[level:]), true
+}
+
+// markdownNumber splits an ordered-list marker ("12. text").
+func markdownNumber(line string) (string, string, bool) {
+	digits := 0
+	for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+		digits++
+	}
+	if digits == 0 || digits+1 >= len(line) || line[digits] != '.' || line[digits+1] != ' ' {
+		return "", "", false
+	}
+	return line[:digits+1], strings.TrimSpace(line[digits+2:]), true
+}
+
+// inline styles paired bold and inline-code spans. Unpaired markers are left
+// alone, so a lone asterisk or backtick is still literal text.
+func (p *printer) inline(text string) string {
+	var out strings.Builder
+	out.Grow(len(text))
+	for index := 0; index < len(text); {
+		if strings.HasPrefix(text[index:], "**") {
+			if end := strings.Index(text[index+2:], "**"); end >= 0 {
+				out.WriteString(p.style.bold(text[index+2 : index+2+end]))
+				index += end + 4
+				continue
+			}
+		}
+		if text[index] == '`' {
+			if end := strings.IndexByte(text[index+1:], '`'); end >= 0 {
+				out.WriteString(p.style.code(text[index+1 : index+1+end]))
+				index += end + 2
+				continue
+			}
+		}
+		if text[index] == '[' {
+			if label, address, end, ok := markdownLink(text[index:]); ok {
+				out.WriteString(p.style.bold(label))
+				out.WriteString(p.style.dim(" (" + address + ")"))
+				index += end
+				continue
+			}
+		}
+		out.WriteByte(text[index])
+		index++
+	}
+	return out.String()
+}
+
+// markdownLink parses "[label](address)" at the start of text.
+func markdownLink(text string) (label, address string, consumed int, ok bool) {
+	if !strings.HasPrefix(text, "[") {
+		return "", "", 0, false
+	}
+	closeLabel := strings.IndexByte(text, ']')
+	if closeLabel < 0 || closeLabel+1 >= len(text) || text[closeLabel+1] != '(' {
+		return "", "", 0, false
+	}
+	closeAddress := strings.IndexByte(text[closeLabel+2:], ')')
+	if closeAddress < 0 {
+		return "", "", 0, false
+	}
+	label = text[1:closeLabel]
+	address = text[closeLabel+2 : closeLabel+2+closeAddress]
+	if label == "" || address == "" {
+		return "", "", 0, false
+	}
+	return label, address, closeLabel + 2 + closeAddress + 1, true
+}
+
+// diff colours a unified diff: file headers bold, hunks cyan, additions green,
+// removals red, and metadata dim.
+func (p *printer) diff(text string) {
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		p.printf("%s\n", placeholder)
+		return
+	}
+	for line := range strings.SplitSeq(text, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			p.printf("%s\n", p.style.bold(line))
+		case strings.HasPrefix(line, "@@"):
+			p.printf("%s\n", p.style.cyan(line))
+		case strings.HasPrefix(line, "+"):
+			p.printf("%s\n", p.style.green(line))
+		case strings.HasPrefix(line, "-"):
+			p.printf("%s\n", p.style.red(line))
+		case strings.HasPrefix(line, "diff "), strings.HasPrefix(line, "index "):
+			p.printf("%s\n", p.style.dim(line))
+		default:
+			p.printf("%s\n", line)
+		}
 	}
 }

@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml/badge.svg)](https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Kubernetes 1.37.0 tested](https://img.shields.io/badge/Kubernetes-1.37.0-informational)
+![Kubernetes 1.29–1.37 tested](https://img.shields.io/badge/Kubernetes-1.37.0-informational)
 ![Helm 4.3.2 tested](https://img.shields.io/badge/Helm-4.3.2-informational)
 
 Pagerless answers the question an on-call engineer actually asks: *why is this workload failing?*
@@ -12,11 +12,13 @@ It reads the cluster and the repository that owns its configuration, shows every
 cites the objects and files behind each claim, and opens a **draft** pull request when the evidence
 supports a change. It cannot write to the cluster and it never merges.
 
-<a href="https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0/pagerless-dashboard.mp4">
-  <img src="docs/assets/dashboard-live.webp" width="720" alt="The Pagerless dashboard running a live investigation. The question asks why the inventory Deployment is not ready. The activity list shows four read-only tool attempts, one of them failed, and the page is marked Running.">
-</a>
+https://github.com/user-attachments/assets/44875625-1ea1-4eab-8bc5-f0606b5c7a32
 
-*[Watch the 39-second dashboard recording](https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0/pagerless-dashboard.mp4)* · *[Watch the 20-second CLI recording](https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0/pagerless-cli.mp4)*
+*Dashboard recording (52 s): a real Haiku turn with formatted Markdown, live tool calls, sanitized evidence and a proposed diff.*
+
+https://github.com/user-attachments/assets/9ffda7da-f6ba-4576-a6cd-07523c49d270
+
+*CLI recording (43 s): the same investigation from a colour terminal, with tool statuses, citations and the proposed diff.*
 
 The recordings are real interactions against a real installation, not a mock or a replayed
 transcript. [What the demo shows](docs/demo.md) explains the environment and the verification.
@@ -110,7 +112,7 @@ kubernetes:
 ```sh
 helm install pagerless \
   oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless \
-  --version 1.0.0 \
+  --version 1.0.1 \
   --namespace pagerless \
   --values values.yaml
 ```
@@ -120,13 +122,13 @@ GitHub Release asset:
 
 ```sh
 helm install pagerless \
-  https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0/pagerless-1.0.0.tgz \
+  https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.1/pagerless-1.0.1.tgz \
   --namespace pagerless \
   --values values.yaml
 ```
 
-The image defaults are `ghcr.io/a-hagi613/pagerless/core/server:1.0.0` and
-`ghcr.io/a-hagi613/pagerless/core/agent:1.0.0` for `linux/amd64` and `linux/arm64`.
+The image defaults are `ghcr.io/a-hagi613/pagerless/core/server:1.0.1` and
+`ghcr.io/a-hagi613/pagerless/core/agent:1.0.1` for `linux/amd64` and `linux/arm64`.
 
 ### 4. Wait for readiness, then open the dashboard
 
@@ -161,11 +163,11 @@ The release carries `kubectl-page` archives for Linux and macOS on amd64 and arm
 archive, and `checksums.txt`.
 
 ```sh
-base=https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0
+base=https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.1
 curl -fsSLO "$base/checksums.txt"
-curl -fsSLO "$base/kubectl-page_1.0.0_linux_amd64.tar.gz"
+curl -fsSLO "$base/kubectl-page_1.0.1_linux_amd64.tar.gz"
 sha256sum --check --ignore-missing checksums.txt
-tar -xzf kubectl-page_1.0.0_linux_amd64.tar.gz
+tar -xzf kubectl-page_1.0.1_linux_amd64.tar.gz
 mkdir -p "$HOME/.local/bin"
 install -m 0755 kubectl-page "$HOME/.local/bin/kubectl-page"
 ```
@@ -173,7 +175,7 @@ install -m 0755 kubectl-page "$HOME/.local/bin/kubectl-page"
 Or install the Krew manifest attached to the same release:
 
 ```sh
-base=https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0
+base=https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.1
 kubectl krew install --manifest="$base/page.yaml"
 ```
 
@@ -195,9 +197,10 @@ kubectl --namespace pagerless get secret pagerless-credentials \
   kubectl page "Why is the inventory Deployment not ready?" -n inventory --token-file -
 ```
 
-<a href="https://github.com/a-hagi613/pagerless/releases/download/pagerless-v1.0.0/pagerless-cli.mp4">
-  <img src="docs/assets/cli-investigation.webp" width="720" alt="Terminal output from kubectl page showing a question about the inventory Deployment, read-only tool calls with durations, a failed read, an answer with citation IDs, and a one-line diff from inventory-setting to inventory-settings.">
-</a>
+<img src="docs/assets/cli-investigation.webp" width="720" alt="Colour terminal output from kubectl page showing tool calls with green and red statuses, a Markdown answer with inline code, citation IDs, and a red/green diff from inventory-setting to inventory-settings.">
+
+Colour is automatic on a terminal: tool statuses, headings and diffs are highlighted, while a pipe,
+a redirect, `NO_COLOR` or `TERM=dumb` keeps the exact plain output.
 
 Use `kubectl page list`, `show`, `follow`, `activity`, `evidence`, `diff`, `reply` and `stop` to
 resume or inspect the same page later. Ctrl-C detaches the stream without stopping the turn;
@@ -209,6 +212,8 @@ Open the port-forward and sign in. Start a question with an optional namespace o
 watch the activity list fill in, open any citation to read the sanitized evidence, and review the
 proposed change without leaving the page. On a narrow screen the history moves into a sheet and the
 same calls, evidence and diff remain available.
+
+<img src="docs/assets/dashboard-live.webp" width="720" alt="A completed investigation with a formatted Markdown answer: bold headings, bullets, inline code and citation chips.">
 
 <table role="presentation">
   <tr>
@@ -230,8 +235,8 @@ grant. The agent holds no Kubernetes credential: the server forwards each approv
 redaction and the transcript stay in one place.
 
 Model output, workload text, logs and source files are untrusted data. They are sanitized and
-bounded before the model, the transcript or the browser sees them. The dashboard renders answers as
-text, never as HTML.
+bounded before the model, the transcript or the browser sees them. The dashboard parses answers as
+Markdown into React elements, skips raw HTML and restricts links to explicit safe schemes.
 
 ## Proposals are draft pull requests
 
@@ -266,7 +271,7 @@ credential.
 ## Documentation
 
 - [What the demo shows](docs/demo.md): environment, real versus fixture, verification and privacy.
-- [Release notes for 1.0.0](docs/release-notes/1.0.0.md): coordinates, images, CLI archives and
+- [Release notes for 1.0.1](docs/release-notes/1.0.1.md): coordinates, images, CLI archives and
   verification.
 - [Release engineering](docs/release.md): the immutable tag, the workflow and owner actions.
 - [Investigation API](docs/investigation-api.md): pages, turns, events, evidence and publication.

@@ -53,7 +53,8 @@ func (a *app) ask(ctx context.Context, message, pageID string) error {
 		return &ExitError{Code: ExitFailure, Err: errors.New(
 			"the server accepted the request without returning a page and turn ID")}
 	}
-	a.progressf("page %s turn %s\n", created.PageID, created.TurnID)
+	style := newStyler(a.errOut())
+	a.progressf("%s %s %s %s\n", style.dim("page"), style.cyan(created.PageID), style.dim("turn"), style.cyan(created.TurnID))
 	outcome, err := a.consume(ctx, api, created.PageID, 0, false)
 	if err != nil {
 		return err
@@ -138,7 +139,7 @@ func turnExit(status string) error {
 func (a *app) consume(ctx context.Context, api *client, pageID string, after int64, trace bool) (streamOutcome, error) {
 	streamCtx, cancel := context.WithTimeout(ctx, a.opts.followTimeout)
 	defer cancel()
-	presentation := &printer{writer: a.out()}
+	presentation := newPrinter(a.out())
 	handle := func(current event) {
 		_ = saveCursor(pageID, current.Seq)
 		if trace {
@@ -190,18 +191,28 @@ func (a *app) reportDetach(pageID, turnID string, outcome streamOutcome) error {
 func (a *app) writeProgress(current event) {
 	var data eventData
 	_ = json.Unmarshal(current.Data, &data)
+	style := newStyler(a.errOut())
 	switch current.Type {
 	case eventToolStarted:
-		a.progressf("-> %s (call %s)%s\n",
-			sanitize(orPlaceholder(data.Tool)), sanitize(orPlaceholder(data.CallID)), argumentLine(data.Arguments))
+		a.progressf("%s %s %s%s\n",
+			style.cyan("->"), style.bold(sanitize(orPlaceholder(data.Tool))),
+			style.dim("(call "+sanitize(orPlaceholder(data.CallID))+")"),
+			style.dim(argumentLine(data.Arguments)))
 	case eventToolFinished:
-		a.progressf("<- %s (call %s) %s %s%s\n",
-			sanitize(orPlaceholder(data.Tool)), sanitize(orPlaceholder(data.CallID)),
-			sanitize(orPlaceholder(data.Status)), formatDuration(data.DurationMS), flags(data))
+		arrow := style.green("<-")
+		if status := sanitize(orPlaceholder(data.Status)); status != statusOK && status != statusCompleted {
+			arrow = style.red("<-")
+		}
+		a.progressf("%s %s %s %s %s%s\n",
+			arrow, style.bold(sanitize(orPlaceholder(data.Tool))),
+			style.dim("(call "+sanitize(orPlaceholder(data.CallID))+")"),
+			style.status(sanitize(orPlaceholder(data.Status))),
+			style.dim(formatDuration(data.DurationMS)), flags(data))
 	case eventProposal:
-		a.progressf("proposal: %d file(s)%s\n", len(data.Files), urlSuffix(data.PRURL))
+		a.progressf("%s %d file(s)%s\n", style.magenta("proposal:"), len(data.Files), style.dim(urlSuffix(data.PRURL)))
 	case eventTurnFinished:
-		a.progressf("turn finished: %s\n", sanitize(orPlaceholder(terminalStatus(current))))
+		a.progressf("%s %s\n", style.dim("turn finished:"),
+			style.status(sanitize(orPlaceholder(terminalStatus(current)))))
 	}
 }
 
@@ -212,56 +223,74 @@ func writeEvent(presentation *printer, current event) {
 	header := fmt.Sprintf("[%d] %s", current.Seq, formatTime(current.Time))
 	switch current.Type {
 	case eventToolStarted:
-		presentation.printf("%s tool.started %s (call %s)\n",
-			header, sanitize(orPlaceholder(data.Tool)), sanitize(orPlaceholder(data.CallID)))
+		presentation.printf("%s tool.started %s %s\n",
+			presentation.style.dim(header), presentation.style.bold(sanitize(orPlaceholder(data.Tool))),
+			presentation.style.dim("(call "+sanitize(orPlaceholder(data.CallID))+")"))
 		if arguments := compactJSON(data.Arguments); arguments != "" {
-			presentation.printf("  %s\n", arguments)
+			presentation.printf("  %s\n", presentation.style.dim(arguments))
 		}
 	case eventToolFinished:
-		presentation.printf("%s tool.finished %s (call %s) %s %s%s\n",
-			header, sanitize(orPlaceholder(data.Tool)), sanitize(orPlaceholder(data.CallID)),
-			sanitize(orPlaceholder(data.Status)), formatDuration(data.DurationMS), flags(data))
+		presentation.printf("%s tool.finished %s %s %s %s%s\n",
+			presentation.style.dim(header), presentation.style.bold(sanitize(orPlaceholder(data.Tool))),
+			presentation.style.dim("(call "+sanitize(orPlaceholder(data.CallID))+")"),
+			presentation.style.status(sanitize(orPlaceholder(data.Status))),
+			presentation.style.dim(formatDuration(data.DurationMS)), flags(data))
 	case eventAnswer:
-		presentation.printf("%s answer\n", header)
-		presentation.block("  ", sanitize(data.Content))
+		presentation.printf("%s %s\n", presentation.style.dim(header), presentation.style.cyan("answer"))
+		presentation.markdown("  ", sanitize(data.Content))
 	case eventProposal:
-		presentation.printf("%s proposal %d file(s)%s\n", header, len(data.Files), urlSuffix(data.PRURL))
+		presentation.printf("%s %s %d file(s)%s\n", presentation.style.dim(header),
+			presentation.style.magenta("proposal"), len(data.Files), presentation.style.dim(urlSuffix(data.PRURL)))
 	case eventTurnFinished:
-		presentation.printf("%s turn.finished %s\n", header, sanitize(orPlaceholder(terminalStatus(current))))
+		presentation.printf("%s turn.finished %s\n", presentation.style.dim(header),
+			presentation.style.status(sanitize(orPlaceholder(terminalStatus(current)))))
 	default:
-		presentation.printf("%s %s\n", header, sanitize(current.Type))
+		presentation.printf("%s %s\n", presentation.style.dim(header), sanitize(current.Type))
 		if detail := compactJSON(current.Data); detail != "" {
-			presentation.printf("  %s\n", detail)
+			presentation.printf("  %s\n", presentation.style.dim(detail))
 		}
 	}
 }
 
 // printDetail renders one conversation for a person.
 func (a *app) printDetail(detail pageDetail) error {
-	presentation := &printer{writer: a.out()}
-	presentation.field("ID", sanitize(detail.ID))
-	presentation.field("Title", sanitize(orPlaceholder(detail.Title)))
-	presentation.field("Status", sanitize(orPlaceholder(detail.Status)))
-	presentation.field("Updated", formatTime(detail.UpdatedAt))
-	presentation.field("Active turn", sanitize(activeTurn(detail.ActiveTurnID)))
+	presentation := newPrinter(a.out())
+	presentation.field("ID", presentation.style.cyan(sanitize(detail.ID)))
+	presentation.field("Title", presentation.style.bold(sanitize(orPlaceholder(detail.Title))))
+	presentation.field("Status", presentation.style.status(sanitize(orPlaceholder(detail.Status))))
+	presentation.field("Updated", presentation.style.dim(formatTime(detail.UpdatedAt)))
+	presentation.field("Active turn", presentation.style.cyan(sanitize(activeTurn(detail.ActiveTurnID))))
 	presentation.field("Last event", fmt.Sprintf("%d", detail.LastEventID))
 	presentation.section("Messages")
 	if len(detail.Messages) == 0 {
 		presentation.printf("  %s\n", placeholder)
 	}
 	for _, item := range detail.Messages {
-		presentation.printf("\n[%s] %s\n", sanitize(orPlaceholder(item.Role)), formatTime(item.CreatedAt))
-		presentation.block("  ", sanitize(item.Content))
+		role := sanitize(orPlaceholder(item.Role))
+		if item.Role == roleAssistant {
+			role = presentation.style.cyan(role)
+		} else {
+			role = presentation.style.bold(role)
+		}
+		presentation.printf("\n[%s] %s\n", role, presentation.style.dim(formatTime(item.CreatedAt)))
+		content := sanitize(item.Content)
+		if item.Role == roleAssistant {
+			presentation.markdown("  ", content)
+		} else {
+			presentation.block("  ", content)
+		}
 		for _, cite := range item.Citations {
-			line := sanitize(cite.CallID)
+			line := presentation.style.cyan(sanitize(cite.CallID))
 			if cite.Pointer != "" {
-				line += " " + sanitize(cite.Pointer)
+				line += " " + presentation.style.dim(sanitize(cite.Pointer))
 			}
-			presentation.printf("  citation: %s\n", line)
+			presentation.printf("  %s %s\n", presentation.style.dim("citation:"), line)
 		}
 	}
-	presentation.printf("\nResume: kubectl page reply %s \"...\"\n", sanitize(detail.ID))
-	presentation.printf("Trace:  kubectl page activity %s\n", sanitize(detail.ID))
+	presentation.printf("\n%s %s %s\n", presentation.style.dim("Resume:"),
+		presentation.style.cyan("kubectl page reply "+sanitize(detail.ID)), presentation.style.dim("\"...\""))
+	presentation.printf("%s %s\n", presentation.style.dim("Trace: "),
+		presentation.style.cyan("kubectl page activity "+sanitize(detail.ID)))
 	return presentation.err
 }
 

@@ -56,7 +56,7 @@ func (a *app) list(ctx context.Context) error {
 		return err
 	}
 	writer := tabwriter.NewWriter(a.out(), 0, 4, 2, ' ', 0)
-	table := &printer{writer: writer}
+	table := newPrinter(writer)
 	table.printf("ID\tSTATUS\tUPDATED\tTITLE\n")
 	for _, page := range pages {
 		table.printf("%s\t%s\t%s\t%s\n",

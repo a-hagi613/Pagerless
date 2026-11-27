@@ -1,19 +1,19 @@
 # What the demo shows
 
-The README links two recordings made against the 1.0.0 distribution. Both are real investigations:
-the question is typed into the live client, the model makes its own tool calls, and the answer and
-proposal are whatever the installation returned. Nothing is a stored transcript and nothing is
-sped up.
+The README embeds two recordings made against the 1.0.1 distribution. Both are real
+investigations: the question is typed into the live client, the model makes its own tool calls,
+and the answer and proposal are whatever the installation returned. Nothing is a stored transcript
+and nothing is sped up.
 
 ## Recorded environment
 
 | Item | Value |
 | --- | --- |
-| Distribution | Pagerless `1.0.0` source tree, chart version `1.0.0` |
-| Cluster | kind `v0.33.0`, one node, Kubernetes `1.37.0` |
+| Distribution | Pagerless `1.0.1` from the published chart, including the Markdown dashboard and colour CLI shown here |
+| Cluster | kind `v0.33.0`, one node, Kubernetes `1.29.14` |
 | Helm | `4.3.2` |
-| Namespace and release | `pagerless-live` |
-| Dashboard | `kubectl port-forward service/live-pagerless-server 18430:8080` |
+| Namespace and release | `pagerless` |
+| Dashboard | `kubectl port-forward service/pagerless-server 18434:8080` |
 | Model | OpenAI-compatible endpoint `https://api.anthropic.com/v1`, model `claude-haiku-5-5` |
 | Source repository | a private acceptance repository with an inventory workload |
 | Question | "Why is the inventory Deployment not ready? Cite the evidence and do not propose a source change." |
@@ -24,39 +24,35 @@ the result.
 
 ## Dashboard recording
 
-Duration **39 seconds**, 1000x900, H.264.
+Duration **52 seconds**, 1280x900, H.264.
 
 1. A completed investigation opens on its **Proposed change** panel. The panel shows the verified
    base, the changed file and the one-line diff (`inventory-setting` to `inventory-settings`), plus
    the **Open draft pull request** action.
-2. **New investigation** opens the composer. The namespace hint `inventory` is filled; the
-   resource kind and name fields still show the composer's placeholder examples (`Deployment`,
-   `checkout`) and are not submitted. The question is typed at human speed and names the inventory
-   Deployment itself.
+2. **New investigation** opens the composer. The namespace and target hints are filled with
+   `inventory` / `Deployment` / `inventory`. The question is typed at human speed.
 3. The page switches to **Running**. Each read-only tool attempt appears in the activity list with
    its call ID, status, duration and evidence control. One read fails because the referenced
    ConfigMap does not exist; the turn continues and uses the successful reads.
-4. The first citation opens the **Tool evidence** dialog with the sanitized arguments and a bounded
-   JSON result.
-5. The terminal answer shows its citations and the page settles at **Complete** with
-   "No source change was proposed."
+4. A citation opens the **Tool evidence** dialog with the sanitized arguments and a bounded JSON
+   result.
+5. The answer is rendered as formatted Markdown: bold headings, bullets, inline code and citation
+   chips. The page settles at **Complete** with "No source change was proposed."
 
-The final still in the README is the proposal panel; the live instruction in this run explicitly
-asked for no source change, so it did not create a duplicate pull request.
+The live instruction in this run explicitly asked for no source change, so it did not create a
+duplicate pull request. The proposal panel comes from the earlier investigation that did.
 
 ## CLI recording
 
-Duration **20 seconds**, 1920x1080, H.264.
+Duration **43 seconds**, 1920x1080, H.264.
 
-1. `kubectl page "Why is the inventory Deployment not ready? ..." -n inventory` is typed into a
-   real PTY.
-2. The CLI streams the page and turn IDs, then each tool call and its outcome, including the failed
-   read of the missing ConfigMap.
-3. The answer lists the observed Deployment, Pod, event and ConfigMap evidence with call IDs, then
-   the citation list.
-4. `kubectl page diff` prints the real proposed change and pull request created by an earlier
-   investigation. The diff is legible in the frame; the private pull request URL is not required to
-   understand the result.
+1. `kubectl page "Why is inventory stuck before startup? ..." -n inventory` is typed into a real
+   PTY.
+2. The CLI streams the page and turn IDs, then each tool call and its outcome in colour: green for
+   a successful read, red for the failed one, grey for the call ID and duration.
+3. The answer renders Markdown headings, bullets and inline code, then lists the citations.
+4. `kubectl page diff` prints the real proposed change from the earlier investigation in a
+   red/green unified diff and links the private draft pull request.
 
 ## Real interaction, deterministic CI
 
@@ -83,8 +79,8 @@ the integration suite; it does not claim that a particular model answer is repro
 
 Each file was checked with `ffprobe`, decoded end to end with `ffmpeg -f null -`, and sampled at
 several timestamps to confirm that the question, live tool calls, evidence and result are legible.
-The stills in `docs/assets/` are WebP crops of those frames; the README links the full recordings
-from the release assets.
+The stills in `docs/assets/` are WebP crops of those frames; the README embeds the full
+recordings and keeps a release-asset copy of each.
 
 ## Published 1.0.0 acceptance
 

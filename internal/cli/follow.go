@@ -92,7 +92,7 @@ func (a *app) activity(ctx context.Context, pageID string, after int64) error {
 			Events []event `json:"events"`
 		}{Events: events})
 	}
-	presentation := &printer{writer: a.out()}
+	presentation := newPrinter(a.out())
 	if len(events) == 0 {
 		presentation.printf("No activity.\n")
 		return presentation.err

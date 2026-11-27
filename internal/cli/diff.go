@@ -34,17 +34,17 @@ func (a *app) showDiff(ctx context.Context, pageID string) error {
 		}
 		return writeJSON(a.out(), result)
 	}
-	presentation := &printer{writer: a.out()}
+	presentation := newPrinter(a.out())
 	if result.PRURL != "" {
-		presentation.field("Pull request", sanitize(result.PRURL))
+		presentation.field("Pull request", presentation.style.cyan(sanitize(result.PRURL)))
 	}
 	if len(result.Files) == 0 {
 		presentation.printf("No proposed change.\n")
 		return presentation.err
 	}
 	for _, file := range result.Files {
-		presentation.printf("\n%s\n", sanitize(orPlaceholder(file.Path)))
-		presentation.block("", sanitize(file.Diff))
+		presentation.printf("\n%s\n", presentation.style.bold(presentation.style.yellow(sanitize(orPlaceholder(file.Path)))))
+		presentation.diff(sanitize(file.Diff))
 	}
 	return presentation.err
 }
