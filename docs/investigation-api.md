@@ -22,3 +22,27 @@ For example, a tool.started event for a Service read can carry:
 ```
 
 The private agent interface runs inside the installation. Go sends POST /turn to the Python service with pageId, turnId, messages, namespace, target, tools (name, description, inputSchema), and an installation-controlled callback base URL. Authenticate both directions using an installer-provided internal bearer credential. Go owns cancellation and calls POST /turns/{turnId}/stop on Python. Python responds to POST /turn with a terminal JSON object carrying content, citations and optional proposal (baseSha, files containing path and content). During the turn, Python calls POST /internal/turns/{turnId}/tools on Go with callId, tool and arguments and receives status, result, redacted and truncated. Tool calls may read evidence only. Go validates and publishes any proposal after the agent returns. Bind callbacks and proposals to the active turn, reject late work and prevent duplicate publication after retries.
+
+## Client request details
+
+Create and reply accept the same object. Only message is required. Namespace and target are optional hints. A reply inherits the conversation's hints when omitted. Reject conflicting namespace hints with HTTP 400.
+
+```json
+{"message":"Why is checkout unavailable?","namespace":"shop","target":{"kind":"Deployment","name":"checkout"}}
+```
+
+The target object requires kind and name and optionally accepts namespace. Errors use `{"error":{"code":"invalid_request","message":"..."}}`. The Go service serves the dashboard at / and a minimal readiness response at GET /readyz (200 ready, 503 degraded). Clients may probe readiness for diagnostics. Make the actual authenticated request directly in normal operation. CLI version can report its local build metadata.
+
+## Private turn contract
+
+POST /turn requires pageId, turnId, messages, tools and callbackUrl. Each message contains role (user or assistant), content and optional turnId. Optional namespace and target use the client shapes above. Optional limits may lower the configured toolCalls, modelCalls, inputTokens and seconds ceilings. callbackUrl must equal the configured callback origin. Reject userinfo, query, fragment, unexpected paths and credential-bearing redirects.
+
+A terminal HTTP 200 response contains status (completed, stopped or failed), content, citations, and usage (inputTokens, outputTokens, modelCalls, toolCalls). Each citation has callId and optional pointer. A completed response may include proposal with baseSha and files containing path and content. A failed response includes error with code and message. Go must validate the active turn before accepting a terminal answer or publishing.
+
+Allow concurrent pages up to the configured limit. Return 409 for a second active turn on the same page, an identical request still in progress, or reuse of a turn ID with a different payload. Distinguish these cases with codes page_busy, turn_running and idempotency_conflict. Replay a completed identical request from a bounded cache. Return 429 when global capacity is exhausted. Go owns durable turn state. After an ambiguous disconnect, retry only within a known replay window with the identical request. After agent restart or uncertain cache retention, mark the turn interrupted rather than re-executing it silently.
+
+POST /turns/{turnId}/stop returns HTTP 200 with status stopped, finished or unknown. A repeated stop is safe. Tool callbacks return status (ok, error, denied, truncated, timed_out or budget_exhausted), result and boolean redacted and truncated fields. Repeat delivery of the same callId and payload retrieves its recorded result. A genuinely new attempt has a fresh ID.
+
+Python GET /readyz reports status (ready or degraded) and checks containing name, ok and sanitized reason. Python owns the model tool-calling check. Go aggregates it with Kubernetes MCP capability and GitHub repository access checks. Cache active probes with bounded refresh and backoff. Keep liveness independent.
+
+The chart and agent share PAGERLESS_INTERNAL_TOKEN_FILE, PAGERLESS_CALLBACK_ORIGIN and PAGERLESS_AGENT_MAX_CONCURRENCY. Use PAGERLESS_MODEL_BASE_URL, PAGERLESS_MODEL_NAME and PAGERLESS_MODEL_API_KEY_FILE for the model. Limits use PAGERLESS_BUDGET_TOOL_CALLS, PAGERLESS_BUDGET_MODEL_CALLS, PAGERLESS_BUDGET_INPUT_TOKENS and PAGERLESS_BUDGET_SECONDS.
