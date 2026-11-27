@@ -82,25 +82,27 @@ several timestamps to confirm that the question, live tool calls, evidence and r
 The stills in `docs/assets/` are WebP crops of those frames; the README embeds the full
 recordings and keeps a release-asset copy of each.
 
-## Published 1.0.1 acceptance
+## Published 1.1.0 acceptance
 
-The recordings demonstrate the interfaces. The published release was also installed a second time
-from its public coordinates, on a fresh kind `v1.29.14` cluster, with empty Docker and Helm
-credential stores:
+The recordings demonstrate the interfaces. The published release was also installed from its
+public coordinates, on a fresh kind `v1.29.14` cluster, with empty Docker and Helm credential
+stores:
 
-- `helm pull oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless --version 1.0.1` returned
-  chart digest `sha256:ed51f04ff874df591da5b3a3499a018657ace01cc8a7bfaa4a4009e81982d5ff`.
+- `helm pull oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless --version 1.1.0` returned
+  chart digest `sha256:24785555ca869ea1a88d8a64112bbbaeb3d44b83d338e4b94fee9b465b58d9b9`.
 - The running server and agent pods used
-  `ghcr.io/a-hagi613/pagerless/core/{server,agent}:1.0.1`, and `kubectl-page 1.0.1` came from the
+  `ghcr.io/a-hagi613/pagerless/core/{server,agent}:1.1.0`, and `kubectl-page 1.1.0` came from the
   release archive after its checksum was verified.
-- A real `claude-haiku-5-5` turn answered the inventory question with six citations and proposed
-  `inventory-setting` to `inventory-settings` in `apps/inventory/workload.yaml`.
-- `kubectl page diff` opened draft pull request #5 against the private acceptance fixture. The
-  applied Deployment kept the same UID and spec during the turn: the service had read the cluster,
-  not changed it.
+- A real `claude-haiku-5-5` turn answered the inventory question with six citations and opened
+  draft pull request #6 against the private acceptance fixture.
+- With the Prometheus and Grafana MCP integrations enabled against the mock observability data,
+  two live Haiku turns called `prometheus_alerts` and `grafana_alerts`, returning the
+  `ContainerOOMKilled`, `ServiceErrorRateHigh` and `ContainerMemoryGrowth` alerts with citations.
+- `POST /mcp` with `pagerless_investigate`, and the
+  `notifications/pagerless/investigate` notification, each created a page and started a turn.
 - The release workflow's credential-free **Anonymous install gate** passed, and
   `scripts/release/verify-public-access.sh` reported every archive, the chart, and both images
-  public without a token. The 1.0.0 release passed the same gate before it.
+  public without a token.
 
 To reproduce the setup without the private scripts:
 
