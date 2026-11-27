@@ -8,6 +8,7 @@
 
 # Build output of the Go binaries
 /bin/
+/fake
 
 # Editor and OS files
 .idea/
@@ -41,5 +42,6 @@ dashboard/playwright-report/
 tfplan
 crash.log
 
-# Workstation-only agent instructions
+# Workstation-only agent instructions and harness state
 /AGENTS.md
+opencode.json

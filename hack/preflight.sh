@@ -25,25 +25,22 @@ else
 	fi
 fi
 
-if ! command -v kind >/dev/null 2>&1; then
-	fail "kind is not installed. Install kind ${KIND_VERSION}."
-elif ! kind version 2>/dev/null | grep -q "^kind ${KIND_VERSION} "; then
-	fail "kind ${KIND_VERSION} is required; found: $(kind version 2>/dev/null)."
+for tool in kind kubectl helm go node npm uv; do
+	command -v "$tool" >/dev/null 2>&1 || fail "$tool is not on PATH."
+done
+
+if command -v kind >/dev/null 2>&1 && ! kind version 2>/dev/null | grep -q "kind ${KIND_VERSION} "; then
+	fail "kind ${KIND_VERSION} is required; found $(kind version 2>/dev/null || echo none)."
+fi
+if command -v kubectl >/dev/null 2>&1 && ! kubectl version --client 2>/dev/null | grep -q "${KUBECTL_VERSION#v}"; then
+	fail "kubectl ${KUBECTL_VERSION} is required."
+fi
+if command -v helm >/dev/null 2>&1 && ! helm version --short 2>/dev/null | grep -q "${HELM_VERSION}"; then
+	fail "helm ${HELM_VERSION} is required."
 fi
 
-if ! command -v kubectl >/dev/null 2>&1; then
-	fail "kubectl is not installed. Install kubectl ${KUBECTL_VERSION}."
-elif ! kubectl version --client 2>/dev/null | grep -qx "Client Version: ${KUBECTL_VERSION}"; then
-	fail "kubectl ${KUBECTL_VERSION} is required; found: $(kubectl version --client 2>/dev/null | head -n 1)."
+if [ "$unmet" -ne 0 ]; then
+	echo "preflight: ${unmet} unmet prerequisite(s); nothing was changed." >&2
+	exit 1
 fi
-
-if ! command -v helm >/dev/null 2>&1; then
-	fail "helm is not installed. Install Helm ${HELM_VERSION}."
-elif ! helm version --short 2>/dev/null | grep -q "^${HELM_VERSION}+"; then
-	fail "Helm ${HELM_VERSION} is required; found: $(helm version --short 2>/dev/null)."
-fi
-
-if [ "$unmet" -gt 0 ]; then
-	die "$unmet preflight requirement(s) unmet. Fix the items above and run make dev again."
-fi
-echo "preflight: all requirements met"
+echo "preflight: every prerequisite is present."

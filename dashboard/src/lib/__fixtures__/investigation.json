@@ -1,0 +1,305 @@
+{
+  "pages": [
+    {
+      "id": "p-reconnect",
+      "title": "Why do webhook deliveries retry?",
+      "status": "running",
+      "updatedAt": "2026-11-26T10:06:00Z",
+      "activeTurnId": "t5"
+    },
+    {
+      "id": "p-running",
+      "title": "Why is search slow?",
+      "status": "running",
+      "updatedAt": "2026-11-26T10:05:00Z",
+      "activeTurnId": "t4"
+    },
+    {
+      "id": "p-checkout",
+      "title": "Why is checkout timing out?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:04:00Z",
+      "activeTurnId": null,
+      "namespace": "shop",
+      "target": "Deployment/checkout"
+    },
+    {
+      "id": "p-nofix",
+      "title": "Which workloads have no memory limits?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:03:00Z",
+      "activeTurnId": null
+    },
+    {
+      "id": "p-interrupted",
+      "title": "Did the payments rollout finish?",
+      "status": "interrupted",
+      "updatedAt": "2026-11-26T10:02:00Z",
+      "activeTurnId": null
+    }
+  ],
+  "details": {
+    "p-checkout": {
+      "id": "p-checkout",
+      "title": "Why is checkout timing out?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:04:00Z",
+      "activeTurnId": null,
+      "namespace": "shop",
+      "target": "Deployment/checkout",
+      "lastEventId": 12,
+      "messages": [
+        {
+          "id": "m1",
+          "turnId": "t1",
+          "role": "user",
+          "content": "Why is checkout timing out? It started after the last deploy.",
+          "createdAt": "2026-11-26T10:00:00Z",
+          "citations": []
+        },
+        {
+          "id": "m2",
+          "turnId": "t1",
+          "role": "assistant",
+          "content": "Checkout is timing out because the Deployment still runs two replicas while each pod waits on an unavailable payment dependency. The current spec asks for three replicas, and the log evidence shows readiness probes timing out. I prepared a draft change to restore the intended replica count.",
+          "createdAt": "2026-11-26T10:04:00Z",
+          "citations": [
+            { "callId": "c4", "pointer": "/spec/replicas" },
+            { "callId": "c12", "pointer": "/items/0/message" }
+          ]
+        }
+      ]
+    },
+    "p-nofix": {
+      "id": "p-nofix",
+      "title": "Which workloads have no memory limits?",
+      "status": "completed",
+      "updatedAt": "2026-11-26T10:03:00Z",
+      "activeTurnId": null,
+      "lastEventId": 5,
+      "messages": [
+        {
+          "id": "m3",
+          "turnId": "t2",
+          "role": "user",
+          "content": "Which workloads have no memory limits?",
+          "createdAt": "2026-11-26T10:02:30Z",
+          "citations": []
+        },
+        {
+          "id": "m4",
+          "turnId": "t2",
+          "role": "assistant",
+          "content": "Every workload in the shop namespace sets a memory limit. I found no source change to propose.",
+          "createdAt": "2026-11-26T10:03:00Z",
+          "citations": [{ "callId": "c10", "pointer": "/items/0" }]
+        }
+      ]
+    },
+    "p-interrupted": {
+      "id": "p-interrupted",
+      "title": "Did the payments rollout finish?",
+      "status": "interrupted",
+      "updatedAt": "2026-11-26T10:02:00Z",
+      "activeTurnId": null,
+      "lastEventId": 4,
+      "messages": [
+        {
+          "id": "m5",
+          "turnId": "t3",
+          "role": "user",
+          "content": "Did the payments rollout finish?",
+          "createdAt": "2026-11-26T10:01:00Z",
+          "citations": []
+        }
+      ]
+    },
+    "p-running": {
+      "id": "p-running",
+      "title": "Why is search slow?",
+      "status": "running",
+      "updatedAt": "2026-11-26T10:05:00Z",
+      "activeTurnId": "t4",
+      "lastEventId": 2,
+      "messages": [
+        {
+          "id": "m6",
+          "turnId": "t4",
+          "role": "user",
+          "content": "Why is search slow?",
+          "createdAt": "2026-11-26T10:05:00Z",
+          "citations": []
+        }
+      ]
+    },
+    "p-reconnect": {
+      "id": "p-reconnect",
+      "title": "Why do webhook deliveries retry?",
+      "status": "running",
+      "updatedAt": "2026-11-26T10:06:00Z",
+      "activeTurnId": "t5",
+      "lastEventId": 0,
+      "messages": [
+        {
+          "id": "m7",
+          "turnId": "t5",
+          "role": "user",
+          "content": "Why do webhook deliveries retry?",
+          "createdAt": "2026-11-26T10:06:00Z",
+          "citations": []
+        }
+      ]
+    }
+  },
+  "events": {
+    "p-checkout": [
+      { "seq": 1, "pageId": "p-checkout", "turnId": "t1", "type": "turn.started", "time": "2026-11-26T10:00:00Z", "data": {} },
+      { "seq": 2, "pageId": "p-checkout", "turnId": "t1", "type": "tool.started", "time": "2026-11-26T10:00:02Z", "data": { "callId": "c1", "tool": "resources_get", "arguments": { "kind": "Secret", "name": "checkout-token", "namespace": "shop" } } },
+      { "seq": 3, "pageId": "p-checkout", "turnId": "t1", "type": "tool.finished", "time": "2026-11-26T10:00:02Z", "data": { "callId": "c1", "tool": "resources_get", "status": "denied", "durationMs": 12 } },
+      { "seq": 4, "pageId": "p-checkout", "turnId": "t1", "type": "tool.started", "time": "2026-11-26T10:00:05Z", "data": { "callId": "c2", "tool": "resources_list", "arguments": { "kind": "Deployment", "namespace": "shop" } } },
+      { "seq": 5, "pageId": "p-checkout", "turnId": "t1", "type": "tool.finished", "time": "2026-11-26T10:00:05Z", "data": { "callId": "c2", "tool": "resources_list", "status": "ok", "durationMs": 84 } },
+      { "seq": 6, "pageId": "p-checkout", "turnId": "t1", "type": "tool.started", "time": "2026-11-26T10:00:08Z", "data": { "callId": "c3", "tool": "pods_logs", "arguments": { "namespace": "shop", "pod": "checkout-7c9f", "tailLines": 200 } } },
+      { "seq": 7, "pageId": "p-checkout", "turnId": "t1", "type": "tool.finished", "time": "2026-11-26T10:00:08Z", "data": { "callId": "c3", "tool": "pods_logs", "status": "truncated", "durationMs": 220, "truncated": true } },
+      { "seq": 8, "pageId": "p-checkout", "turnId": "t1", "type": "tool.started", "time": "2026-11-26T10:00:12Z", "data": { "callId": "c4", "tool": "resources_get", "arguments": { "kind": "Deployment", "name": "checkout", "namespace": "shop" } } },
+      { "seq": 9, "pageId": "p-checkout", "turnId": "t1", "type": "tool.finished", "time": "2026-11-26T10:00:12Z", "data": { "callId": "c4", "tool": "resources_get", "status": "ok", "durationMs": 51 } },
+      { "seq": 10, "pageId": "p-checkout", "turnId": "t1", "type": "answer", "time": "2026-11-26T10:04:00Z", "data": { "messageId": "m2", "content": "Checkout is timing out because the Deployment still runs two replicas while each pod waits on an unavailable payment dependency. The current spec asks for three replicas, and the log evidence shows readiness probes timing out. I prepared a draft change to restore the intended replica count.", "citations": [{ "callId": "c4", "pointer": "/spec/replicas" }, { "callId": "c12", "pointer": "/items/0/message" }] } },
+      { "seq": 11, "pageId": "p-checkout", "turnId": "t1", "type": "proposal", "time": "2026-11-26T10:04:00Z", "data": { "baseSha": "4f3c2b1a9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b", "files": [{ "path": "deploy/checkout/deployment.yaml" }], "prUrl": "https://github.com/example/shop/pull/42" } },
+      { "seq": 12, "pageId": "p-checkout", "turnId": "t1", "type": "turn.finished", "time": "2026-11-26T10:04:00Z", "data": { "status": "completed" } }
+    ],
+    "p-nofix": [
+      { "seq": 1, "pageId": "p-nofix", "turnId": "t2", "type": "turn.started", "time": "2026-11-26T10:02:30Z", "data": {} },
+      { "seq": 2, "pageId": "p-nofix", "turnId": "t2", "type": "tool.started", "time": "2026-11-26T10:02:31Z", "data": { "callId": "c10", "tool": "resources_list", "arguments": { "kind": "Deployment", "namespace": "shop" } } },
+      { "seq": 3, "pageId": "p-nofix", "turnId": "t2", "type": "tool.finished", "time": "2026-11-26T10:02:31Z", "data": { "callId": "c10", "tool": "resources_list", "status": "ok", "durationMs": 67 } },
+      { "seq": 4, "pageId": "p-nofix", "turnId": "t2", "type": "answer", "time": "2026-11-26T10:03:00Z", "data": { "messageId": "m4", "content": "Every workload in the shop namespace sets a memory limit. I found no source change to propose.", "citations": [{ "callId": "c10", "pointer": "/items/0" }] } },
+      { "seq": 5, "pageId": "p-nofix", "turnId": "t2", "type": "turn.finished", "time": "2026-11-26T10:03:00Z", "data": { "status": "completed" } }
+    ],
+    "p-interrupted": [
+      { "seq": 1, "pageId": "p-interrupted", "turnId": "t3", "type": "turn.started", "time": "2026-11-26T10:01:00Z", "data": {} },
+      { "seq": 2, "pageId": "p-interrupted", "turnId": "t3", "type": "tool.started", "time": "2026-11-26T10:01:01Z", "data": { "callId": "c20", "tool": "resources_get", "arguments": { "kind": "Deployment", "name": "payments", "namespace": "shop" } } },
+      { "seq": 3, "pageId": "p-interrupted", "turnId": "t3", "type": "tool.finished", "time": "2026-11-26T10:01:01Z", "data": { "callId": "c20", "tool": "resources_get", "status": "ok", "durationMs": 44 } },
+      { "seq": 4, "pageId": "p-interrupted", "turnId": "t3", "type": "turn.finished", "time": "2026-11-26T10:02:00Z", "data": { "status": "interrupted" } }
+    ],
+    "p-running": [
+      { "seq": 1, "pageId": "p-running", "turnId": "t4", "type": "turn.started", "time": "2026-11-26T10:05:00Z", "data": {} },
+      { "seq": 2, "pageId": "p-running", "turnId": "t4", "type": "tool.started", "time": "2026-11-26T10:05:01Z", "data": { "callId": "c30", "tool": "pods_logs", "arguments": { "namespace": "shop", "pod": "search-0", "tailLines": 100 } } }
+    ],
+    "p-reconnect": [
+      { "seq": 1, "pageId": "p-reconnect", "turnId": "t5", "type": "turn.started", "time": "2026-11-26T10:06:00Z", "data": {} },
+      { "seq": 2, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.started", "time": "2026-11-26T10:06:01Z", "data": { "callId": "c40", "tool": "resources_list", "arguments": { "kind": "Event", "namespace": "shop" } } },
+      { "seq": 3, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.finished", "time": "2026-11-26T10:06:01Z", "data": { "callId": "c40", "tool": "resources_list", "status": "ok", "durationMs": 75 } },
+      { "seq": 4, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.started", "time": "2026-11-26T10:06:02Z", "data": { "callId": "c41", "tool": "pods_logs", "arguments": { "namespace": "shop", "pod": "webhook-1", "tailLines": 50 } } },
+      { "seq": 5, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.finished", "time": "2026-11-26T10:06:02Z", "data": { "callId": "c41", "tool": "pods_logs", "status": "denied", "durationMs": 8 } },
+      { "seq": 6, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.started", "time": "2026-11-26T10:06:03Z", "data": { "callId": "c42", "tool": "resources_get", "arguments": { "kind": "CronJob", "name": "webhook-retry", "namespace": "shop" } } },
+      { "seq": 7, "pageId": "p-reconnect", "turnId": "t5", "type": "tool.finished", "time": "2026-11-26T10:06:03Z", "data": { "callId": "c42", "tool": "resources_get", "status": "ok", "durationMs": 39 } },
+      { "seq": 8, "pageId": "p-reconnect", "turnId": "t5", "type": "answer", "time": "2026-11-26T10:06:10Z", "data": { "messageId": "m8", "content": "Webhook deliveries retry because the CronJob uses a fixed backoff after the first two denials; the retry is recorded as its own attempt.", "citations": [{ "callId": "c42", "pointer": "/spec/schedule" }] } },
+      { "seq": 9, "pageId": "p-reconnect", "turnId": "t5", "type": "turn.finished", "time": "2026-11-26T10:06:10Z", "data": { "status": "completed" } }
+    ]
+  },
+  "diffs": {
+    "p-checkout": {
+      "files": [
+        {
+          "path": "deploy/checkout/deployment.yaml",
+          "diff": "--- a/deploy/checkout/deployment.yaml\n+++ b/deploy/checkout/deployment.yaml\n@@ -12,7 +12,7 @@\n spec:\n   selector:\n     matchLabels:\n       app: checkout\n-  replicas: 2\n+  replicas: 3\n   template:\n     metadata:\n"
+        }
+      ],
+      "prUrl": "https://github.com/example/shop/pull/42"
+    },
+    "p-nofix": { "files": [] },
+    "p-interrupted": { "files": [] },
+    "p-running": { "files": [] },
+    "p-reconnect": { "files": [] }
+  },
+  "evidence": {
+    "c1": {
+      "callId": "c1",
+      "tool": "resources_get",
+      "arguments": { "kind": "Secret", "name": "checkout-token", "namespace": "shop" },
+      "result": { "denied": "Secret reads are outside this installation's grants." },
+      "status": "denied",
+      "durationMs": 12,
+      "redacted": true,
+      "truncated": false
+    },
+    "c3": {
+      "callId": "c3",
+      "tool": "pods_logs",
+      "arguments": { "namespace": "shop", "pod": "checkout-7c9f", "tailLines": 200 },
+      "result": "readiness probe failed: connect: connection refused\n[log truncated at 8 KiB]",
+      "status": "truncated",
+      "durationMs": 220,
+      "redacted": false,
+      "truncated": true
+    },
+    "c4": {
+      "callId": "c4",
+      "tool": "resources_get",
+      "arguments": { "kind": "Deployment", "name": "checkout", "namespace": "shop" },
+      "result": { "kind": "Deployment", "metadata": { "name": "checkout", "namespace": "shop" }, "spec": { "replicas": 2 }, "status": { "readyReplicas": 1 } },
+      "status": "ok",
+      "durationMs": 51,
+      "redacted": false,
+      "truncated": false
+    },
+    "c10": {
+      "callId": "c10",
+      "tool": "resources_list",
+      "arguments": { "kind": "Deployment", "namespace": "shop" },
+      "result": { "items": [{ "metadata": { "name": "checkout" }, "spec": { "template": { "spec": { "containers": [{ "resources": { "limits": { "memory": "512Mi" } } }] } } } }] },
+      "status": "ok",
+      "durationMs": 67,
+      "redacted": false,
+      "truncated": false
+    },
+    "c20": {
+      "callId": "c20",
+      "tool": "resources_get",
+      "arguments": { "kind": "Deployment", "name": "payments", "namespace": "shop" },
+      "result": { "kind": "Deployment", "metadata": { "name": "payments" }, "status": { "updatedReplicas": 2 } },
+      "status": "ok",
+      "durationMs": 44,
+      "redacted": false,
+      "truncated": false
+    },
+    "c40": {
+      "callId": "c40",
+      "tool": "resources_list",
+      "arguments": { "kind": "Event", "namespace": "shop" },
+      "result": { "items": [{ "reason": "BackOff", "count": 3 }] },
+      "status": "ok",
+      "durationMs": 75,
+      "redacted": false,
+      "truncated": false
+    },
+    "c41": {
+      "callId": "c41",
+      "tool": "pods_logs",
+      "arguments": { "namespace": "shop", "pod": "webhook-1", "tailLines": 50 },
+      "result": { "denied": "Log reads for this pod are outside the granted scope." },
+      "status": "denied",
+      "durationMs": 8,
+      "redacted": true,
+      "truncated": false
+    },
+    "c42": {
+      "callId": "c42",
+      "tool": "resources_get",
+      "arguments": { "kind": "CronJob", "name": "webhook-retry", "namespace": "shop" },
+      "result": { "kind": "CronJob", "metadata": { "name": "webhook-retry" }, "spec": { "schedule": "*/5 * * * *" } },
+      "status": "ok",
+      "durationMs": 39,
+      "redacted": false,
+      "truncated": false
+    },
+    "c30": {
+      "callId": "c30",
+      "tool": "pods_logs",
+      "arguments": { "namespace": "shop", "pod": "search-0", "tailLines": 100 },
+      "result": { "status": "running" },
+      "status": "running",
+      "durationMs": 0,
+      "redacted": false,
+      "truncated": false
+    }
+  }
+}

@@ -1,0 +1,93 @@
+name: Dashboard preview evidence
+
+# Runs only for dashboard changes on a pull request. It builds the dashboard once, serves the test-only
+# contract fixture, and captures the review screenshots. The integrated browser suite against the real
+# server remains in ci.yml; this job exists so screenshots are produced by CI, not a workstation.
+on:
+  pull_request:
+    paths:
+      - "dashboard/**"
+      - ".github/workflows/dashboard-preview.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dashboard-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Contract fixture screenshots
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: dashboard/.nvmrc
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Cache the Playwright Chromium build
+        id: playwright-cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('dashboard/package-lock.json') }}
+
+      - name: Install Chromium
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.playwright-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+
+      - name: Install dependencies and build once
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Serve the contract fixture
+        run: |
+          set -euo pipefail
+          node e2e/fixture-server.mjs > /tmp/dashboard-fixture.log 2>&1 &
+          echo $! > /tmp/dashboard-fixture.pid
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:18082/readyz > /dev/null; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+          cat /tmp/dashboard-fixture.log
+          exit 1
+
+      - name: Capture fixture screenshots
+        env:
+          PAGERLESS_PORTAL_URL: http://127.0.0.1:18082
+          PAGERLESS_SCREENSHOTS: "1"
+          CI: "1"
+        run: npx playwright test e2e/screenshots.spec.ts --workers=1
+
+      - name: Stop the fixture server
+        if: always()
+        run: |
+          if [ -f /tmp/dashboard-fixture.pid ]; then
+            kill "$(cat /tmp/dashboard-fixture.pid)" 2>/dev/null || true
+          fi
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: dashboard-preview-${{ github.event.pull_request.head.sha }}
+          path: dashboard/e2e/screenshots/*.png
+          retention-days: 1
+          if-no-files-found: error

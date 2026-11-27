@@ -1,225 +1,439 @@
 #!/usr/bin/env bash
-# Proves the standalone chart on a real cluster.
+# Installs the packaged chart on a fresh kind cluster and exercises the product
+# path end to end: the real read-only Kubernetes MCP server reads a broken
+# workload, the fake OpenAI-compatible model drives the agent, the service
+# records the ordered transcript, redacts the workload's credential, and the
+# isolated publisher opens exactly one draft pull request against the fake
+# GitHub repository. The released CLI and the browser API are both exercised.
 #
-# Creates a fresh kind cluster, builds pagerless-server from this checkout,
-# installs charts/pagerless, waits for the pod to become Ready, and then asks
-# the API server's own authorizer what the server ServiceAccount may do. Every
-# check is the product's defining constraint: the cluster identity reads, and it
-# cannot write to a workload, Event, or Node.
-#
-# The matrix itself is hack/verify-read-only-grants.sh, which the release job
-# also runs against the chart published to GHCR; here it runs in the managed
-# shape, with the Secret the chart creates.
+# Requirements: docker, kind, kubectl, helm, go, python3, curl.
 set -euo pipefail
 
 # shellcheck source=hack/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_versions
 
-require_commands docker kind kubectl helm
+require_commands docker kind kubectl helm go python3 curl openssl
 
 CLUSTER="${PAGERLESS_VERIFY_CLUSTER:-pagerless-verify}"
-IMAGE_REPOSITORY="${PAGERLESS_VERIFY_IMAGE:-pagerless-server}"
-IMAGE_TAG="${PAGERLESS_VERIFY_TAG:-verify}"
-TIMEOUT="${PAGERLESS_VERIFY_TIMEOUT:-180s}"
+RELEASE="pagerless"
+NAMESPACE="pagerless"
+WORKLOAD_NAMESPACE="shop"
+E2E_IMAGE="pagerless-e2e:e2e"
+LOCAL_PORT="${PAGERLESS_VERIFY_PORT:-18080}"
+TIMEOUT="${PAGERLESS_VERIFY_TIMEOUT:-420}"
+STATE="$(mktemp -d "${TMPDIR:-/tmp}/pagerless-e2e.XXXXXXXX")"
+chmod 700 "$STATE"
 
 cleanup() {
-	if [ -n "${PORTAL_PF_PID:-}" ]; then
-		kill "$PORTAL_PF_PID" >/dev/null 2>&1 || true
+	if [ -n "${PORT_FORWARD_PID:-}" ]; then
+		kill "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
 	fi
+	if [ "${PAGERLESS_KEEP_CLUSTER:-0}" = "1" ]; then
+		echo "keeping kind cluster ${CLUSTER} for inspection"
+		return
+	fi
+	rm -f "$REPO_ROOT/dashboard/e2e/real-backend.generated.spec.ts"
 	kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+	rm -rf "$STATE"
 }
 trap cleanup EXIT
 
-if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
-	die "kind cluster '$CLUSTER' already exists; delete it or set PAGERLESS_VERIFY_CLUSTER."
+kc() { kubectl --context "kind-${CLUSTER}" "$@"; }
+
+echo "==> creating kind cluster ${CLUSTER}"
+kind create cluster --name "$CLUSTER" --image "$KIND_NODE_IMAGE" --wait 180s
+
+echo "==> building the service, agent, and integration images"
+docker build --file Dockerfile.pagerless-server --build-arg "VERSION=1.0.0" --tag "$PAGERLESS_SERVER_IMAGE" .
+docker build --file Dockerfile.pagerless-agent --build-arg "VERSION=1.0.0" --tag "$PAGERLESS_AGENT_IMAGE" .
+docker build --file test/e2e/investigation/Dockerfile --tag "$E2E_IMAGE" .
+kind load docker-image --name "$CLUSTER" "$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_AGENT_IMAGE" "$E2E_IMAGE"
+
+echo "==> creating namespaces, the broken workload, and the externally provisioned Secret"
+kc create namespace "$NAMESPACE" --dry-run=client -o yaml | kc apply -f -
+kc create namespace "$WORKLOAD_NAMESPACE" --dry-run=client -o yaml | kc apply -f -
+kc apply -f "$REPO_ROOT/test/e2e/investigation/broken-workload.yaml"
+kc apply -f "$REPO_ROOT/test/e2e/investigation/fake.yaml"
+kc -n "$NAMESPACE" rollout status deployment/pagerless-fake --timeout=120s
+
+operator_token="$(openssl rand -hex 32)"
+internal_token="$(openssl rand -hex 32)"
+mcp_token="$(openssl rand -hex 32)"
+kc -n "$NAMESPACE" create secret generic pagerless-credentials \
+	--from-literal=operator-token="$operator_token" \
+	--from-literal=internal-token="$internal_token" \
+	--from-literal=mcp-token="$mcp_token" \
+	--from-literal=github-read-token=e2e-read-token \
+	--from-literal=github-write-token=e2e-write-token \
+	--from-literal=model-api-key=e2e-model-key \
+	--dry-run=client -o yaml | kc apply -f -
+
+before_uid="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.metadata.uid}')"
+before_spec="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
+
+cat >"$STATE/values.yaml" <<'EOF'
+# The fake model and GitHub endpoints run inside this cluster on test ports.
+networkPolicy:
+  extraEgress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pagerless-fake
+EOF
+
+echo "==> installing the packaged chart"
+helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
+	--values "$STATE/values.yaml" \
+	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" \
+	--set existingSecret=pagerless-credentials \
+	--set model.baseUrl=http://pagerless-fake:9090/v1 \
+	--set model.name=fake-model \
+	--set model.allowInsecure=true \
+	--set github.repository=acme/cluster \
+	--set github.baseBranch=main \
+	--set github.apiUrl=http://pagerless-fake:9091 \
+	--set github.pathPrefix=apps/checkout \
+	--set image.tag=1.0.0 \
+	--set agentImage.tag=1.0.0 \
+	--set agent.budget.seconds=180 \
+	--set agent.readinessTTLSeconds=2 \
+	--wait --timeout "${TIMEOUT}s" >"$STATE/install.txt" 2>&1 ||
+	{
+		kc -n "$NAMESPACE" get pods
+		kc -n "$NAMESPACE" port-forward service/pagerless-server 18081:8080 >/dev/null 2>&1 &
+		DIAG_PID=$!
+		sleep 3
+		curl --silent "http://127.0.0.1:18081/readyz" || true
+		kill "$DIAG_PID" >/dev/null 2>&1 || true
+		kc -n "$NAMESPACE" describe pods
+		for deployment in pagerless-server pagerless-agent pagerless-kubernetes-mcp pagerless-github-mcp; do
+			echo "==> logs ${deployment}"
+			kc -n "$NAMESPACE" logs "deployment/${deployment}" --tail=80 || true
+		done
+		cat "$STATE/install.txt"
+		exit 1
+	}
+
+echo "==> port-forwarding the private Service"
+kc -n "$NAMESPACE" port-forward service/pagerless-server "${LOCAL_PORT}:8080" >"$STATE/port-forward.log" 2>&1 &
+PORT_FORWARD_PID=$!
+ready=0
+for _ in $(seq 1 60); do
+	if curl --silent --fail "http://127.0.0.1:${LOCAL_PORT}/healthz" >/dev/null 2>&1; then
+		ready=1
+		break
+	fi
+	sleep 2
+done
+[ "$ready" -eq 1 ] || { echo "the server did not answer through the port-forward"; cat "$STATE/port-forward.log"; exit 1; }
+
+status=$(curl --silent -o "$STATE/ready.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz")
+[ "$status" = "200" ] || {
+	echo "the installation is not ready (HTTP $status):"
+	cat "$STATE/ready.json"
+	kc -n "$NAMESPACE" logs deployment/pagerless-server --tail=100 || true
+	kc -n "$NAMESPACE" logs deployment/pagerless-agent --tail=100 || true
+	kc -n "$NAMESPACE" logs deployment/pagerless-kubernetes-mcp --tail=100 || true
+	kc -n "$NAMESPACE" logs deployment/pagerless-github-mcp --tail=100 || true
+	exit 1
+}
+python3 - "$STATE/ready.json" <<'PY'
+import json, sys
+body = json.load(open(sys.argv[1]))
+assert body["status"] == "ready", body
+for check in body["checks"]:
+    assert check["ok"], check
+print("readiness:", ", ".join(c["name"] for c in body["checks"]))
+PY
+
+# Setup succeeded. Run each independent group, record its result, and report
+# every failure once at the end. Only a group that truly needs another group's
+# output is marked blocked.
+failures=0
+fail_stage() {
+	echo "stage failed: $*" >&2
+	failures=$((failures + 1))
+}
+cli_ok=1
+
+echo "==> proving the read-only authorization matrix"
+if ! bash "$REPO_ROOT/hack/verify-read-only-grants.sh" \
+	--context "kind-${CLUSTER}" --namespace "$NAMESPACE" \
+	--release "$RELEASE" --workload-namespace "$WORKLOAD_NAMESPACE"; then
+	fail_stage "RBAC"
 fi
 
-echo "Creating kind cluster $CLUSTER"
-kind create cluster --name "$CLUSTER" --image "$KIND_NODE_IMAGE" --wait 120s
+fake_pod="$(kc -n "$NAMESPACE" get pod -l app.kubernetes.io/name=pagerless-fake -o jsonpath='{.items[0].metadata.name}')"
 
-echo "Building $IMAGE_REPOSITORY:$IMAGE_TAG"
-docker build --file "$REPO_ROOT/Dockerfile.pagerless-server" \
-	--tag "$IMAGE_REPOSITORY:$IMAGE_TAG" "$REPO_ROOT"
-kind load docker-image --name "$CLUSTER" "$IMAGE_REPOSITORY:$IMAGE_TAG"
+echo "==> discovering the private Service with the released CLI from the host"
+# The plugin's normal path is operator kubeconfig discovery and an in-process
+# port-forward, not --address. Extract the same binary the image ships and run
+# it outside the cluster against the named kind context.
+cli_container="$(docker create "$E2E_IMAGE")"
+docker cp "${cli_container}:/usr/local/bin/kubectl-page" "$STATE/kubectl-page" >/dev/null
+docker rm "$cli_container" >/dev/null
+if ! printf '%s\n' "$operator_token" | "$STATE/kubectl-page" list \
+	--context "kind-${CLUSTER}" --release-namespace "$NAMESPACE" \
+	--token-file - --json >"$STATE/discovery.json" 2>"$STATE/discovery.err"; then
+	echo "the discovered CLI flow failed:" >&2
+	cat "$STATE/discovery.err" >&2
+	fail_stage "CLI discovery"
+fi
 
-echo "Installing charts/pagerless"
-helm upgrade --install pagerless "$REPO_ROOT/charts/pagerless" \
-	--kube-context "kind-$CLUSTER" \
-	--namespace pagerless --create-namespace \
-	--set "images.server.repository=$IMAGE_REPOSITORY" \
-	--set "images.server.tag=$IMAGE_TAG" \
-	--wait --timeout "$TIMEOUT"
+echo "==> asking through the released CLI"
+if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
+	/usr/local/bin/kubectl-page "Why is checkout failing?" -n "$WORKLOAD_NAMESPACE" \
+	--address "http://pagerless-server:8080" --token-file - --json \
+	--follow-timeout 300s >"$STATE/cli.json" 2>"$STATE/cli.err"; then
+	echo "the CLI investigation failed:" >&2
+	cat "$STATE/cli.err" >&2
+	echo "==> agent logs" >&2
+	kc -n "$NAMESPACE" logs deployment/pagerless-agent --tail=200 >&2 || true
+	echo "==> server logs" >&2
+	kc -n "$NAMESPACE" logs deployment/pagerless-server --tail=100 >&2 || true
+	cli_ok=0
+	fail_stage "CLI investigation"
+fi
+if [ "$cli_ok" -eq 1 ] && ! E2E_PAGE_FILE="$STATE/page-id" python3 - "$STATE/cli.json" <<'PY'
+import json, os, sys
+body = json.load(open(sys.argv[1]))
+assert body["status"] == "completed", body
+assert body["messages"], body
+assert any(m["role"] == "assistant" and m["citations"] for m in body["messages"]), body
+print("cli:", body["id"], body["status"], len(body["messages"]), "messages")
+open(os.environ["E2E_PAGE_FILE"], "w").write(body["id"])
+PY
+then
+	cli_ok=0
+	fail_stage "CLI transcript"
+fi
+page_id="$(cat "$STATE/page-id" 2>/dev/null || true)"
+call_id="$(python3 - "$STATE/cli.json" <<'PY'
+import json, sys
+body = json.load(open(sys.argv[1]))
+for message in body["messages"]:
+    if message["role"] == "assistant" and message["citations"]:
+        print(message["citations"][0]["callId"])
+        break
+PY
+)" || true
+if [ -z "$call_id" ]; then
+	cli_ok=0
+	fail_stage "CLI citation"
+fi
 
-kubectl --context "kind-$CLUSTER" -n pagerless rollout status deploy/pagerless-server --timeout="$TIMEOUT"
-ready="$(kubectl --context "kind-$CLUSTER" -n pagerless get pods \
-	--selector app.kubernetes.io/name=pagerless-server \
-	--output jsonpath='{.items[0].status.containerStatuses[0].ready}')"
-[ "$ready" = "true" ] || die "pagerless-server did not become ready."
+if [ "$cli_ok" -eq 1 ]; then
+echo "==> opening a second investigation through the browser API"
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- env \
+	E2E_BASE_URL=http://pagerless-server:8080 \
+	E2E_TOKEN="$operator_token" \
+	E2E_PAGE_ID="$page_id" \
+	E2E_QUESTION="Why is checkout failing?" \
+	E2E_NAMESPACE="$WORKLOAD_NAMESPACE" \
+	/usr/local/bin/fake --assert >"$STATE/assert.json"; then
+	fail_stage "browser API replay"
+fi
+cat "$STATE/assert.json" 2>/dev/null || true
 
-echo "Checking the read-only authorization matrix for the managed credentials Secret"
-bash "$REPO_ROOT/hack/verify-read-only-grants.sh" \
-	--shape managed --context "kind-$CLUSTER" \
-	--namespace pagerless --service-account pagerless-server
+if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
+	/usr/local/bin/kubectl-page diff "$page_id" \
+	--address "http://pagerless-server:8080" --token-file - --json >"$STATE/diff.json"; then
+	fail_stage "diff"
+fi
+if ! python3 - "$STATE/diff.json" <<'PY'
+import json, sys
+body = json.load(open(sys.argv[1]))
+assert body.get("prUrl"), body
+assert body["files"] and body["files"][0]["path"] == "apps/checkout/deployment.yaml", body
+print("diff:", body["prUrl"], len(body["files"]), "file(s)")
+PY
+then
+	fail_stage "diff contract"
+fi
+else
+	echo "browser API replay and diff are blocked: the CLI page is unavailable" >&2
+fi
 
-echo "Checking that a CLI decision and a Portal decision record the same Page"
+echo "==> asserting one draft pull request and zero merges"
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/pulls >"$STATE/pulls.json"; then
+	fail_stage "pull requests"
+fi
+if ! kc -n "$NAMESPACE" exec "$fake_pod" -- wget -qO- http://pagerless-fake:9091/_test/merges >"$STATE/merges.json"; then
+	fail_stage "merges"
+fi
+if ! python3 - "$STATE/pulls.json" "$STATE/merges.json" <<'PY'
+import json, sys
+pulls = json.load(open(sys.argv[1]))
+merges = json.load(open(sys.argv[2]))
+assert len(pulls) == 1, pulls
+pull = pulls[0]
+assert pull["draft"] is True, pull
+assert pull["base"] == "main" and pull["head"] != "main", pull
+assert "checkout" in pull["title"].lower(), pull
+assert merges["merges"] == 0, merges
+print("pull request:", pull["head"], "->", pull["base"], "draft", pull["draft"])
+PY
+then
+	fail_stage "pull-request contract"
+fi
 
-# The plugin the operator installs, built from this checkout, decides one Page through the Kubernetes API.
-( cd "$REPO_ROOT" && go build -trimpath -o "$REPO_ROOT/bin/kubectl-page" ./cmd/kubectl-page )
-CLI="$REPO_ROOT/bin/kubectl-page"
+echo "==> asserting the workload was not changed"
+after_uid="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.metadata.uid}')"
+after_spec="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o jsonpath='{.spec}' | sha256sum | cut -d' ' -f1)"
+if [ "$before_uid" != "$after_uid" ]; then
+	fail_stage "workload identity changed"
+fi
+if [ "$before_spec" != "$after_spec" ]; then
+	fail_stage "workload spec changed"
+fi
 
-BOOTSTRAP_TOKEN="$(kubectl --context "kind-$CLUSTER" -n pagerless get secret pagerless-admin-secret \
-	--output jsonpath='{.data.token}' | base64 -d)"
-PORTAL_PORT="${PAGERLESS_VERIFY_PORTAL_PORT:-18080}"
-kubectl --context "kind-$CLUSTER" -n pagerless port-forward svc/pagerless-server "$PORTAL_PORT:8080" \
-	>/dev/null 2>&1 &
-PORTAL_PF_PID=$!
-for _ in $(seq 1 60); do
-	if curl --fail --silent --show-error "http://127.0.0.1:${PORTAL_PORT}/api/version" >/dev/null 2>&1; then
-		break
-	fi
-	sleep 1
-done
-curl --fail --silent --show-error "http://127.0.0.1:${PORTAL_PORT}/api/version" >/dev/null ||
-	die "the Portal did not answer on 127.0.0.1:${PORTAL_PORT}."
-
-COOKIE_JAR="$(mktemp)"
-PORTAL_BODY="$(mktemp)"
-curl --fail --silent --show-error --cookie-jar "$COOKIE_JAR" \
-	--header "Content-Type: application/json" \
-	--data "{\"token\":\"${BOOTSTRAP_TOKEN}\"}" \
-	"http://127.0.0.1:${PORTAL_PORT}/api/auth/login" >/dev/null
-CSRF="$(curl --fail --silent --show-error --cookie "$COOKIE_JAR" \
-	"http://127.0.0.1:${PORTAL_PORT}/api/session" | jq --raw-output .csrfToken)"
-[ -n "$CSRF" ] && [ "$CSRF" != "null" ] || die "the Portal session has no CSRF token."
-
-PROPOSAL_HASH="$(printf 'portal-parity-proposal' | sha256sum | cut -d' ' -f1)"
-EXPIRES_AT="$(date --utc --date='+1 hour' +%Y-%m-%dT%H:%M:%SZ)"
-
-# create_page makes one Page whose Target is an existing Deployment. The Page starts Pending; the status
-# is then patched to Proposed, which is the one state a decision accepts.
-create_page() {
-	local name="$1" target="$2"
-	# Each Page carries its own Fingerprint: two Pages that share one are
-	# duplicates of the same failure, and the controller correctly supersedes
-	# the second rather than letting both be decided.
-	local fingerprint
-	fingerprint="$(printf 'portal-parity-page-%s' "$name" | sha256sum | cut -d' ' -f1)"
-	cat <<PAGE | kubectl --context "kind-$CLUSTER" apply --filename - >/dev/null
-apiVersion: pagerless.dev/v1alpha1
-kind: Page
-metadata:
-  name: ${name}
-  namespace: pagerless
-spec:
-  target:
-    apiVersion: apps/v1
-    kind: Deployment
-    namespace: sandbox
-    name: ${target}
-  fingerprint: ${fingerprint}
-  trigger:
-    source: CLI
-PAGE
-}
-
-propose_page() {
-	local name="$1"
-	kubectl --context "kind-$CLUSTER" --namespace pagerless patch page "$name" \
-		--subresource=status --type=merge --patch "$(cat <<STATUS
-{"status":{"phase":"Proposed","proposal":{"action":"Scale",
-"parameters":{"scale":{"replicas":2}},"hash":"${PROPOSAL_HASH}","attempt":1,
-"expiresAt":"${EXPIRES_AT}"}}}
-STATUS
-	)" >/dev/null
-}
-
-# The parity Pages target a Deployment in the demo namespace the showcase uses,
-# so the namespace has to exist before the Target does.
-kubectl --context "kind-$CLUSTER" create namespace sandbox >/dev/null 2>&1 || true
-kubectl --context "kind-$CLUSTER" --namespace sandbox create deployment checkout \
-	--image=registry.invalid/checkout:1.0 >/dev/null
-create_page parity-cli checkout
-create_page parity-portal checkout
-
-# Decide the same Proposal through each surface. The controller owns the status
-# subresource, so a decision is only durable once it has observed the Page as
-# Proposed: patch, wait for the controller to settle, then decide. Deciding while
-# the status write is still in flight lets that write clobber the decision.
-wait_proposed() {
-	local name="$1"
-	for _ in $(seq 1 30); do
-		if [ "$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
-			get page "$name" --output jsonpath='{.status.phase}')" = Proposed ]; then
-			return 0
+negative=1
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
+	echo "==> proving readiness reports a model outage and recovers"
+	# Toggle the fixture that is actually serving, so the observation is not
+	# hidden by a rolling update or a different URL. The agent's readiness TTL is
+	# lowered only for this install; the working model is restored in every path.
+	kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://127.0.0.1:9090/_test/outage?on=1" >/dev/null
+	degraded=0
+	for _ in $(seq 1 80); do
+		status=$(curl --silent -o "$STATE/degraded.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
+		if [ "$status" = "503" ] && grep -q '"name":"model","ok":false' "$STATE/degraded.json"; then
+			degraded=1
+			break
 		fi
-		sleep 1
+		sleep 3
 	done
-	return 1
+	# The two-port fixture Service must keep both endpoints while completions
+	# fail: the Kubernetes probe path stays healthy and GitHub stays readable.
+	if ! grep -q '"name":"github_read","ok":true' "$STATE/degraded.json"; then
+		echo "the GitHub read check failed during the model outage:" >&2
+		cat "$STATE/degraded.json" >&2
+		fail_stage "GitHub read during outage"
+	fi
+	if ! kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://pagerless-fake:9091/_test/pulls" >/dev/null; then
+		fail_stage "GitHub endpoint during outage"
+	fi
+	kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://127.0.0.1:9090/_test/outage?on=0" >/dev/null
+	recovered=0
+	for _ in $(seq 1 80); do
+		status=$(curl --silent -o "$STATE/ready.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
+		if [ "$status" = "200" ]; then
+			recovered=1
+			break
+		fi
+		sleep 3
+	done
+	if [ "$degraded" -ne 1 ]; then
+		echo "readiness did not report the model outage:" >&2
+		cat "$STATE/degraded.json" >&2
+		negative=0
+		fail_stage "negative readiness"
+	fi
+	if [ "$recovered" -ne 1 ]; then
+		echo "the installation did not recover:" >&2
+		cat "$STATE/ready.json" >&2
+		die "the installation did not recover after the model outage"
+	fi
+fi
+
+if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ] && [ "$cli_ok" -eq 1 ]; then
+	echo "==> opening the embedded dashboard against the installed backend"
+	# The generated spec runs against the real service through the same client
+	# code the embedded dashboard ships. It opens the CLI-created page, its
+	# citation and evidence, the proposal diff, a reload (resume), and a
+	# follow-up. It is generated here so the fixture suite is never pointed at a
+	# real installation.
+	cat >"$REPO_ROOT/dashboard/e2e/real-backend.generated.spec.ts" <<'SPEC'
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
+
+const token = process.env.PAGERLESS_E2E_TOKEN ?? "";
+const pageId = process.env.PAGERLESS_E2E_PAGE_ID ?? "";
+const callId = process.env.PAGERLESS_E2E_CALL_ID ?? "";
+
+async function history(page: Page, testInfo: TestInfo) {
+  if (testInfo.project.name.startsWith("mobile")) {
+    await page.getByRole("button", { name: "Open investigation history" }).click();
+    return page.getByRole("dialog");
+  }
+  return page.getByRole("region", { name: "Investigation history" }).first();
 }
 
-cli_decided=no
-portal_decided=no
-for _ in $(seq 1 10); do
-	if [ "$cli_decided" = no ]; then
-		propose_page parity-cli
-		wait_proposed parity-cli || true
-		if "$CLI" --context "kind-$CLUSTER" approve parity-cli --yes \
-			--reason "parity check" --by admin >/dev/null 2>&1; then
-			cli_decided=yes
-		fi
-	fi
-	if [ "$portal_decided" = no ]; then
-		propose_page parity-portal
-		wait_proposed parity-portal || true
-		# The controller restates the Proposal hash as it reconciles, so the hash the
-		# approver is shown is the one on the Page now, not the one this script sent.
-		shown_hash="$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
-			get page parity-portal --output jsonpath='{.status.proposal.hash}')"
-		if curl --fail-with-body --silent --show-error --cookie "$COOKIE_JAR" \
-			--header "Content-Type: application/json" --header "X-CSRF-Token: ${CSRF}" \
-			--data "{\"decision\":\"Approved\",\"proposalHash\":\"${shown_hash}\",\"reason\":\"parity check\"}" \
-			--output "${PORTAL_BODY}" \
-			"http://127.0.0.1:${PORTAL_PORT}/api/pages/parity-portal/decision" >/dev/null 2>&1; then
-			portal_decided=yes
-		else
-			echo "portal decision attempt: $(cat "${PORTAL_BODY}")" >&2
-		fi
-	fi
-	if [ "$cli_decided" = yes ] && [ "$portal_decided" = yes ]; then
-		break
-	fi
-	sleep 1
-done
-[ "$cli_decided" = yes ] || die "the CLI could not approve parity-cli."
-[ "$portal_decided" = yes ] || die "the Portal API could not approve parity-portal."
+test("opens the CLI page, its evidence, the diff, and a follow-up", async ({ page }, testInfo) => {
+  expect(token).not.toBe("");
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Sign in to Pagerless" })).toBeVisible();
+  await page.locator("#operator-token").fill(token);
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Ask the cluster a question" })).toBeVisible();
 
-# Wait for the controller to reconcile both annotation sets into status.decision.
-record() {
-	kubectl --context "kind-$CLUSTER" --namespace pagerless get page "$1" --output json |
-		jq --compact-output '.status.decision // {}'
-}
-for _ in $(seq 1 60); do
-	cli_record="$(record parity-cli)"
-	portal_record="$(record parity-portal)"
-	if [ "$(jq --raw-output '.outcome // ""' <<<"$cli_record")" = Approved ] &&
-		[ "$(jq --raw-output '.outcome // ""' <<<"$portal_record")" = Approved ]; then
-		break
+  expect(pageId).not.toBe("");
+  const scope = await history(page, testInfo);
+  // The page id is stable even after a turn changes the visible title.
+  await scope.locator(`[data-page-id="${pageId}"]`).first().click();
+
+  const answers = page.getByRole("article", { name: "Pagerless answer" });
+  await expect(answers.first()).toContainText("no memory limit");
+  const initialAnswers = await answers.count();
+  expect(initialAnswers).toBeGreaterThan(0);
+  expect(callId).not.toBe("");
+  await page.getByRole("button", { name: `Open evidence for ${callId}` }).first().click();
+  const evidence = page.getByRole("dialog", { name: "Tool evidence" });
+  await expect(evidence).toContainText("resources_get");
+  await expect(evidence).toContainText("[redacted:credential]");
+  await evidence.getByRole("button", { name: "Close" }).click();
+
+  const proposal = page.getByRole("region", { name: "Proposed change" }).first();
+  await expect(proposal).toBeVisible();
+  await expect(proposal.getByRole("link", { name: "Open draft pull request" })).toHaveAttribute(
+    "href",
+    /pull\//,
+  );
+
+  // A reload resumes the same page from the durable cursor.
+  await page.reload();
+  await expect(page.getByRole("article", { name: "Pagerless answer" }).first()).toContainText(
+    "no memory limit",
+  );
+
+  await page
+    .getByRole("form", { name: "Investigation composer" })
+    .getByRole("textbox")
+    .fill("What changed?");
+  await page.getByRole("button", { name: "Send follow-up" }).click();
+  await expect(page.getByRole("article", { name: "Pagerless answer" })).toHaveCount(
+    initialAnswers + 1,
+    { timeout: 180_000 },
+  );
+});
+SPEC
+	if [ ! -d "$REPO_ROOT/dashboard/node_modules" ]; then
+		( cd "$REPO_ROOT/dashboard" && npm ci )
 	fi
-	sleep 1
-done
+	(
+		cd "$REPO_ROOT/dashboard"
+		PAGERLESS_PORTAL_URL="http://127.0.0.1:${LOCAL_PORT}" \
+			PAGERLESS_E2E_TOKEN="$operator_token" \
+			PAGERLESS_E2E_PAGE_ID="$page_id" \
+			PAGERLESS_E2E_CALL_ID="$call_id" \
+			npx playwright test e2e/real-backend.generated.spec.ts
+	) || fail_stage "browser"
+elif [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
+	echo "browser is blocked: the CLI page is unavailable" >&2
+fi
 
-for field in outcome proposalHash decidedBy reason; do
-	cli_value="$(jq --raw-output ".${field} // \"\"" <<<"$cli_record")"
-	portal_value="$(jq --raw-output ".${field} // \"\"" <<<"$portal_record")"
-	[ "$cli_value" = "$portal_value" ] ||
-		die "status.decision.${field} differs: CLI '${cli_value}', Portal '${portal_value}'."
-done
-cli_shown_hash="$(kubectl --context "kind-$CLUSTER" --namespace pagerless \
-	get page parity-cli --output jsonpath='{.status.proposal.hash}')"
-[ "$(jq --raw-output '.proposalHash' <<<"$cli_record")" = "$cli_shown_hash" ] ||
-	die "the CLI decision is not bound to the displayed Proposal hash."
+if [ "${failures:-0}" -ne 0 ]; then
+	echo "kind integration: ${failures} stage(s) failed; every independent group ran." >&2
+	exit 1
+fi
 
-rm -f "$COOKIE_JAR" "$PORTAL_BODY"
-
-echo "The read-only boundary holds, both decision surfaces record the same Page, and pagerless-server is Ready."
+echo
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ] && [ "${negative:-1}" = "1" ]; then
+	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, readiness recovery, RBAC, and draft PR verified."
+else
+	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, RBAC, and draft PR verified."
+	echo "negative readiness probe: skipped by PAGERLESS_E2E_NEGATIVE=0; it is required in CI."
+fi

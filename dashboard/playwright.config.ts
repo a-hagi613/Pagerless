@@ -1,17 +1,17 @@
 import { defineConfig, devices } from "@playwright/test";
 
-// The suite drives the real Portal served by a real pagerless-server. The Go harness in
-// internal/server/portal_e2e_test.go starts envtest, the server, and its bootstrap-token sign-in on this
-// address; `make portal-e2e` builds the dashboard and runs both. A standalone `npm run test:e2e` uses the
-// same address, so the harness must already be running.
+// Standalone, the suite drives the built dashboard against the test-only contract fixture server
+// (e2e/fixture-server.mjs). When PAGERLESS_PORTAL_URL is set it points at a real pagerless-server instead,
+// which is how the integrated Go harness runs the same browser flows.
 const baseURL = process.env.PAGERLESS_PORTAL_URL ?? "http://127.0.0.1:18082";
+const externalServer = process.env.PAGERLESS_PORTAL_URL !== undefined;
 
 export default defineConfig({
   testDir: "./e2e",
   timeout: 90_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,
-  // The projects share one server and one credentials Secret, so they run one at a time.
+  // The scenarios share one fixture process, so they run one at a time.
   workers: 1,
   retries: 0,
   reporter: process.env.CI === "1" ? [["list"], ["github"]] : [["list"]],
@@ -21,10 +21,18 @@ export default defineConfig({
     screenshot: "only-on-failure",
     video: "off",
   },
+  webServer: externalServer
+    ? undefined
+    : {
+        command: "npm run build && node e2e/fixture-server.mjs",
+        url: "http://127.0.0.1:18082/readyz",
+        reuseExistingServer: process.env.CI !== "1",
+        timeout: 180_000,
+      },
   projects: [
     {
-      name: "desktop-1440x900",
-      use: { ...devices["Desktop Chrome"], viewport: { width: 1440, height: 900 } },
+      name: "desktop-1280x900",
+      use: { ...devices["Desktop Chrome"], viewport: { width: 1280, height: 900 } },
     },
     {
       name: "mobile-390x844",

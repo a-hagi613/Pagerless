@@ -1,18 +1,72 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: pagerless-server
-  namespace: {{ .Release.Namespace }}
+  name: {{ printf "%s-server" (include "pagerless.fullname" .) }}
   labels:
-    {{- include "pagerless.labels" (dict "context" $ "name" "pagerless-server") | nindent 4 }}
+    {{- include "pagerless.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app.kubernetes.io/name: pagerless-server
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
   ports:
     - name: http
       port: {{ .Values.service.port }}
       targetPort: http
-    - name: report
-      port: {{ .Values.service.reportPort }}
-      targetPort: report
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pagerless.agentServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: agent
+  ports:
+    - name: http
+      port: {{ .Values.agent.port }}
+      targetPort: http
+      protocol: TCP
+{{- if .Values.kubernetes.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pagerless.kubernetesMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kubernetes-mcp
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: kubernetes-mcp
+  ports:
+    - name: http
+      port: {{ .Values.mcp.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pagerless.githubMCPServiceName" . }}
+  labels:
+    {{- include "pagerless.labels" . | nindent 4 }}
+    app.kubernetes.io/component: github-mcp
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pagerless.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: github-mcp
+  ports:
+    - name: http
+      port: {{ .Values.mcp.port }}
+      targetPort: http
+      protocol: TCP

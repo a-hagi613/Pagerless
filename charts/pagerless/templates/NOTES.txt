@@ -1,81 +1,52 @@
-Pagerless {{ .Chart.AppVersion }} is installed in namespace {{ .Release.Namespace }}.
+Pagerless is installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
 
-The cluster identity is read-only. Pagerless reads failures and proposes every
-remediation as a pull request; it never writes to a workload, Event, or Node.
+The dashboard and the API are served privately by the Service
+{{ include "pagerless.fullname" . }}-server on port {{ .Values.service.port }}.
+Open the dashboard with:
 
-The Target Repository is resolved from GITHUB_REPO in the credentials Secret,
-with GITHUB_API_URL selecting a GitHub Enterprise host. Complete it at /settings
-or with `kubectl page config set github`. Set targetRepository.enabled=false in
-values.yaml for a diagnose-only installation with no repository.
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "pagerless.fullname" . }}-server {{ .Values.service.port }}:{{ .Values.service.port }}
+  open http://localhost:{{ .Values.service.port }}
 
-{{- if .Values.rbac.watchAllNamespaces }}
+Sign in with the operator token from the Secret {{ .Values.existingSecret }}
+(the key named {{ .Values.secretKeys.operatorToken }}). Install the CLI separately:
 
-Watching: every namespace through ClusterRole {{ .Release.Name }}-pagerless-read.
-{{- else }}
+  kubectl krew install page
+  kubectl page "Why is checkout timing out?" -n shop
 
-Watching: {{ join ", " .Values.rbac.watchNamespaces }} through a read Role per namespace.
+Readiness is deliberate. The Service stays private, and the pod is not Ready
+until every prerequisite answers:
+
+  kubectl --namespace {{ .Release.Namespace }} get pods
+  kubectl --namespace {{ .Release.Namespace }} logs deployment/{{ include "pagerless.fullname" . }}-server
+  kubectl --namespace {{ .Release.Namespace }} port-forward service/{{ include "pagerless.fullname" . }}-server {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl --silent http://localhost:{{ .Values.service.port }}/readyz
+
+The readiness body names the failing check. The usual causes and retries are:
+
+  - PAGERLESS_MODEL_BASE_URL / model.name: the endpoint or model name is wrong,
+    the key is missing, or the model does not support tool calls. Correct the
+    values and run `helm upgrade` with the same release. No test pull request is
+    created to check the model.
+  - github_read / github_publish: the repository, base branch, path prefix or a
+    token is wrong. The read token needs repository contents read access; the
+    write token needs contents write and pull-request write access. Update the
+    Secret out of band, then restart the deployment so the projected files are
+    re-read.
+  - kubernetes_mcp: the read-only ClusterRole or Role bindings are missing.
+
+The chart references the externally provisioned Secret {{ .Values.existingSecret }}
+and never creates or edits it. Supply every key named in values.secretKeys before
+installing. The transcript keeps pages for {{ .Values.retention }} and then
+deletes them, including their events, evidence and proposals.
+
+Pagerless never applies a change to the cluster and never merges. A proposal is
+a draft pull request against {{ .Values.github.repository }} that a human reviews.
+
+{{- if not .Values.kubernetes.namespaceAllowlist }}
+The Kubernetes integration reads every namespace with a read-only ClusterRole.
+Set kubernetes.namespaceAllowlist to install one Role per namespace instead.
 {{- end }}
-
-Agent authentication: ClusterRole {{ .Release.Name }}-pagerless-agent-auth grants
-create on authentication.k8s.io/tokenreviews in every watch mode. It grants no
-access to any cluster object.
-
-{{- if eq .Values.auth.mode "disabled" }}
-
-WARNING: auth.mode=disabled is in effect.
-Every request is anonymous{{ if .Values.auth.proxy.identityHeader }} or attributed by the
-{{ .Values.auth.proxy.identityHeader }} header{{ end }}. Anyone who can reach the Portal can
-record a decision on a Page. Use this mode only behind an authenticating proxy
-that sets the identity header, and never expose it through an Ingress without
-one. The chart refuses to render that combination.
-{{- else }}
-
-Sign in with the bootstrap token. Start the Portal:
-
-  kubectl -n {{ .Release.Namespace }} port-forward svc/pagerless-server 8080:{{ .Values.service.port }}
-
-Open http://localhost:{{ .Values.service.port }}/login and read the token:
-
-  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.auth.adminSecret.name }} -o go-template='{{ "{{" }}.data.{{ .Values.auth.adminSecret.key }} | base64decode{{ "}}" }}{{ "{{" }}"\n"{{ "}}" }}'
-
-Then finish setup at /settings: the AI endpoint, the Target Repository, and any
-connector. The wizard writes the credentials Secret for you, and `kubectl page
-config` writes the same keys from a terminal.
-
-Once you are signed in, the bootstrap token is no longer needed. Deleting it
-stops any further token sign-in and does not invalidate an existing browser
-session:
-
-  kubectl -n {{ .Release.Namespace }} delete secret {{ .Values.auth.adminSecret.name }}
+{{- if not .Values.persistence.enabled }}
+Persistence is disabled: the transcript lives in an emptyDir and is lost when
+the pod is replaced. Enable persistence for a durable history.
 {{- end }}
-
-{{- if .Values.credentials.existingSecret }}
-
-Credentials are managed externally by Secret {{ .Values.credentials.existingSecret }}
-and are read-only in the Portal and in the CLI. Required keys:
-
-  AI_BASE_URL, AI_API_KEY, AI_MODEL
-  GITHUB_TOKEN, GITHUB_REPO
-  GITHUB_API_URL                       (optional, for GitHub Enterprise)
-  ALERTMANAGER_WEBHOOK_TOKEN, GRAFANA_WEBHOOK_SECRET,
-  DATADOG_WEBHOOK_TOKEN, GENERIC_WEBHOOK_TOKEN  (one per enabled webhook dialect)
-  CONNECTOR_<NAME>_TOKEN              (one per configured connector)
-{{- else }}
-
-Credentials live in Secret {{ .Values.credentials.secretName }}, with every key
-present and empty. Finish onboarding in the Portal at /settings, or write the
-same keys from a terminal:
-
-  kubectl page config set ai
-  kubectl page config set github
-{{- end }}
-
-Pagerless serves the agent report API and the metrics API on the same pod; the
-Portal is the browser-facing surface. Record a decision by patching a Page's
-annotations, or with the CLI:
-
-  kubectl page approve <page>
-  kubectl page reject <page> --reason "<why>"
-
-Role pagerless-approver in this namespace grants exactly that permission. Bind
-it to the people who may record decisions.

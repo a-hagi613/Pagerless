@@ -1,87 +1,50 @@
 package cli
 
 import (
-	"fmt"
-	"io"
-	"strconv"
-	"strings"
+	"context"
 
 	"github.com/spf13/cobra"
-
-	"github.com/a-hagi613/pagerless/api/v1alpha1"
 )
 
-// newDiffCommand returns the command that prints the Proposal's rendered change
-// against the base it applies to.
-func newDiffCommand(opts *options) *cobra.Command {
-	var output string
-	cmd := &cobra.Command{
-		Use:   "diff <name>",
-		Short: "Show a Page's Proposal as a unified diff against the commit it applies to",
-		Long: `Print the Proposal's rendered change together with the base it applies to.
-The approval binds to the same Proposal hash, so the diff and the decision can
-never describe different changes.`,
-		Args: exactlyOneArg,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			format, err := parseFormat(output)
-			if err != nil {
-				return err
-			}
-			s, err := openSession(cmd, opts)
-			if err != nil {
-				return err
-			}
-			rec, err := s.page(cmd.Context(), args[0])
-			if err != nil {
-				return err
-			}
-			if rec.Proposal == nil {
-				return fmt.Errorf("page %s has no Proposal to show", rec.Name)
-			}
-			switch format {
-			case formatJSON:
-				return writeJSON(cmd.OutOrStdout(), rec.Proposal)
-			case formatYAML:
-				return writeYAML(cmd.OutOrStdout(), rec.Proposal)
-			default:
-				return writeDiff(cmd.OutOrStdout(), rec)
-			}
-		},
+// newDiffCommand prints the page's proposed source change.
+func newDiffCommand(a *app) *cobra.Command {
+	return &cobra.Command{
+		Use:   "diff <pageId>",
+		Short: "Print the proposed source change and its pull request",
+		Args:  exactlyOneArgument,
+		RunE: a.run(func(ctx context.Context, args []string) error {
+			return a.showDiff(ctx, args[0])
+		}),
 	}
-	cmd.Flags().StringVarP(&output, "output", "o", "", "output format: json or yaml")
-	return cmd
 }
 
-// writeDiff prints the Proposal's header and its unified diff.
-func writeDiff(w io.Writer, rec *record) error {
-	proposal := rec.Proposal
-	p := &printer{w: w}
-	p.field("Page", rec.Name)
-	p.field("Target", targetLabel(rec.Target))
-	p.field("Action", string(proposal.Action))
-	p.field("Hash", proposal.Hash)
-	p.field("Expires", proposal.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z07:00"))
-	if base := proposal.Base; base != nil && (base.Commit != "" || base.TargetGeneration != 0) {
-		parts := make([]string, 0, 2)
-		if base.Commit != "" {
-			parts = append(parts, "commit "+base.Commit)
-		}
-		if base.TargetGeneration != 0 {
-			parts = append(parts, "Target generation "+strconv.FormatInt(base.TargetGeneration, 10))
-		}
-		p.field("Base", strings.Join(parts, ", "))
+// showDiff renders the proposal the publishing step would open.
+func (a *app) showDiff(ctx context.Context, pageID string) error {
+	api, err := a.connect(ctx)
+	if err != nil {
+		return err
 	}
-	if change := proposal.RenderedChange; change != nil {
-		if change.Path != "" {
-			p.field("Path", change.Path)
+	result, err := api.diff(ctx, pageID)
+	if err != nil {
+		return err
+	}
+	if a.opts.json {
+		if result.Files == nil {
+			result.Files = []diffFile{}
 		}
+		return writeJSON(a.out(), result)
 	}
-	if proposal.Action == v1alpha1.ActionNoAction ||
-		proposal.RenderedChange == nil || proposal.RenderedChange.Patch == "" {
-		p.printf("\nThis Proposal records a Diagnosis and changes no file.\n")
-		return p.err
+	presentation := &printer{writer: a.out()}
+	if result.PRURL != "" {
+		presentation.field("Pull request", sanitize(result.PRURL))
 	}
-	p.printf("\n")
-	p.block("", proposal.RenderedChange.Patch)
-	return p.err
+	if len(result.Files) == 0 {
+		presentation.printf("No proposed change.\n")
+		return presentation.err
+	}
+	for _, file := range result.Files {
+		presentation.printf("\n%s\n", sanitize(orPlaceholder(file.Path)))
+		presentation.block("", sanitize(file.Diff))
+	}
+	return presentation.err
 }
