@@ -9,7 +9,7 @@ sped up.
 
 | Item | Value |
 | --- | --- |
-| Distribution | Pagerless `1.0.0`, fresh release coordinates |
+| Distribution | Pagerless `1.0.0` source tree, chart version `1.0.0` |
 | Cluster | kind `v0.33.0`, one node, Kubernetes `1.37.0` |
 | Helm | `4.3.2` |
 | Namespace and release | `pagerless-live` |
@@ -69,8 +69,9 @@ the integration suite; it does not claim that a particular model answer is repro
 
 - The operator session was created and checked in a separate, unrecorded browser context. No
   sign-in screen, token field or cookie appears in either video.
-- The CLI operator token came from the installation Secret on standard input. It was never passed
-  as a flag, printed, or written into a frame.
+- The CLI operator token was read from the installation Secret into a private 0600 file and passed
+  through `PAGERLESS_TOKEN_FILE`. It was never a flag value, never printed and never written into a
+  frame.
 - The model key and the GitHub read and write tokens were never read by the recording scripts and
   never appear on screen.
 - Only the operator token was used. The recordings contain cluster state and source diffs from the
