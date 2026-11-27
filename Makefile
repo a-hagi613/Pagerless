@@ -10,12 +10,9 @@ help: ## List the available targets.
 
 RELEASE_TOOLS_DIR := $(CURDIR)/bin/release-tools
 # The snapshot version names the archives and the plugin's reported version. It
-# is never a release version.
+# is never a release version unless the release workflow passes the validated
+# pagerless-v tag version here.
 RELEASE_SNAPSHOT_VERSION ?= 0.0.0-snapshot
-# GoReleaser evaluates the Krew publisher even for a snapshot, so the two values
-# it reads from the environment are always supplied. A snapshot never uploads.
-KREW_BRANCH ?= page-$(RELEASE_SNAPSHOT_VERSION)
-KREW_SKIP_UPLOAD ?= true
 GO_TEST_FLAGS ?= -p 1 -parallel 2
 
 CLI_VERSION ?= $(shell sed -n 's/^version: //p' charts/pagerless/Chart.yaml)
@@ -87,7 +84,7 @@ release-check: release-tools ## Validate the GoReleaser configuration and the pl
 	bash scripts/release/lint-krew-manifest.sh --template plugins/page.yaml
 
 release-snapshot: release-tools ## Build the release archives, checksums, SBOMs, and plugin manifest.
-	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) KREW_BRANCH="$(KREW_BRANCH)" KREW_SKIP_UPLOAD="$(KREW_SKIP_UPLOAD)" \
+	SNAPSHOT_VERSION=$(RELEASE_SNAPSHOT_VERSION) \
 		PATH="$(RELEASE_TOOLS_DIR):$$PATH" $(RELEASE_TOOLS_DIR)/goreleaser release --snapshot --clean
 	bash scripts/release/render-krew-manifest.sh --checksums dist/checksums.txt --version "$(RELEASE_SNAPSHOT_VERSION)" --output dist/plugins/page.yaml
 	bash scripts/release/lint-krew-manifest.sh dist/plugins/page.yaml dist/checksums.txt

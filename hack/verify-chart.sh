@@ -13,6 +13,11 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 load_versions
 
+# The images and the chart are one version. Read it from the chart instead of
+# repeating 1.0.0 here, so a version bump cannot install a different tag than
+# the one the chart defaults to.
+VERSION="$(awk '$1 == "version:" { print $2; exit }' "$REPO_ROOT/charts/pagerless/Chart.yaml")"
+
 require_commands docker kind kubectl helm go python3 curl openssl
 
 CLUSTER="${PAGERLESS_VERIFY_CLUSTER:-pagerless-verify}"
@@ -45,8 +50,8 @@ echo "==> creating kind cluster ${CLUSTER}"
 kind create cluster --name "$CLUSTER" --image "$KIND_NODE_IMAGE" --wait 180s
 
 echo "==> building the service, agent, and integration images"
-docker build --file Dockerfile.pagerless-server --build-arg "VERSION=1.0.0" --tag "$PAGERLESS_SERVER_IMAGE" .
-docker build --file Dockerfile.pagerless-agent --build-arg "VERSION=1.0.0" --tag "$PAGERLESS_AGENT_IMAGE" .
+docker build --file Dockerfile.pagerless-server --build-arg "VERSION=${VERSION}" --tag "$PAGERLESS_SERVER_IMAGE" .
+docker build --file Dockerfile.pagerless-agent --build-arg "VERSION=${VERSION}" --tag "$PAGERLESS_AGENT_IMAGE" .
 docker build --file test/e2e/investigation/Dockerfile --tag "$E2E_IMAGE" .
 kind load docker-image --name "$CLUSTER" "$PAGERLESS_SERVER_IMAGE" "$PAGERLESS_AGENT_IMAGE" "$E2E_IMAGE"
 
@@ -94,8 +99,8 @@ helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--set github.baseBranch=main \
 	--set github.apiUrl=http://pagerless-fake:9091 \
 	--set github.pathPrefix=apps/checkout \
-	--set image.tag=1.0.0 \
-	--set agentImage.tag=1.0.0 \
+	--set image.tag="${VERSION}" \
+	--set agentImage.tag="${VERSION}" \
 	--set agent.budget.seconds=180 \
 	--set agent.readinessTTLSeconds=2 \
 	--wait --timeout "${TIMEOUT}s" >"$STATE/install.txt" 2>&1 ||

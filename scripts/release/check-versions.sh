@@ -14,6 +14,7 @@ set -euo pipefail
 
 # shellcheck source=hack/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../../hack/lib.sh"
+load_versions
 
 version=""
 chart_dir="charts/pagerless"
@@ -90,17 +91,39 @@ app_version="$(awk '$1 == "appVersion:" { gsub(/"/, "", $2); print $2; exit }' "
 	fail "$chart_file has appVersion $app_version, not $version."
 
 # An empty image tag uses appVersion, so it is identical to the release version
-# by construction; an explicit tag must be the release version itself.
-while IFS= read -r tag; do
+# by construction; an explicit tag must be the release version itself. The
+# repository must be the fresh 1.0 coordinate, never a legacy one.
+image_repository() {
+	awk -v key="$1" '
+		$0 == key ":" { inimage = 1; next }
+		inimage && /^[^ ]/ { inimage = 0 }
+		inimage && /^  repository:/ { print $2; exit }
+	' "$values_file"
+}
+
+image_tag() {
+	awk -v key="$1" '
+		$0 == key ":" { inimage = 1; next }
+		inimage && /^[^ ]/ { inimage = 0 }
+		inimage && /^  tag:/ { gsub(/"/, "", $2); print $2; exit }
+	' "$values_file"
+}
+
+check_image() {
+	local key="$1" expected_repository="$2" tag
+	local repository
+	repository="$(image_repository "$key")"
+	[ "$repository" = "$expected_repository" ] ||
+		fail "$values_file sets $key.repository to ${repository:-nothing}, not $expected_repository."
+	tag="$(image_tag "$key")"
 	case "$tag" in
 	"" | "$version") ;;
-	*) fail "$values_file sets an image tag $tag, not $version." ;;
+	*) fail "$values_file sets $key.tag to $tag, not $version." ;;
 	esac
-done < <(awk '
-	/^images:/ { inimages = 1; next }
-	inimages && /^[^ ]/ { inimages = 0 }
-	inimages && /^    tag:/ { gsub(/"/, "", $2); print $2 }
-' "$values_file")
+}
+
+check_image image "$PAGERLESS_SERVER_REPOSITORY"
+check_image agentImage "$PAGERLESS_AGENT_REPOSITORY"
 
 if [ -n "$manifest" ]; then
 	[ -f "$manifest" ] || die "$manifest does not exist."
@@ -109,8 +132,8 @@ if [ -n "$manifest" ]; then
 		fail "$manifest has version $manifest_version, not $version."
 	while IFS= read -r uri; do
 		case "$uri" in
-		*/download/v"$version"/*) ;;
-		*) fail "$manifest points at $uri, which is not a v$version release asset." ;;
+		*/download/pagerless-v"$version"/*) ;;
+		*) fail "$manifest points at $uri, which is not a pagerless-v$version release asset." ;;
 		esac
 	done < <(awk '$1 == "uri:" { print $2 }' "$manifest")
 fi
@@ -119,8 +142,8 @@ if [ -n "$formula" ]; then
 	[ -f "$formula" ] || die "$formula does not exist."
 	while IFS= read -r uri; do
 		case "$uri" in
-		*/download/v"$version"/kubectl-page_"$version"_*) ;;
-		*) fail "$formula references $uri, which is not a v$version release asset." ;;
+		*/download/pagerless-v"$version"/kubectl-page_"$version"_*) ;;
+		*) fail "$formula references $uri, which is not a pagerless-v$version release asset." ;;
 		esac
 	done < <(awk -F'"' '/^[[:space:]]*url "/ { print $2 }' "$formula")
 fi

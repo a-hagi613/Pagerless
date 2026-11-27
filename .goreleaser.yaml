@@ -1,11 +1,16 @@
-# GoReleaser configuration for the kubectl-page plugin.
+# GoReleaser builds the installable CLI artifacts for one release: four
+# archives (linux/darwin on amd64/arm64), the SHA-256 checksum file, and one
+# SBOM per archive. `make release-snapshot` runs this file with --snapshot, so
+# the configuration is exercised on every pull request without a tag, a
+# registry credential, or a GitHub token.
 #
-# One tag publishes the four archives, the SHA-256 checksum file, one SBOM per
-# archive, and the Krew index Pull Request. The chart, the images, and the
-# Homebrew formula are published by .github/workflows/release.yml at the same
-# version. `make release-snapshot` runs this file with --snapshot, so the
-# configuration is exercised on every pull request without a tag, a registry
-# credential, or a GitHub token.
+# The fresh release tag is pagerless-v<version>, not v<version>: the legacy
+# v1.0.0 and v2.0.0 tags and releases are immutable. GoReleaser OSS parses the
+# current tag as semver and rejects the prefix, so the release workflow
+# validates the tag itself and passes the exact version through
+# SNAPSHOT_VERSION. GitHub Release creation and asset upload happen from the
+# verified dist/ directory in .github/workflows/release.yml, which is also
+# where the chart and the images are published.
 version: 2
 
 project_name: pagerless
@@ -56,103 +61,14 @@ sboms:
     documents:
       - "${artifact}.sbom.json"
 
-# The Krew index is published exactly once, here. The repository copy in
-# plugins/page.yaml is rendered from the checksum file by
-# scripts/release/render-krew-manifest.sh; this publisher owns the index and
-# nothing else does. Without KREW_INDEX_TOKEN it skips the upload and the
-# release still carries the archives, the checksums, and the rendered manifest.
-krews:
-  - name: page
-    ids:
-      - kubectl-page
-    homepage: https://github.com/a-hagi613/pagerless
-    short_description: Investigate a Kubernetes symptom and follow the evidence
-    description: |
-      kubectl page opens an investigation from a terminal question. Pagerless
-      records the model's read-only tool calls, streams the evidence, and opens
-      a draft pull request when a source change is justified. The cluster
-      identity is strictly read-only and a human merges every change.
-    caveats: |
-      Pagerless must already be installed in the cluster. Install the chart with
-      helm install pagerless oci://ghcr.io/a-hagi613/charts/pagerless
-      --namespace pagerless --create-namespace, then run kubectl page --help.
-    # GoReleaser runs the publish stage only, and it validates that every
-    # templated field here is a single environment reference: a literal, a
-    # conditional, or a template action such as {{ .Version }} is rejected with
-    # "expected {{ .Env.VAR_NAME }} only". So the branch name and the skip
-    # decision are computed by the workflow and read from the environment, which
-    # also keeps the token out of this file.
-    skip_upload: '{{ .Env.KREW_SKIP_UPLOAD }}'
-    repository:
-      owner: a-hagi613
-      name: krew-index
-      branch: '{{ .Env.KREW_BRANCH }}'
-      token: '{{ .Env.KREW_INDEX_TOKEN }}'
-      pull_request:
-        enabled: true
-        base:
-          owner: kubernetes-sigs
-          name: krew-index
-          branch: master
-
-# The Homebrew formula is generated from the checksum file by
-# scripts/release/homebrew-formula.sh, which is its only writer, so GoReleaser
-# does not publish a formula.
+# The snapshot version is the release version when the release workflow sets
+# SNAPSHOT_VERSION, and a never-published placeholder during pull-request CI.
 snapshot:
   version_template: '{{ if .Env.SNAPSHOT_VERSION }}{{ .Env.SNAPSHOT_VERSION }}{{ else }}0.0.0-snapshot{{ end }}'
 
-changelog:
-  use: github
-  sort: asc
-  groups:
-    - title: Features
-      regexp: '^feat(\(.+\))?!?:'
-      order: 0
-    - title: Fixes
-      regexp: '^fix(\(.+\))?!?:'
-      order: 1
-    - title: Documentation
-      regexp: '^docs(\(.+\))?!?:'
-      order: 2
-    - title: Other changes
-      order: 999
-  filters:
-    exclude:
-      - "^chore"
-      - "^ci"
-      - "^test"
-
+# Publication is deliberately owned by the release workflow so that a
+# prefixed immutable tag can never be mistaken for a legacy v tag, and so the
+# GitHub Release is created from the artifacts that the verify job downloaded
+# and installed. Running `goreleaser release` on its own must not publish.
 release:
-  github:
-    owner: a-hagi613
-    name: pagerless
-  draft: false
-  prerelease: auto
-  # A re-run must never delete a published release. keep-existing adds only what
-  # is missing, so an interrupted publish can resume without removing assets a
-  # person may already have downloaded.
-  mode: keep-existing
-  # The four facts an operator needs before installing: what a single install
-  # contains, how to supply credentials, what the cluster identity may do, and
-  # how a change reaches a cluster. The changelog below them is generated; this
-  # is not.
-  header: |
-    Pagerless {{ .Version }} — a read-only Kubernetes investigation service.
-
-    - **One install.** A Helm chart, the `pagerless-server` and `pagerless-agent`
-      images, and the `kubectl page` plugin at one version. An operator supplies
-      an OpenAI-compatible model endpoint, a source repository and read-only
-      cluster access.
-    - **A durable transcript.** Every page, turn, sanitized tool attempt and
-      evidence item is stored in order. Both clients replay from the same event
-      cursor after a reconnect or restart.
-    - **A read-only boundary.** The Kubernetes integration reads approved
-      workloads, Events and bounded logs through its own identity. Secrets,
-      exec, attach, proxy and every mutating verb are outside its grants.
-    - **A draft pull request, never a merge.** The service validates the base,
-      the source path and the diff, then opens exactly one draft pull request
-      through an isolated write credential. A human reviews and merges.
-  footer: |
-    The release also publishes the chart at
-    oci://ghcr.io/a-hagi613/charts/pagerless and the images at
-    ghcr.io/a-hagi613/pagerless-server and ghcr.io/a-hagi613/pagerless-agent.
+  disable: true
