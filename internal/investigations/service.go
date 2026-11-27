@@ -927,8 +927,16 @@ type ToolCallResult struct {
 }
 
 func evidenceResult(evidence transcript.Evidence) ToolCallResult {
+	// The transcript keeps "failed" for the dashboard's tool history. The
+	// private agent interface documents "error" for the same outcome, and its
+	// contract rejects "failed" as malformed, so translate at the callback
+	// boundary rather than changing the stored evidence.
+	status := evidence.Status
+	if status == transcript.EvidenceFailed {
+		status = "error"
+	}
 	return ToolCallResult{
-		Status: evidence.Status, Result: evidence.Result,
+		Status: status, Result: evidence.Result,
 		Redacted: evidence.Redacted > 0, Truncated: evidence.Truncated,
 	}
 }

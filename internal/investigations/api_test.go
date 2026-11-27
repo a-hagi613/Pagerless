@@ -265,6 +265,7 @@ type harnessOptions struct {
 	scenario   func(ctx context.Context, request agentclient.Request, agent *fakeAgent) agentclient.Terminal
 	maxActive  int
 	staleBase  bool
+	failTool   string
 	agentReady *agentclient.Readiness
 }
 
@@ -292,6 +293,9 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 			{keyName: "pods_log", keyDescription: "read logs", keyInputSchema: map[string]any{keyType: testKeyObject}},
 		},
 		call: func(name string, _ json.RawMessage) (string, bool) {
+			if options.failTool == name {
+				return `{"error":"the object does not exist"}`, true
+			}
 			return `{"kind":"Deployment","metadata":{"name":"checkout"},"spec":{"env":[{"name":"API_TOKEN","value":"token=abcdef123456"}]}}`, false
 		},
 	}
@@ -898,6 +902,29 @@ func TestToolCallbacksAreBoundToTheTurn(t *testing.T) {
 	}
 	if status := <-duplicate; status != http.StatusOK {
 		t.Fatalf("a denied tool answered %d", status)
+	}
+}
+
+func TestAFailedToolIsReportedToTheAgentAsAnError(t *testing.T) {
+	t.Parallel()
+	statuses := make(chan string, 1)
+	h := newHarness(t, harnessOptions{
+		failTool: "resources_get",
+		scenario: func(ctx context.Context, request agentclient.Request, _ *fakeAgent) agentclient.Terminal {
+			result, status, _ := callback(ctx, request, "call-1", "resources_get",
+				map[string]string{keyKindHint: testKind, keyNamespace: testNamespace, keyName: "missing"})
+			if status != http.StatusOK {
+				statuses <- fmt.Sprintf("http %d", status)
+			} else {
+				statuses <- result.Status
+			}
+			return agentclient.Terminal{Status: transcript.StatusCompleted, Content: "the object does not exist"}
+		},
+	})
+	created := h.create("question")
+	h.waitTurn(created.TurnID)
+	if status := <-statuses; status != "error" {
+		t.Fatalf("a failed tool answered %q to the agent, want the documented error status", status)
 	}
 }
 
