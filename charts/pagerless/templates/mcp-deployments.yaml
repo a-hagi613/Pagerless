@@ -112,6 +112,7 @@ spec:
             - --listen=:{{ .Values.mcp.port }}
             - --token-file=/var/run/pagerless/secret/mcp-token
             - --repository={{ required "github.repository must name the repository that owns the cluster's source" .Values.github.repository }}
+            - --base-branch={{ .Values.github.baseBranch }}
             - --github-token-file=/var/run/pagerless/secret/github-read-token
             - --github-api-url={{ .Values.github.apiUrl }}
             - --path-prefix={{ .Values.github.pathPrefix }}

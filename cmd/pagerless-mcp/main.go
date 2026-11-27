@@ -34,6 +34,7 @@ func run() error {
 	tokenFile := flag.String("token-file", "", "file holding the installer-provided bearer credential")
 	kubeconfig := flag.String("kubeconfig", "", "kubeconfig file; empty uses the in-cluster identity")
 	repository := flag.String("repository", "", "owner/name repository (github)")
+	baseBranch := flag.String("base-branch", "main", "source base branch to resolve to a commit (github)")
 	apiURL := flag.String("github-api-url", "https://api.github.com", "GitHub API URL (github)")
 	githubTokenFile := flag.String("github-token-file", "", "file holding the read-scoped GitHub token (github)")
 	pathPrefix := flag.String("path-prefix", "", "repository directory the read tools may access (github)")
@@ -61,7 +62,8 @@ func run() error {
 		if *repository == "" || *githubTokenFile == "" {
 			return errors.New("--repository and --github-token-file are required for the github provider")
 		}
-		github, err := githubmcp.New(*apiURL, *repository, *pathPrefix, config.ReadToken(*githubTokenFile))
+		github, err := githubmcp.New(*apiURL, *repository, *baseBranch, *pathPrefix,
+			config.ReadToken(*githubTokenFile))
 		if err != nil {
 			return err
 		}

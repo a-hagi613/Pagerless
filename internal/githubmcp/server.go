@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ const (
 	maxEntries   = 200
 	// JSON schema keys reused by the tool descriptions.
 	keyPath                 = "path"
+	keyRef                  = "ref"
 	keyAdditionalProperties = "additionalProperties"
 	keyType                 = "type"
 	keyObject               = "object"
@@ -30,18 +32,23 @@ const (
 	typeString              = "string"
 )
 
+// commitPattern accepts a full Git object name; a short name is not immutable
+// enough for a proposal base.
+var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 // Server is the read-only GitHub provider.
 type Server struct {
 	Owner      string
 	Name       string
 	APIURL     string
+	BaseBranch string
 	PathPrefix string
 	Token      func() (string, error)
 	HTTP       *http.Client
 }
 
 // New builds the provider.
-func New(apiURL, repository, pathPrefix string, token func() (string, error)) (*Server, error) {
+func New(apiURL, repository, baseBranch, pathPrefix string, token func() (string, error)) (*Server, error) {
 	owner, name, found := strings.Cut(strings.TrimSpace(repository), "/")
 	if !found || owner == "" || name == "" || strings.Contains(name, "/") {
 		return nil, fmt.Errorf("github mcp: %q is not an owner/name repository", repository)
@@ -49,9 +56,13 @@ func New(apiURL, repository, pathPrefix string, token func() (string, error)) (*
 	if strings.TrimSpace(apiURL) == "" {
 		apiURL = "https://api.github.com"
 	}
+	if strings.TrimSpace(baseBranch) == "" {
+		baseBranch = "main"
+	}
 	return &Server{
 		Owner: owner, Name: name, APIURL: strings.TrimSuffix(apiURL, "/"),
-		PathPrefix: pathPrefix, Token: token, HTTP: &http.Client{Timeout: 30 * time.Second},
+		BaseBranch: strings.TrimSpace(baseBranch), PathPrefix: pathPrefix,
+		Token: token, HTTP: &http.Client{Timeout: 30 * time.Second},
 	}, nil
 }
 
@@ -59,8 +70,9 @@ func New(apiURL, repository, pathPrefix string, token func() (string, error)) (*
 func (s *Server) Tools() []mcpserver.Tool {
 	return []mcpserver.Tool{
 		{
-			Name:        "github_repository",
-			Description: "Read the configured repository's name, default branch and permissions.",
+			Name: "github_repository",
+			Description: "Read the configured repository's default branch, the configured source base branch " +
+				"and its immutable commit SHA, the path scope and permissions.",
 			InputSchema: schemaOf(map[string]any{
 				keyType: keyObject, keyProperties: map[string]any{}, keyAdditionalProperties: false,
 			}),
@@ -73,7 +85,7 @@ func (s *Server) Tools() []mcpserver.Tool {
 				"type": "object",
 				"properties": map[string]any{
 					keyPath: map[string]any{keyType: typeString},
-					"ref":   map[string]any{keyType: typeString},
+					keyRef:  map[string]any{keyType: typeString},
 				},
 				"required":              []string{keyPath},
 				keyAdditionalProperties: false,
@@ -81,13 +93,14 @@ func (s *Server) Tools() []mcpserver.Tool {
 			Call: s.getFile,
 		},
 		{
-			Name:        "github_list_directory",
-			Description: "List one directory of the configured repository at a reference.",
+			Name: "github_list_directory",
+			Description: "List one directory of the configured repository at a reference and report the " +
+				"resolved commit SHA. An empty path starts at the configured directory scope.",
 			InputSchema: schemaOf(map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					keyPath: map[string]any{keyType: typeString},
-					"ref":   map[string]any{keyType: typeString},
+					keyRef:  map[string]any{keyType: typeString},
 				},
 				keyAdditionalProperties: false,
 			}),
@@ -108,10 +121,52 @@ func (s *Server) repository(ctx context.Context, _ json.RawMessage) (string, err
 	if err := s.get(ctx, "", &repository); err != nil {
 		return "", err
 	}
+	branch := s.BaseBranch
+	if strings.TrimSpace(branch) == "" {
+		branch = repository.DefaultBranch
+	}
+	sha, err := s.head(ctx, branch)
+	if err != nil {
+		return "", err
+	}
 	return encode(map[string]any{
 		"repository": repository.FullName, "defaultBranch": repository.DefaultBranch,
+		"baseBranch": branch, "baseSha": sha, "pathPrefix": s.PathPrefix,
 		"private": repository.Private, "permissions": repository.Permissions,
 	})
+}
+
+// head resolves a branch to its immutable commit SHA.
+func (s *Server) head(ctx context.Context, branch string) (string, error) {
+	if strings.TrimSpace(branch) == "" {
+		return "", errors.New("a base branch is not configured")
+	}
+	var response struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := s.get(ctx, "/git/ref/heads/"+escapePath(branch), &response); err != nil {
+		return "", fmt.Errorf("resolve the base branch %q: %w", branch, err)
+	}
+	sha := strings.ToLower(strings.TrimSpace(response.Object.SHA))
+	if !commitPattern.MatchString(sha) {
+		return "", fmt.Errorf("the base branch %q did not resolve to a full commit", branch)
+	}
+	return sha, nil
+}
+
+// revision resolves an optional ref to a commit SHA. A full object name is
+// already immutable; any other value is a branch and is resolved.
+func (s *Server) revision(ctx context.Context, ref string) (string, error) {
+	trimmed := strings.TrimSpace(ref)
+	if trimmed == "" {
+		trimmed = s.BaseBranch
+	}
+	if commitPattern.MatchString(strings.ToLower(trimmed)) {
+		return strings.ToLower(trimmed), nil
+	}
+	return s.head(ctx, trimmed)
 }
 
 type fileArguments struct {
@@ -128,16 +183,17 @@ func (s *Server) getFile(ctx context.Context, raw json.RawMessage) (string, erro
 	if err != nil {
 		return "", err
 	}
+	ref := strings.TrimSpace(arguments.Ref)
+	if ref == "" {
+		ref = s.BaseBranch
+	}
 	var file struct {
 		Type     string `json:"type"`
 		Encoding string `json:"encoding"`
 		Content  string `json:"content"`
 		Size     int    `json:"size"`
 	}
-	query := ""
-	if arguments.Ref != "" {
-		query = "?ref=" + url.QueryEscape(arguments.Ref)
-	}
+	query := "?ref=" + url.QueryEscape(ref)
 	if err := s.get(ctx, "/contents/"+escapePath(path)+query, &file); err != nil {
 		return "", err
 	}
@@ -166,11 +222,20 @@ func (s *Server) listDirectory(ctx context.Context, raw json.RawMessage) (string
 		return "", errors.New("the directory arguments are not valid")
 	}
 	path := strings.Trim(strings.TrimSpace(arguments.Path), "/")
+	if path == "" {
+		// An empty path starts at the configured scope, never at the repository
+		// root, so a path prefix cannot be bypassed by omitting it.
+		path = strings.Trim(strings.TrimSpace(s.PathPrefix), "/")
+	}
 	if path != "" {
 		var err error
 		if path, err = s.path(path); err != nil {
 			return "", err
 		}
+	}
+	revision, err := s.revision(ctx, arguments.Ref)
+	if err != nil {
+		return "", err
 	}
 	var entries []struct {
 		Name string `json:"name"`
@@ -178,21 +243,20 @@ func (s *Server) listDirectory(ctx context.Context, raw json.RawMessage) (string
 		Type string `json:"type"`
 		Size int    `json:"size"`
 	}
-	query := ""
-	if arguments.Ref != "" {
-		query = "?ref=" + url.QueryEscape(arguments.Ref)
-	}
 	endpoint := "/contents"
 	if path != "" {
 		endpoint += "/" + escapePath(path)
 	}
+	query := "?ref=" + url.QueryEscape(revision)
 	if err := s.get(ctx, endpoint+query, &entries); err != nil {
 		return "", err
 	}
 	if len(entries) > maxEntries {
 		entries = entries[:maxEntries]
 	}
-	return encode(entries)
+	return encode(map[string]any{
+		"path": path, keyRef: arguments.Ref, "revision": revision, "entries": entries,
+	})
 }
 
 // path validates a repository-relative path against the configured prefix.
