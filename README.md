@@ -26,7 +26,7 @@ transcript. [What the demo shows](docs/demo.md) explains the environment and the
 - **Evidence first.** The transcript keeps the tool, arguments, status, duration and a bounded,
   redacted result for every attempt. Answers cite calls and JSON pointers; the dashboard and CLI
   open the same evidence.
-- **Read-only by construction.** A dedicated Kubernetes identity can get, list, watch events and
+- **Read-only by construction.** A dedicated Kubernetes identity can get, list, read events and
   read bounded logs. Secrets, exec, attach, proxy and every mutating verb are denied. Discovery of
   a resource never grants permission to read it.
 - **No cluster writes.** A proposal is a branch and a draft pull request against the repository you
@@ -224,7 +224,7 @@ same calls, evidence and diff remain available.
 ## Read-only guarantees
 
 The cluster identity is a dedicated ServiceAccount bound to a read-only Role or ClusterRole:
-`get`, `list`, `watch` on the approved API groups, plus events and bounded pod logs. Secret reads,
+`get` and `list` on the approved API groups, plus events and bounded pod logs. Secret reads,
 exec, attach, port-forward and every write verb are denied, and a negative test exercises the
 grant. The agent holds no Kubernetes credential: the server forwards each approved call, so policy,
 redaction and the transcript stay in one place.
