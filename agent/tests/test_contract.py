@@ -1,4 +1,4 @@
-"""The wire contract: the Proposal variants, the path policy, and the citations."""
+"""The wire contract parses and re-encodes the checked-in interoperability fixtures."""
 
 from __future__ import annotations
 
@@ -6,218 +6,155 @@ import pytest
 from pydantic import ValidationError
 
 from pagerless_agent.contract import (
-    PROPOSAL,
-    Capabilities,
-    Diagnosis,
-    DiagnosisOnly,
-    FileEdit,
-    FilePatch,
-    Finding,
-    Investigation,
-    Page,
-    Report,
-    StepEvent,
-    Target,
-    TargetRepository,
-    Usage,
-    citation_problems,
-    diagnosis_schema,
+    CallbackResponse,
+    ReadyResult,
+    StopResult,
+    TurnError,
+    TurnRequest,
+    TurnResult,
     encode,
-    normalize_proposal,
-    proposal_schema,
+    validation_message,
 )
-from pagerless_agent.structured import strictify
-from tests.support import manifest
-
-VALID_CONTENT = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: checkout\n"
+from tests.support import contract_fixture, request_body
 
 
-def file_edit(**overrides: object) -> FileEdit:
-    fields: dict[str, object] = {
-        "path": "apps/shop/checkout.yaml",
-        "updated_content": VALID_CONTENT,
-        "rationale": "Raise the memory limit.",
-    }
-    fields.update(overrides)
-    return FileEdit(**fields)  # type: ignore[arg-type]
-
-
-def test_the_glossary_identifiers_exist() -> None:
-    assert Page.__name__ == "Page"
-    assert Target.__name__ == "Target"
-    assert Finding.__name__ == "Finding"
-    assert Diagnosis.__name__ == "Diagnosis"
-    assert TargetRepository.__name__ == "TargetRepository"
-    assert {FilePatch.__name__, DiagnosisOnly.__name__} == {"FilePatch", "DiagnosisOnly"}
-
-
-def test_a_file_edit_normalises_line_endings_and_one_trailing_newline() -> None:
-    edit = file_edit(updated_content="apiVersion: v1\nkind: Pod\n\n\n")
-
-    assert edit.updated_content.endswith("\n")
-    assert not edit.updated_content.endswith("\n\n")
+@pytest.mark.parametrize("name", ["turn-request.json", "turn-request-followup.json"])
+def test_request_fixture_round_trips(name: str) -> None:
+    fixture = contract_fixture(name)
+    request = TurnRequest.model_validate(fixture)
+    assert encode(request) == fixture
 
 
 @pytest.mark.parametrize(
-    "path",
+    "name",
     [
-        "/etc/passwd",
-        "apps/../secrets.yaml",
-        ".github/workflows/ci.yaml",
-        "apps/shop/checkout.json",
-        "apps\\shop\\checkout.yaml",
-        ".git/config.yaml",
-        "apps//shop/checkout.yaml",
-        "apps/shop/checkout.yaml ",
+        "turn-result-completed.json",
+        "turn-result-proposal.json",
+        "turn-result-failed.json",
     ],
 )
-def test_the_path_policy_refuses_a_path_a_patch_may_not_touch(path: str) -> None:
-    with pytest.raises(ValidationError):
-        file_edit(path=path)
+def test_result_fixture_round_trips(name: str) -> None:
+    fixture = contract_fixture(name)
+    result = TurnResult.model_validate(fixture)
+    assert encode(result) == fixture
 
 
-def test_content_with_carriage_returns_or_nul_is_refused() -> None:
-    with pytest.raises(ValidationError):
-        file_edit(updated_content="kind: Pod\r\n")
-    with pytest.raises(ValidationError):
-        file_edit(updated_content="kind: Pod\x00\n")
+def test_callback_fixture_round_trips() -> None:
+    fixture = contract_fixture("tool-callback-response.json")
+    response = CallbackResponse.model_validate(fixture)
+    assert encode(response) == fixture
 
 
-def test_a_proposal_changes_one_to_five_files() -> None:
-    one = FilePatch(kind="FilePatch", files=[file_edit()])
-    assert len(one.files) == 1
-
-    five = [file_edit(path=f"apps/shop/file-{index}.yaml") for index in range(5)]
-    assert len(FilePatch(kind="FilePatch", files=five).files) == 5
-
-    with pytest.raises(ValidationError):
-        FilePatch(kind="FilePatch", files=[])
-    with pytest.raises(ValidationError):
-        FilePatch(kind="FilePatch", files=[file_edit(path=f"apps/f{index}.yaml") for index in range(6)])
+def test_stop_and_ready_fixtures_round_trip() -> None:
+    stop = contract_fixture("stop-response.json")
+    assert encode(StopResult.model_validate(stop)) == stop
+    ready = contract_fixture("ready-response.json")
+    assert encode(ReadyResult.model_validate(ready)) == ready
 
 
-def test_diagnosis_only_carries_a_documented_reason_and_a_recommendation() -> None:
-    proposal = DiagnosisOnly(
-        kind="DiagnosisOnly",
-        reason="external-cause",
-        recommendation="Stop the StressChaos experiment that targets the Target.",
+def test_camel_case_names_are_exact() -> None:
+    result = TurnResult.model_validate(contract_fixture("turn-result-proposal.json"))
+    body = encode(result)
+    assert set(body) == {"status", "content", "citations", "proposal", "usage"}
+    assert set(body["proposal"]) == {"baseSha", "files"}
+    assert set(body["usage"]) == {"inputTokens", "outputTokens", "modelCalls", "toolCalls"}
+    assert set(body["citations"][0]) == {"callId", "pointer"}
+
+
+def test_callback_ignores_an_echoed_call_id() -> None:
+    response = CallbackResponse.model_validate(
+        {"status": "ok", "result": {"data": None}, "redacted": False, "truncated": False, "callId": "c-1"}
     )
-
-    assert proposal.reason == "external-cause"
-    with pytest.raises(ValidationError):
-        DiagnosisOnly(kind="DiagnosisOnly", reason="because", recommendation="Do something.")  # type: ignore[arg-type]
+    assert response.status == "ok"
+    assert "callId" not in encode(response)
 
 
-def test_normalize_proposal_removes_the_other_variants_nullable_fields() -> None:
-    raw = {
-        "kind": "DiagnosisOnly",
-        "files": None,
-        "confidence": None,
-        "reason": "unmanaged-resource",
-        "recommendation": "Attach the Deployment to GitOps.",
-    }
-
-    validated = PROPOSAL.validate_python(normalize_proposal(raw))
-
-    assert isinstance(validated, DiagnosisOnly)
-    assert normalize_proposal({"kind": "FilePatch", "files": [], "reason": None, "confidence": "exact"}) == {
-        "kind": "FilePatch",
-        "files": [],
-        "confidence": "exact",
-    }
-
-
-def test_the_diagnosis_requires_at_least_one_finding() -> None:
-    finding = Finding(
-        kind="Log",
-        source="pods_logs shop/checkout (previous)",
-        summary="The process allocated 512 MiB and was killed.",
-        tool_call_id="srv-1",
-        pointer="/data/lines/0",
+def test_namespace_conflict_is_rejected() -> None:
+    body = request_body(
+        namespace="shop", target={"kind": "Deployment", "name": "checkout", "namespace": "prod"}
     )
-
-    diagnosis = Diagnosis(diagnosis="The container exceeds its memory limit.", findings=[finding])
-    assert diagnosis.findings[0].tool_call_id == "srv-1"
-
-    with pytest.raises(ValidationError):
-        Diagnosis(diagnosis="No evidence.", findings=[])
+    with pytest.raises(ValidationError, match="namespace conflicts"):
+        TurnRequest.model_validate(body)
 
 
-def test_a_finding_citation_must_name_a_recorded_call_and_an_existing_pointer() -> None:
-    results = {"srv-1": {"ok": True, "data": {"lines": ["first", "second"]}}}
-    good = Finding(
-        kind="Log",
-        source="pods_logs",
-        summary="The first line.",
-        tool_call_id="srv-1",
-        pointer="/data/lines/1",
+def test_namespace_hint_may_come_from_the_target() -> None:
+    request = TurnRequest.model_validate(
+        request_body(namespace=None, target={"kind": "Deployment", "name": "checkout", "namespace": "shop"})
     )
-    unknown = good.model_copy(update={"tool_call_id": "srv-9"})
-    wrong = good.model_copy(update={"pointer": "/data/lines/7"})
-
-    assert citation_problems([good], results) == []
-    assert "no tool call named 'srv-9'" in citation_problems([unknown], results)[0]
-    assert "does not exist" in citation_problems([wrong], results)[0]
+    assert request.effective_namespace() == "shop"
 
 
-def test_step_events_validate_their_payload_against_their_kind() -> None:
-    finding = Finding(
-        kind="Event",
-        source="events_list",
-        summary="BackOff",
-        tool_call_id="srv-2",
-        pointer="/data/events/0",
+def test_last_message_must_be_a_user_question() -> None:
+    with pytest.raises(ValidationError, match="last message"):
+        TurnRequest.model_validate(
+            request_body(messages=[{"role": "assistant", "content": "I answered already."}])
+        )
+    with pytest.raises(ValidationError, match="last message"):
+        TurnRequest.model_validate(request_body(messages=[{"role": "user", "content": "   "}]))
+
+
+def test_reserved_and_duplicate_tool_names_are_rejected() -> None:
+    reserved = request_body(tools=[{"name": "submit_answer", "description": "", "inputSchema": {}}])
+    with pytest.raises(ValidationError, match="reserved"):
+        TurnRequest.model_validate(reserved)
+    repeated = request_body(
+        tools=[
+            {"name": "read_one", "description": "", "inputSchema": {}},
+            {"name": "read_one", "description": "", "inputSchema": {}},
+        ]
     )
-
-    assert StepEvent(kind="Finding", summary="recorded", finding=finding).finding is finding
-    with pytest.raises(ValidationError):
-        StepEvent(kind="Finding", summary="missing")
-    with pytest.raises(ValidationError):
-        StepEvent(kind="Progress", summary="wrong", finding=finding)
+    with pytest.raises(ValidationError, match="share a name"):
+        TurnRequest.model_validate(repeated)
 
 
-def test_encode_uses_the_servers_camel_case_names() -> None:
-    report = Report(
-        page=Page(name="checkout-7f2c", uid="uid-1", namespace="pagerless"),
-        diagnosis="diagnosis",
-        findings=[
-            Finding(
-                kind="Log",
-                source="pods_logs",
-                summary="summary",
-                tool_call_id="srv-1",
-                pointer="/data/lines/0",
-            )
-        ],
-        proposal=DiagnosisOnly(kind="DiagnosisOnly", reason="infrastructure", recommendation="Drain."),
-        usage=Usage(input_tokens=10, output_tokens=5, model_calls=2),
-        capabilities=Capabilities(structured_output={"propose": "tool"}),
+def test_tool_schema_is_bounded() -> None:
+    body = request_body(
+        tools=[{"name": "read_one", "description": "", "inputSchema": {"description": "x" * 40_000}}]
     )
-
-    encoded = encode(report)
-
-    assert encoded["page"] == {"name": "checkout-7f2c", "uid": "uid-1", "namespace": "pagerless"}
-    assert encoded["usage"] == {"inputTokens": 10, "outputTokens": 5, "modelCalls": 2, "estimated": False}
-    assert encoded["capabilities"] == {
-        "structuredOutput": {"propose": "tool"},
-        "usageSource": "provider",
-    }
-    assert encoded["findings"][0]["toolCallId"] == "srv-1"
+    with pytest.raises(ValidationError, match="at most"):
+        TurnRequest.model_validate(body)
 
 
-def test_the_model_schemas_survive_the_strict_projection() -> None:
-    for schema in (diagnosis_schema(), proposal_schema()):
-        projected = strictify(schema)
-        assert projected["additionalProperties"] is False
-        assert set(projected["properties"]) == set(projected["required"])
+def test_limits_are_bounded() -> None:
+    with pytest.raises(ValidationError):
+        TurnRequest.model_validate(request_body(limits={"toolCalls": 0}))
+    with pytest.raises(ValidationError):
+        TurnRequest.model_validate(request_body(limits={"seconds": 86_401}))
 
 
-def test_the_manifest_parses_into_typed_models() -> None:
-    investigation = Investigation.model_validate(manifest(context={"gatheredAt": "now"}))
+def test_fingerprint_is_stable_and_payload_sensitive() -> None:
+    first = TurnRequest.model_validate(request_body(message="Why is checkout timing out?"))
+    same = TurnRequest.model_validate(request_body(message="Why is checkout timing out?"))
+    different = TurnRequest.model_validate(request_body(message="Why is checkout slow?"))
+    assert first.fingerprint() == same.fingerprint()
+    assert first.fingerprint() != different.fingerprint()
 
-    assert investigation.page.name
-    assert investigation.target.label == "Deployment shop/checkout"
-    assert investigation.scope.namespaces == ("shop",)
-    assert investigation.scope.repositories[0].slug == "acme/gitops"
-    assert investigation.limits.tool_calls == 15
-    assert investigation.context == {"gatheredAt": "now"}
+
+def test_result_status_invariants() -> None:
+    completed = TurnResult.model_validate(contract_fixture("turn-result-completed.json"))
+    proposal = TurnResult.model_validate(contract_fixture("turn-result-proposal.json")).proposal
+    with pytest.raises(ValidationError, match="requires an error"):
+        TurnResult(status="failed", content="", usage=completed.usage)
+    with pytest.raises(ValidationError, match="only a failed"):
+        TurnResult(
+            status="completed",
+            content="x",
+            error=TurnError(code="internal_error", message="x"),
+            usage=completed.usage,
+        )
+    with pytest.raises(ValidationError, match="cannot carry a proposal"):
+        TurnResult(
+            status="failed",
+            content="",
+            proposal=proposal,
+            error=TurnError(code="internal_error", message="x"),
+            usage=completed.usage,
+        )
+
+
+def test_validation_message_is_bounded() -> None:
+    with pytest.raises(ValidationError) as caught:
+        TurnRequest.model_validate({})
+    message = validation_message(caught.value)
+    assert len(message) <= 500
+    assert "pageId" in message or "turnId" in message

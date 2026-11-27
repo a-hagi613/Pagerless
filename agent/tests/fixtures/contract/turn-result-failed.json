@@ -1,0 +1,15 @@
+{
+  "status": "failed",
+  "content": "",
+  "citations": [],
+  "error": {
+    "code": "provider_timeout",
+    "message": "the model endpoint timed out"
+  },
+  "usage": {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "modelCalls": 1,
+    "toolCalls": 0
+  }
+}

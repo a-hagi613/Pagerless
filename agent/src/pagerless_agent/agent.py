@@ -1,690 +1,595 @@
-"""The agent graph.
+"""The LangGraph turn: model decisions alternating with bounded, read-only MCP reads.
 
-The graph is fixed:
+    think -> act -> think -> ... -> submit_answer
 
-    investigate <-> run_tools -> diagnose -> propose -> submit
-                                     ^          |         |
-                                     |          +-> repair
-                                     +---------- revise <+
-
-1. `investigate` and `run_tools` form a bounded tool loop over the server's catalogue.
-2. `diagnose` writes the Diagnosis, whose Findings must cite recorded tool calls.
-3. `propose` writes one Proposal: a `FilePatch` of one to five files, or `DiagnosisOnly`.
-4. `submit` posts the report. The server's `422` earns exactly one revision, and a local
-   validation failure earns exactly one repair turn at the stage that failed.
-
-A budget that runs out, a server that refuses the agent, or an endpoint that rejects the
-request ends the run with the documented outcome. Findings already posted as step events
-stay with the Page, and `pagerless-server` closes the Page as Failed.
+`think` asks the model for its next action. `act` executes evidence reads through the Go
+callback, reads an optional playbook, or validates the terminal `submit_answer`. Every
+factual claim must cite a callId from this turn, and every citation is resolved locally
+before the answer is accepted. There is no fixed diagnosis, no resource-kind menu and no
+mutation: the next read is the model's decision, and the Go tool policy remains the
+authority on what may be read.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
+import secrets
 import time
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
-from pagerless_agent import prompts
-from pagerless_agent.budget import (
-    CONTEXT_PRESSURE,
-    Budget,
-    BudgetExhaustedError,
-    Limits,
-    shed_messages,
+from pagerless_agent import playbooks, prompts
+from pagerless_agent.budget import Budget, BudgetExhaustedError, Limits
+from pagerless_agent.callback import (
+    CallbackError,
+    ToolExecutor,
+    ToolOutcome,
+    ToolProtocolError,
+    ToolRejectedError,
+    ToolUnavailableError,
 )
-from pagerless_agent.config import Settings
+from pagerless_agent.context import build_messages, fit_messages
 from pagerless_agent.contract import (
-    MAX_FINDINGS,
-    MAX_STEP_SUMMARY_LENGTH,
-    MAX_TOOL_NAME_LENGTH,
-    PROPOSAL,
-    Capabilities,
-    Diagnosis,
-    DiagnosisOnly,
-    Finding,
-    Investigation,
-    Page,
+    MAX_ANSWER_CHARS,
+    AnswerPayload,
+    Citation,
     Proposal,
-    Report,
-    ReportError,
-    StepEvent,
-    StepKind,
-    Usage,
-    citation_problems,
-    diagnosis_schema,
-    normalize_proposal,
-    proposal_schema,
-    validation_errors,
+    TurnError,
+    TurnRequest,
+    TurnResult,
+    TurnUsage,
+    validation_message,
 )
-from pagerless_agent.model import (
-    Message,
-    ModelProvider,
-    ModelRequest,
-    ModelResponse,
-    Stage,
-    ToolCall,
-    ToolSpec,
-)
+from pagerless_agent.model import Message, ModelProvider, ModelRequest, ModelResponse, ToolCall, ToolSpec
 from pagerless_agent.openai_compat import (
     ProviderAuthError,
     ProviderError,
+    ProviderMalformedError,
+    ProviderRejectedError,
+    ProviderTimeoutError,
+    ProviderTruncatedError,
+    ProviderUnavailableError,
 )
-from pagerless_agent.toolclient import ServerRefusedError, ToolClient
 from pagerless_agent.tools import (
+    PointerError,
     SuspicionTracker,
-    UnknownToolError,
-    encode_payload,
+    bounded_arguments,
+    compact_json,
+    jsonable,
+    local_tool_specs,
     new_nonce,
+    normalize_file_content,
     present,
+    present_error,
+    repository_path_problem,
+    resolve_pointer,
+    sanitize_text,
+    withheld,
 )
 
 log = logging.getLogger(__name__)
 
-# The agent submits a Proposal and, if the server refuses it, one revision.
-MAX_PROPOSAL_ATTEMPTS = 2
-# Bounds the supersteps of one run, so a model that never stops calling tools cannot loop.
-_RECURSION_LIMIT = 200
-# The Context Bundle is rendered inside this many characters.
-_MAX_BUNDLE_CHARS = 20_000
-
-OutcomeKind = Literal[
-    "reported",
-    "budget_exhausted",
-    "proposal_refused",
-    "rejected",
-    "provider_auth_failed",
-    "provider_rejected",
-    "failed",
-]
-
-_EXIT_CODES: dict[str, int] = {
-    "reported": 0,
-    "failed": 1,
-    "budget_exhausted": 2,
-    "proposal_refused": 3,
-    "rejected": 4,
-    "provider_auth_failed": 5,
-    "provider_rejected": 6,
-}
-
-
-@dataclass(frozen=True)
-class Outcome:
-    """How one investigation ended."""
-
-    kind: OutcomeKind
-    detail: str
-    phase: str | None = None
-
-    @property
-    def exit_code(self) -> int:
-        """The process exit code, which tells the server why a Job produced no report."""
-        return _EXIT_CODES[self.kind]
+SUBMIT_ANSWER = "submit_answer"
+READ_PLAYBOOK = "read_playbook"
+MAX_SUBMIT_ATTEMPTS = 2
+MAX_NUDGES = 2
+MAX_ERROR_CHARS = 500
 
 
 class _State(TypedDict, total=False):
     messages: list[Message]
-    findings: list[Finding]
     pending: list[ToolCall]
-    results: dict[str, Any]
-    diagnosis: str
-    proposal: Proposal
-    attempt: int
-    errors: list[ReportError]
-    outcome: Outcome
-
-
-class _StageFailedError(Exception):
-    """A stage's structured output could not be validated even after its one repair."""
-
-    def __init__(self, what: str, problems: list[str]) -> None:
-        super().__init__(f"the {what} is invalid: {'; '.join(problems)}")
-        self.what = what
-        self.problems = problems
+    submit_attempts: int
+    nudges: int
+    outcome: TurnResult | None
 
 
 @dataclass
-class _UsageTotals:
-    """What the investigation read and wrote, summed over every model call."""
+class _Journal:
+    """What the turn has produced so far, including a partial answer for cancellation."""
 
     input_tokens: int = 0
     output_tokens: int = 0
-    provider_reported: bool = False
-    estimated: bool = False
-    rungs: dict[str, str] = field(default_factory=dict)
+    latest_text: str = ""
 
-    def spend(self, response: ModelResponse, stage: Stage) -> None:
+    def observe(self, response: ModelResponse) -> None:
         self.input_tokens += response.usage.input_tokens
         self.output_tokens += response.usage.output_tokens
-        if response.usage.estimated:
-            self.estimated = True
-        else:
-            self.provider_reported = True
-        if response.rung is not None:
-            self.rungs[stage.value] = response.rung.value
-
-    @property
-    def source(self) -> Literal["provider", "estimated", "mixed"]:
-        if self.estimated and self.provider_reported:
-            return "mixed"
-        return "estimated" if self.estimated else "provider"
+        if response.text.strip():
+            self.latest_text = response.text
 
 
 class Agent:
-    """One investigation: the graph and everything it depends on."""
+    """One turn: the graph and everything it depends on."""
 
     def __init__(
         self,
         *,
-        settings: Settings,
+        request: TurnRequest,
         provider: ModelProvider,
-        client: ToolClient,
+        gateway: ToolExecutor,
+        limits: Limits,
+        tool_timeout_s: float,
+        context_tokens: int,
+        max_output_tokens: int,
         clock: Callable[[], float] = time.monotonic,
         nonce: str | None = None,
+        call_id_factory: Callable[[], str] | None = None,
     ) -> None:
-        self._settings = settings
+        self._request = request
         self._provider = provider
-        self._client = client
-        self._clock = clock
+        self._gateway = gateway
+        self._limits = limits
+        self._tool_timeout_s = tool_timeout_s
+        self._context_tokens = context_tokens
+        self._max_output_tokens = max_output_tokens
         self._nonce = nonce or new_nonce()
-        self._budget = Budget(limits=Limits(), clock=clock)
-        self._usage = _UsageTotals()
+        self._next_call_id = call_id_factory or _new_call_id
+        self._budget = Budget(limits=limits, clock=clock)
+        self._journal = _Journal()
         self._suspicion = SuspicionTracker(nonce=self._nonce)
-        self._investigation: Investigation | None = None
-        self._system = ""
-        self._catalogue: frozenset[str] = frozenset()
-        self._record_finding = ToolSpec(
-            name=prompts.RECORD_FINDING,
-            description=prompts.RECORD_FINDING_DESCRIPTION,
-            input_schema=Finding.model_json_schema(by_alias=True),
+        self._catalogue = frozenset(tool.name for tool in request.tools)
+        self._submit, self._playbook = local_tool_specs()
+        forwarded = tuple(
+            ToolSpec(name=tool.name, description=tool.description, input_schema=tool.input_schema)
+            for tool in request.tools
         )
+        self._tools = (*forwarded, self._submit, self._playbook)
+        self._system = prompts.system_prompt(request, limits)
+        self._messages = build_messages(request, self._nonce)
+        self._results: dict[str, Any] = {}
 
     # Lifecycle
 
-    async def run(self) -> Outcome:
-        """Run the investigation and report how it ended. It never raises for a failed run."""
+    async def run(self) -> TurnResult:
+        """Run the turn. It never raises for a failed investigation."""
         try:
-            async with asyncio.timeout(self._settings.seconds):
-                investigation = await self._client.load_investigation()
+            async with asyncio.timeout(self._limits.seconds):
+                final = await self._graph().ainvoke(
+                    {
+                        "messages": self._messages,
+                        "pending": [],
+                        "submit_attempts": 0,
+                        "nudges": 0,
+                    },
+                    config={"recursion_limit": _recursion_limit(self._limits)},
+                )
+            outcome = final.get("outcome")
+            if not isinstance(outcome, TurnResult):  # pragma: no cover - the graph always ends with one
+                return self.failure("internal_error", "the turn produced no outcome")
+            return outcome
         except TimeoutError:
-            return Outcome("budget_exhausted", "the time budget is spent before the manifest arrived")
-        except ServerRefusedError as error:
-            return Outcome("rejected", str(error))
-        except Exception as error:
-            log.exception("could not read the investigation manifest")
-            return Outcome("failed", f"The manifest could not be read: {type(error).__name__}")
-        try:
-            self._prepare(investigation)
-        except ValueError as error:
-            return Outcome("failed", str(error))
-        try:
-            final = await self.graph().ainvoke(
-                {
-                    "messages": [Message(role="user", content=self._task(investigation))],
-                    "findings": [],
-                    "pending": [],
-                    "results": {},
-                    "attempt": 0,
-                    "errors": [],
-                },
-                config={"recursion_limit": _RECURSION_LIMIT},
-            )
-            return final["outcome"]  # type: ignore[no-any-return]
+            return self.failure("budget_exhausted", "the turn's wall-clock budget is spent")
         except BudgetExhaustedError as exhausted:
-            detail = (
-                f"Budget exhausted ({exhausted.resource}): {exhausted.detail}. The Findings so far are kept."
+            return self.failure(
+                "budget_exhausted",
+                f"Budget exhausted ({exhausted.resource}): {exhausted.detail}",
             )
-            await self._progress(detail)
-            return Outcome("budget_exhausted", detail)
-        except ServerRefusedError as refused:
-            log.error("pagerless-server refused the agent: %s", refused)
-            return Outcome("rejected", str(refused))
         except ProviderAuthError as error:
-            await self._progress(f"The model endpoint refused the credentials: {error}")
-            return Outcome("provider_auth_failed", str(error))
+            return self.failure("provider_auth", str(error))
+        except ProviderRejectedError as error:
+            code = (
+                "provider_tools_unsupported" if error.reason == "tools_unsupported" else "provider_rejected"
+            )
+            return self.failure(code, str(error))
+        except ProviderTimeoutError as error:
+            return self.failure("provider_timeout", str(error))
+        except ProviderUnavailableError as error:
+            return self.failure("provider_unavailable", str(error))
+        except ProviderMalformedError as error:
+            return self.failure("provider_malformed", str(error))
+        except ProviderTruncatedError as error:
+            return self.failure("provider_truncated", str(error))
+        except ToolRejectedError as error:
+            return self.failure("tool_rejected", str(error))
+        except ToolUnavailableError as error:
+            return self.failure("tool_unavailable", str(error))
+        except ToolProtocolError as error:
+            return self.failure("tool_malformed", str(error))
+        except CallbackError as error:
+            return self.failure(error.code, str(error))
         except ProviderError as error:
-            await self._progress(f"The model endpoint rejected the request: {error}")
-            return Outcome("provider_rejected", str(error))
-        except _StageFailedError as error:
-            await self._progress(str(error))
-            return Outcome("failed", str(error))
+            return self.failure("provider_error", str(error))
         except Exception as error:
-            log.exception("the investigation failed")
-            detail = f"The agent failed: {type(error).__name__}: {error}"
-            await self._progress(detail)
-            return Outcome("failed", detail)
+            log.exception("the turn failed unexpectedly")
+            return self.failure("internal_error", f"the agent failed ({type(error).__name__})")
 
-    def _prepare(self, investigation: Investigation) -> None:
-        self._investigation = investigation
-        self._budget = Budget(
-            limits=Limits(
-                tool_calls=investigation.limits.tool_calls,
-                model_calls=investigation.limits.model_calls,
-                input_tokens=investigation.limits.input_tokens,
-                seconds=investigation.limits.seconds,
-            ),
-            clock=self._clock,
+    def stopped_result(self) -> TurnResult:
+        """Return the visible result after cancellation. It never claims unverified evidence."""
+        content = sanitize_text(self._journal.latest_text, MAX_ANSWER_CHARS)
+        return TurnResult(status="stopped", content=content, citations=[], usage=self._usage())
+
+    def failure(self, code: str, message: str) -> TurnResult:
+        """Return a terminal failure with a bounded, sanitized reason."""
+        return TurnResult(
+            status="failed",
+            content="",
+            citations=[],
+            error=TurnError(code=code, message=_one_line(message) or "the turn failed"),
+            usage=self._usage(),
         )
-        self._system = prompts.system_prompt(self._budget.limits, investigation)
-        catalogue = {spec.name for spec in investigation.tools}
-        if prompts.RECORD_FINDING in catalogue:
-            raise ValueError(f"the server's catalogue may not name {prompts.RECORD_FINDING}")
-        self._catalogue = frozenset(catalogue)
 
-    def _task(self, investigation: Investigation) -> str:
-        bundle = present(
-            self._nonce,
-            "context bundle",
-            investigation.context,
-            limit=_MAX_BUNDLE_CHARS,
+    def _usage(self) -> TurnUsage:
+        return TurnUsage(
+            input_tokens=self._journal.input_tokens,
+            output_tokens=self._journal.output_tokens,
+            model_calls=self._budget.model_calls,
+            tool_calls=self._budget.tool_calls,
         )
-        return prompts.task_prompt(investigation, bundle)
 
-    # The graph
+    # Graph
 
-    def graph(self) -> Any:
-        """Build and compile the graph."""
+    def _graph(self) -> Any:
         graph = StateGraph(_State)
-        graph.add_node("investigate", self._investigate)
-        graph.add_node("run_tools", self._run_tools)
-        graph.add_node("diagnose", self._diagnose)
-        graph.add_node("propose", self._propose)
-        graph.add_node("submit", self._submit)
-        graph.add_node("revise", self._revise)
-        graph.add_node("give_up", self._give_up)
-        graph.add_edge(START, "investigate")
+        graph.add_node("think", self._think)
+        graph.add_node("act", self._act)
+        graph.add_edge(START, "think")
         graph.add_conditional_edges(
-            "investigate", lambda state: "run_tools" if state.get("pending") else "diagnose"
+            "think",
+            _after_think,
+            {"act": "act", "think": "think", END: END},
         )
-        graph.add_edge("run_tools", "investigate")
-        graph.add_edge("diagnose", "propose")
-        graph.add_conditional_edges("propose", self._after_propose)
-        graph.add_conditional_edges("submit", self._after_submit)
-        graph.add_edge("revise", "propose")
-        graph.add_edge("give_up", END)
+        graph.add_conditional_edges(
+            "act",
+            lambda state: END if state.get("outcome") is not None else "think",
+            {"think": "think", END: END},
+        )
         return graph.compile()
 
-    # Nodes
-
-    async def _investigate(self, state: _State) -> _State:
-        if not state["messages"] or state["messages"][-1].role != "tool":
-            await self._event("Progress", "Investigating.")
-        response = await self._ask(
-            Stage.INVESTIGATE,
-            state["messages"],
-            tools=(*self._specs(), self._record_finding),
-        )
+    async def _think(self, state: _State) -> _State:
+        messages = list(state["messages"])
+        response = await self._ask(self._fit(messages))
+        self._journal.observe(response)
         assistant = Message(role="assistant", content=response.text, tool_calls=response.tool_calls)
-        return {"messages": [*state["messages"], assistant], "pending": list(response.tool_calls)}
-
-    async def _run_tools(self, state: _State) -> _State:
-        messages = list(state["messages"])
-        findings = list(state["findings"])
-        results = dict(state["results"])
-        for call in state["pending"]:
-            payload, is_error = await self._perform(call, findings, results)
-            envelope = present(self._nonce, call.name, payload, is_error=is_error)
-            messages.append(Message(role="tool", content=envelope, tool_call_id=call.id))
-        return {"messages": messages, "findings": findings, "results": results, "pending": []}
-
-    async def _diagnose(self, state: _State) -> _State:
-        await self._event("Progress", "Writing the Diagnosis.")
-        diagnosis, messages = await self._structured_stage(
-            Stage.DIAGNOSE,
-            state["messages"],
-            prompts.DIAGNOSE_PROMPT,
-            Diagnosis,
-            "Diagnosis",
-            diagnosis_schema(),
-            _diagnosis_semantics(state["results"]),
-        )
-        findings = list(state["findings"])
-        for finding in diagnosis.findings:
-            await self._add_finding(finding, findings)
-        return {
-            "messages": messages,
-            "findings": findings,
-            "diagnosis": diagnosis.diagnosis,
-        }
-
-    async def _propose(self, state: _State) -> _State:
-        attempt = state["attempt"] + 1
-        messages = list(state["messages"])
-        if attempt == 1:
-            messages.append(Message(role="user", content=prompts.PROPOSE_PROMPT))
-        await self._event("Progress", "Writing the Proposal." if attempt == 1 else "Revising the Proposal.")
-        try:
-            proposal, messages = await self._structured_stage(
-                Stage.PROPOSE,
-                messages,
-                None,
-                None,
-                "Proposal",
-                proposal_schema(),
-                _proposal_semantics,
-                validator=_validate_proposal,
-            )
-        except _StageFailedError as error:
-            return {"messages": messages, "attempt": attempt, "errors": _stage_errors(error)}
-        return {
-            "messages": messages,
-            "attempt": attempt,
-            "proposal": proposal,
-            "errors": [],
-        }
-
-    def _after_propose(self, state: _State) -> str:
-        return "submit" if not state.get("errors") else "give_up"
-
-    async def _submit(self, state: _State) -> _State:
-        report = Report(
-            page=self._page,
-            diagnosis=state["diagnosis"],
-            findings=state["findings"],
-            proposal=state["proposal"],
-            usage=Usage(
-                input_tokens=self._usage.input_tokens,
-                output_tokens=self._usage.output_tokens,
-                model_calls=self._budget.model_calls,
-                estimated=self._usage.estimated,
-            ),
-            capabilities=Capabilities(
-                structured_output=dict(self._usage.rungs),
-                usage_source=self._usage.source,
-            ),
-        )
-        answer = await self._client.post_report(report)
-        if answer.accepted:
-            return {"outcome": Outcome("reported", "The report was accepted.", phase=answer.phase)}
-        # The server also records the refusal on the Page; the Job log keeps it
-        # beside the model calls that produced it for failure diagnostics.
-        reasons = "; ".join(f"{error.field}: {error.message}" for error in answer.errors)
-        log.warning("the server refused Proposal attempt %d: %s", state["attempt"], reasons)
-        return {"errors": answer.errors}
-
-    def _after_submit(self, state: _State) -> str:
-        if "outcome" in state or not state.get("errors"):
-            return END
-        return "revise" if state["attempt"] < MAX_PROPOSAL_ATTEMPTS else "give_up"
-
-    async def _revise(self, state: _State) -> _State:
-        message = Message(role="user", content=prompts.revise_prompt(state["errors"]))
-        return {"messages": [*state["messages"], message]}
-
-    async def _give_up(self, state: _State) -> _State:
-        reasons = "; ".join(f"{error.field}: {error.message}" for error in state["errors"])
-        detail = f"The Proposal was refused {MAX_PROPOSAL_ATTEMPTS} times ({reasons})."
-        await self._progress(detail)
-        return {"outcome": Outcome("proposal_refused", detail)}
-
-    # Tools
-
-    def _specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(self._investigation.tools) if self._investigation else ()
-
-    async def _perform(
-        self, call: ToolCall, findings: list[Finding], results: dict[str, Any]
-    ) -> tuple[dict[str, Any], bool]:
-        """Run one model tool call and return the JSON payload and whether it is an error."""
-        if call.argument_error is not None:
-            self._budget.spend_tool_call()
-            await self._tool_event(call, "invalid arguments")
-            return _tool_error("invalid_arguments", call.argument_error), True
-        if call.name == prompts.RECORD_FINDING:
-            payload = await self._record(call, findings)
-            return payload, payload.get("ok") is False
-        if self._suspicion.observe_tool_attempt(call.name, self._catalogue):
-            await self._suspicious_output()
-        self._budget.spend_tool_call()
-        await self._tool_event(call, json.dumps(call.arguments, sort_keys=True))
-        try:
-            result = await self._within_budget(lambda: self._client.call(call.name, call.id, call.arguments))
-        except UnknownToolError:
-            return (
-                _tool_error(
-                    "unknown_tool",
-                    f"There is no tool named {call.name!r}. Use a tool from the catalogue.",
+        if response.tool_calls:
+            return {"messages": [*messages, assistant], "pending": list(response.tool_calls)}
+        if response.text.strip():
+            return {
+                "messages": [*messages, assistant],
+                "pending": [],
+                "outcome": TurnResult(
+                    status="completed",
+                    content=sanitize_text(response.text, MAX_ANSWER_CHARS),
+                    citations=[],
+                    usage=self._usage(),
                 ),
-                True,
-            )
-        except BudgetExhaustedError:
-            raise
-        except Exception as error:
-            log.warning("tool %s failed", call.name, exc_info=True)
-            return _tool_error("tool_failed", f"The tool failed: {type(error).__name__}"), True
-        call_id = result.call_id
-        if call_id is not None:
-            results[call_id] = result.payload
-        if self._suspicion.observe_payload(encode_payload(result.payload)):
-            await self._suspicious_output()
-        return result.payload, result.is_error
+            }
+        nudges = state.get("nudges", 0)
+        if nudges >= MAX_NUDGES:
+            return {
+                "messages": messages,
+                "pending": [],
+                "nudges": nudges + 1,
+                "outcome": self.failure("empty_response", "the model returned no answer after two nudges"),
+            }
+        return {
+            "messages": [*messages, Message(role="user", content=prompts.nudge())],
+            "pending": [],
+            "nudges": nudges + 1,
+        }
 
-    async def _record(self, call: ToolCall, findings: list[Finding]) -> dict[str, Any]:
-        try:
-            finding = Finding.model_validate(call.arguments)
-        except ValidationError as error:
-            problems = "; ".join(
-                f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}" for item in error.errors()
-            )
-            return _tool_error("invalid_finding", f"The Finding was not recorded: {problems}")
-        if finding in findings:
-            return {"ok": True, "data": {"recorded": len(findings), "duplicate": True}}
-        if len(findings) >= MAX_FINDINGS:
-            return _tool_error(
-                "too_many_findings", f"The Finding was not recorded: at most {MAX_FINDINGS} are kept."
-            )
-        await self._add_finding(finding, findings)
-        return {"ok": True, "data": {"recorded": len(findings)}}
-
-    async def _add_finding(self, finding: Finding, findings: list[Finding]) -> None:
-        """Keep a Finding and post it, so it survives even if no report follows."""
-        if finding in findings or len(findings) >= MAX_FINDINGS:
-            return
-        findings.append(finding)
-        summary = _truncate(f"{finding.kind}: {finding.summary}", MAX_STEP_SUMMARY_LENGTH)
-        await self._client.post_event(
-            StepEvent(kind="Finding", summary=summary, finding=finding, tool_call_id=finding.tool_call_id)
-        )
-
-    async def _tool_event(self, call: ToolCall, arguments: str) -> None:
-        summary = _truncate(f"{call.name} {arguments}", MAX_STEP_SUMMARY_LENGTH)
-        await self._client.post_event(
-            StepEvent(
-                kind="ToolCall",
-                tool=_truncate(call.name, MAX_TOOL_NAME_LENGTH),
-                summary=summary,
-                tool_call_id=call.id,
-            )
-        )
-
-    async def _suspicious_output(self) -> None:
-        for event in self._suspicion.drain():
-            log.warning("suspicious output: %s", event)
-            await self._client.post_event(
-                StepEvent(kind="SuspiciousOutput", summary=_truncate(event, MAX_STEP_SUMMARY_LENGTH))
-            )
+    async def _act(self, state: _State) -> _State:
+        messages = list(state["messages"])
+        attempts = state.get("submit_attempts", 0)
+        outcome: TurnResult | None = None
+        for call in state.get("pending", []):
+            if call.name == SUBMIT_ANSWER:
+                result, problems = self._submit_answer(call)
+                attempts += 1
+                if result is not None:
+                    outcome = result
+                    break
+                messages.append(
+                    Message(
+                        role="tool",
+                        tool_call_id=call.id,
+                        content=present_error(
+                            self._nonce,
+                            SUBMIT_ANSWER,
+                            "invalid_answer",
+                            _answer_repair_message(problems),
+                        ),
+                    )
+                )
+                if attempts >= MAX_SUBMIT_ATTEMPTS:
+                    outcome = self.failure(_answer_error_code(problems), "; ".join(problems))
+                    break
+                continue
+            if call.name == READ_PLAYBOOK:
+                messages.append(self._playbook_message(call))
+                continue
+            messages.append(await self._evidence_message(call))
+        return {
+            "messages": messages,
+            "pending": [],
+            "submit_attempts": attempts,
+            "outcome": outcome,
+        }
 
     # Model calls
 
-    async def _ask(
-        self,
-        stage: Stage,
-        messages: Sequence[Message],
-        *,
-        tools: tuple[ToolSpec, ...] = (),
-        schema: dict[str, Any] | None = None,
-        max_output_tokens: int | None = None,
-    ) -> ModelResponse:
-        fitted = self._fit(list(messages))
+    async def _ask(self, messages: list[Message]) -> ModelResponse:
         request = ModelRequest(
-            stage=stage,
             system=self._system,
-            messages=tuple(fitted),
-            tools=tools,
-            output_schema=schema,
-            max_output_tokens=max_output_tokens,
+            messages=tuple(messages),
+            tools=self._tools,
+            max_output_tokens=self._max_output_tokens,
         )
         self._budget.check_model_call()
         self._budget.check_input_estimate(self._provider.estimate_input_tokens(request))
-        response = await self._within_budget(lambda: self._provider.complete(request, budget=self._budget))
+        response = await self._provider.complete(request, budget=self._budget)
         self._budget.spend_input_tokens(response.usage.input_tokens)
-        self._usage.spend(response, stage)
         return response
 
     def _fit(self, messages: list[Message]) -> list[Message]:
-        """Shed the oldest tool results until the request fits the model's context window."""
-        context_tokens = self._settings.model.context_tokens
-        limit = int(context_tokens * CONTEXT_PRESSURE)
-        if self._estimate(messages) <= limit:
-            return messages
-        shed = shed_messages(messages)
-        if self._estimate(shed) > limit:
-            raise BudgetExhaustedError(
-                "input tokens",
-                f"the conversation cannot be reduced below {context_tokens} tokens",
-            )
-        log.info("shed the oldest tool results to fit a %d-token context window", context_tokens)
-        return shed
-
-    def _estimate(self, messages: list[Message]) -> int:
-        request = ModelRequest(
-            stage=Stage.INVESTIGATE,
+        return fit_messages(
             system=self._system,
-            messages=tuple(messages),
-            tools=self._specs(),
+            messages=messages,
+            tools=self._tools,
+            context_tokens=self._context_tokens,
+            max_output_tokens=self._max_output_tokens,
+            nonce=self._nonce,
         )
-        return self._provider.estimate_input_tokens(request)
 
-    async def _structured_stage[T: BaseModel](
-        self,
-        stage: Stage,
-        messages: list[Message],
-        prompt: str | None,
-        model: type[T] | None,
-        what: str,
-        schema: dict[str, Any],
-        semantic: Callable[[T, dict[str, Any]], list[str]] | None = None,
-        *,
-        validator: Callable[[object], T] | None = None,
-    ) -> tuple[T, list[Message]]:
-        """Ask for a structured stage, validate it locally, and allow exactly one repair."""
-        conversation = list(messages)
-        if prompt is not None:
-            conversation.append(Message(role="user", content=prompt))
-        response = await self._ask(stage, conversation, schema=schema)
-        problems, value = _validate(response.structured, model, validator)
-        if not problems and value is not None and semantic is not None:
-            problems = semantic(value, {})
-        if problems:
-            log.info("the %s failed local validation; asking for one repair", what)
-            conversation.append(Message(role="assistant", content=json.dumps(response.structured or {})))
-            conversation.append(Message(role="user", content=prompts.repair_prompt(what, problems)))
-            response = await self._ask(stage, conversation, schema=schema)
-            problems, value = _validate(response.structured, model, validator)
-            if not problems and value is not None and semantic is not None:
-                problems = semantic(value, {})
-        conversation.append(Message(role="assistant", content=json.dumps(response.structured or {})))
-        if problems or value is None:
-            raise _StageFailedError(what, problems or ["no structured output was produced"])
-        return value, conversation
+    # Tools
 
-    # Bookkeeping
-
-    @property
-    def _page(self) -> Page:
-        if self._investigation is None:  # pragma: no cover - run() prepares first
-            raise RuntimeError("the investigation manifest has not been loaded")
-        return self._investigation.page
-
-    async def _event(self, kind: StepKind, summary: str, *, tool: str | None = None) -> None:
-        event = StepEvent(
-            kind=kind,
-            tool=_truncate(tool, MAX_TOOL_NAME_LENGTH) if tool else None,
-            summary=_truncate(summary, MAX_STEP_SUMMARY_LENGTH),
-        )
-        await self._client.post_event(event)
-
-    async def _progress(self, summary: str) -> None:
-        """Post a final Progress event where nothing may be raised."""
-        try:
-            await self._event("Progress", summary)
-        except ServerRefusedError, ProviderError:
-            log.warning("could not post the final step")
-
-    async def _within_budget[T](self, start: Callable[[], Awaitable[T]]) -> T:
-        """Await something for no longer than the time budget has left."""
+    async def _evidence_message(self, call: ToolCall) -> Message:
+        self._budget.spend_tool_call()
+        if call.argument_error is not None:
+            return _tool_message(
+                call,
+                present_error(self._nonce, call.name, "invalid_arguments", call.argument_error),
+            )
+        arguments, problem = bounded_arguments(call.arguments)
+        if problem is not None:
+            return _tool_message(call, present_error(self._nonce, call.name, "invalid_arguments", problem))
+        if call.name not in self._catalogue:
+            self._suspicion.observe_tool_attempt(call.name, self._catalogue)
+            return _tool_message(
+                call,
+                present_error(
+                    self._nonce,
+                    call.name,
+                    "unknown_tool",
+                    f"There is no tool named {call.name!r} in this installation. Use a listed tool.",
+                ),
+            )
         self._budget.check_time()
-        timeout = asyncio.timeout(self._budget.remaining_seconds)
+        call_id = self._unique_call_id()
+        timeout = min(self._tool_timeout_s, max(0.0, self._budget.remaining_seconds))
+        log.info("turn %s calling tool %s as %s", self._request.turn_id, call.name, call_id)
+        outcome = await self._gateway.call(
+            turn_id=self._request.turn_id,
+            call_id=call_id,
+            tool=call.name,
+            arguments=arguments,
+            timeout_s=timeout,
+        )
+        if outcome.status == "budget_exhausted":
+            raise BudgetExhaustedError("tool calls", "the tool policy reported its tool-call budget is spent")
+        if outcome.is_error:
+            return _tool_message(
+                call,
+                present_error(self._nonce, call.name, f"tool_{outcome.status}", _outcome_error(outcome)),
+            )
+        ok, converted = jsonable(outcome.result)
+        if not ok:
+            return _tool_message(
+                call,
+                present_error(
+                    self._nonce,
+                    call.name,
+                    "tool_malformed",
+                    "The tool result was not finite JSON and was discarded.",
+                ),
+            )
         try:
-            async with timeout:
-                return await start()
-        except TimeoutError:
-            if timeout.expired():
-                raise BudgetExhaustedError(
-                    "time", f"the {self._budget.limits.seconds:g} second time budget is spent"
-                ) from None
-            raise
+            encoded = compact_json(converted)
+        except TypeError, ValueError:
+            return _tool_message(
+                call,
+                present_error(
+                    self._nonce,
+                    call.name,
+                    "tool_malformed",
+                    "The tool result was not finite JSON and was discarded.",
+                ),
+            )
+        if self._suspicion.observe_payload(encoded):
+            for event in self._suspicion.drain():
+                log.warning("withholding a tool result: %s", event)
+            return _tool_message(
+                call,
+                withheld(
+                    self._nonce,
+                    call.name,
+                    "The result probed the integrity boundary and was withheld.",
+                ),
+            )
+        self._results[call_id] = converted
+        payload: dict[str, Any] = (
+            {**converted, "callId": call_id}
+            if isinstance(converted, dict)
+            else {"callId": call_id, "result": converted}
+        )
+        envelope = present(
+            self._nonce,
+            call.name,
+            payload,
+            redacted=outcome.redacted,
+            truncated=outcome.truncated,
+        )
+        return _tool_message(call, envelope)
+
+    def _playbook_message(self, call: ToolCall) -> Message:
+        self._budget.spend_tool_call()
+        if call.argument_error is not None:
+            return _tool_message(
+                call,
+                present_error(self._nonce, READ_PLAYBOOK, "invalid_arguments", call.argument_error),
+            )
+        name = call.arguments.get("name")
+        if not isinstance(name, str) or not name:
+            return _tool_message(
+                call,
+                present_error(
+                    self._nonce,
+                    READ_PLAYBOOK,
+                    "invalid_arguments",
+                    "The name was not a playbook name.",
+                ),
+            )
+        playbook = playbooks.get(name)
+        if playbook is None:
+            available = ", ".join(item.name for item in playbooks.catalogue())
+            return _tool_message(
+                call,
+                present_error(
+                    self._nonce,
+                    READ_PLAYBOOK,
+                    "unknown_playbook",
+                    f"There is no playbook named {name!r}. Available: {available}.",
+                ),
+            )
+        return _tool_message(
+            call,
+            present(
+                self._nonce,
+                READ_PLAYBOOK,
+                {"name": playbook.name, "summary": playbook.summary, "body": playbook.body},
+            ),
+        )
+
+    def _unique_call_id(self) -> str:
+        for _ in range(3):
+            candidate = self._next_call_id()
+            if candidate not in self._results:
+                return candidate
+        raise RuntimeError("the call id factory repeated itself")
+
+    # Submission
+
+    def _submit_answer(self, call: ToolCall) -> tuple[TurnResult | None, list[str]]:
+        if call.argument_error is not None:
+            return None, [call.argument_error]
+        try:
+            payload = AnswerPayload.model_validate(call.arguments)
+        except ValidationError as error:
+            return None, [validation_message(error)]
+        problems: list[str] = []
+        if len(payload.content) > MAX_ANSWER_CHARS:
+            problems.append(f"content: must be at most {MAX_ANSWER_CHARS} characters")
+        citations: list[Citation] = []
+        seen: set[tuple[str, str | None]] = set()
+        for index, citation in enumerate(payload.citations):
+            if citation.call_id not in self._results:
+                problems.append(
+                    f"citations[{index}].callId: no tool call named "
+                    f"{citation.call_id!r} was made in this turn"
+                )
+                continue
+            if citation.pointer is not None:
+                try:
+                    resolve_pointer(self._results[citation.call_id], citation.pointer)
+                except PointerError as error:
+                    problems.append(f"citations[{index}].pointer: {error}")
+                    continue
+            key = (citation.call_id, citation.pointer)
+            if key not in seen:
+                seen.add(key)
+                citations.append(citation)
+        if payload.proposal is not None:
+            problems.extend(_proposal_problems(payload.proposal))
+            if not citations:
+                problems.append(
+                    "proposal: a source proposal must cite the tool evidence that grounds the base and path"
+                )
+        if problems:
+            return None, problems
+        content = sanitize_text(payload.content, MAX_ANSWER_CHARS)
+        return (
+            TurnResult(
+                status="completed",
+                content=content,
+                citations=citations,
+                proposal=payload.proposal,
+                usage=self._usage(),
+            ),
+            [],
+        )
 
 
-def _validate[T: BaseModel](
-    payload: dict[str, Any] | None,
-    model: type[T] | None,
-    validator: Callable[[object], T] | None,
-) -> tuple[list[str], T | None]:
-    """Validate a structured payload with the strictest model available."""
-    if payload is None:
-        return ["no structured output was produced"], None
-    try:
-        if validator is not None:
-            return [], validator(payload)
-        if model is None:
-            return ["no validator was configured"], None
-        return [], model.model_validate(payload)
-    except ValidationError as error:
-        prefix = "output"
-        return [f"{item.field}: {item.message}" for item in validation_errors(error, prefix)], None
+def _after_think(state: _State) -> str:
+    if state.get("outcome") is not None:
+        return END
+    return "act" if state.get("pending") else "think"
 
 
-def _validate_proposal(payload: object) -> Proposal:
-    validated: Proposal = PROPOSAL.validate_python(normalize_proposal(payload))
-    return validated
+def _tool_message(call: ToolCall, content: str) -> Message:
+    return Message(role="tool", tool_call_id=call.id, content=content)
 
 
-def _diagnosis_semantics(results: dict[str, Any]) -> Callable[[Diagnosis, dict[str, Any]], list[str]]:
-    def check(diagnosis: Diagnosis, _: dict[str, Any]) -> list[str]:
-        return citation_problems(diagnosis.findings, results)
-
-    return check
+def _new_call_id() -> str:
+    return "c-" + secrets.token_hex(16)
 
 
-def _proposal_semantics(proposal: Proposal, _: dict[str, Any]) -> list[str]:
-    """Apply the checks no JSON Schema expresses to a validated Proposal."""
-    if isinstance(proposal, DiagnosisOnly):
-        if not proposal.recommendation.strip():
-            return ["recommendation: must say what a human should do"]
-        return []
+def _recursion_limit(limits: Limits) -> int:
+    return max(100, 4 * (limits.model_calls + limits.tool_calls) + 20)
+
+
+def _one_line(message: str) -> str:
+    return sanitize_text(" ".join(message.split()), MAX_ERROR_CHARS)
+
+
+def _outcome_error(outcome: ToolOutcome) -> str:
+    result = outcome.result
+    if isinstance(result, dict):
+        error = result.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return sanitize_text(error["message"], MAX_ERROR_CHARS)
+        if isinstance(result.get("message"), str):
+            return sanitize_text(result["message"], MAX_ERROR_CHARS)
+    return f"The tool returned the status {outcome.status}."
+
+
+def _answer_repair_message(problems: list[str]) -> str:
+    listed = "; ".join(problems)
+    return sanitize_text(
+        f"The answer was not accepted: {listed}. Call submit_answer again with only real evidence.",
+        1_000,
+    )
+
+
+def _answer_error_code(problems: list[str]) -> str:
+    joined = " ".join(problems).lower()
+    if "proposal" in joined:
+        return "proposal_invalid"
+    if "citation" in joined or "callid" in joined or "pointer" in joined:
+        return "citation_invalid"
+    return "answer_invalid"
+
+
+def _proposal_problems(proposal: Proposal) -> list[str]:
     problems: list[str] = []
-    if not 1 <= len(proposal.files) <= 5:
-        problems.append("files: a FilePatch must change one to five files")
-    if len({file.path for file in proposal.files}) != len(proposal.files):
-        problems.append("files: two edits name the same path")
+    paths: set[str] = set()
+    for index, file in enumerate(proposal.files):
+        path_problem = repository_path_problem(file.path)
+        if path_problem is not None:
+            problems.append(f"proposal.files[{index}].path: {path_problem}")
+        if file.path in paths:
+            problems.append(f"proposal.files[{index}].path: is repeated")
+        paths.add(file.path)
+        normalized, content_problem = normalize_file_content(file.content)
+        if content_problem is not None:
+            problems.append(f"proposal.files[{index}].content: {content_problem}")
+        elif normalized is not None and normalized != file.content:
+            problems.append(f"proposal.files[{index}].content: must use LF line endings without NUL bytes")
     return problems
 
 
-def _stage_errors(error: _StageFailedError) -> list[ReportError]:
-    return [ReportError(field=problem.split(": ", 1)[0], message=problem) for problem in error.problems]
-
-
-def _tool_error(code: str, message: str) -> dict[str, Any]:
-    return {"ok": False, "error": {"code": code, "message": message}}
-
-
-def _truncate(text: str, limit: int) -> str:
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+__all__ = ["Agent", "SUBMIT_ANSWER", "READ_PLAYBOOK"]

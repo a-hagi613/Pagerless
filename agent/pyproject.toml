@@ -1,14 +1,15 @@
 [project]
 name = "pagerless-agent"
-version = "0.1.0"
-description = "The Pagerless investigation agent."
+version = "1.0.0"
+description = "The private Pagerless investigation agent service."
 requires-python = ">=3.14"
 dependencies = [
+    "fastapi==0.165.0",
     "httpx==0.28.1",
     "langgraph==1.2.22",
     "openai==3.55.1",
     "pydantic==2.14.3",
-    "pyyaml==6.0.3",
+    "uvicorn==0.54.0",
 ]
 
 [build-system]
@@ -21,7 +22,6 @@ dev = [
     "pytest==9.2.0",
     "pytest-asyncio==1.5.0",
     "ruff==0.17.5",
-    "types-pyyaml==6.0.12.20261113",
 ]
 
 [tool.ruff]
@@ -44,6 +44,3 @@ filterwarnings = [
     "error",
     "ignore:'asyncio.iscoroutinefunction' is deprecated:DeprecationWarning:langsmith",
 ]
-
-[tool.ruff.lint.per-file-ignores]
-"src/pagerless_agent/prompts.py" = ["E501"]

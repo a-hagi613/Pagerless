@@ -1,0 +1,12 @@
+{
+  "status": "ok",
+  "result": {
+    "data": {
+      "items": [
+        {"name": "checkout", "ready": false}
+      ]
+    }
+  },
+  "redacted": true,
+  "truncated": false
+}

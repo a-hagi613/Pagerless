@@ -1,187 +1,148 @@
-"""Configuration validation, and the proof that there are exactly two base URLs."""
+"""Environment validation for the private service."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 
-from pagerless_agent.config import BASE_URL_VARIABLES, ConfigError, Settings
+from pagerless_agent.config import (
+    ENV_CALLBACK_ORIGIN,
+    ENV_INTERNAL_TOKEN_FILE,
+    ENV_MAX_CONCURRENCY,
+    ENV_MODEL_API_KEY_FILE,
+    ENV_MODEL_BASE_URL,
+    ENV_MODEL_HEADERS,
+    ENV_MODEL_NAME,
+    ConfigError,
+    ServiceSettings,
+)
+from tests.fakes import API_KEY, CALLBACK_ORIGIN, TOKEN
+from tests.support import settings
 
-PAGE_UID = "0b3f4a2c-1111-2222-3333-444455556666"
+
+def test_valid_settings_are_read(tmp_path: Path) -> None:
+    selected = settings(tmp_path)
+    assert selected.token == TOKEN
+    assert selected.callback_origin == CALLBACK_ORIGIN
+    assert selected.model.api_key == API_KEY
+    assert selected.model.base_url == "http://mock-openai.pagerless.svc/v1"
+    assert selected.model.model == "mock-model"
+    assert selected.max_concurrency == 4
+    assert selected.port == 8080
+    assert selected.budgets.tool_calls == 6
 
 
-def env(tmp_path: Path, **overrides: str) -> dict[str, str]:
-    """Return a valid environment, with the overrides applied."""
-    token = tmp_path / "token"
-    token.write_text("projected-token\n", encoding="utf-8")
-    key = tmp_path / "key"
-    key.write_text("sk-test-secret\n", encoding="utf-8")
-    values = {
-        "PAGERLESS_SERVER_URL": "https://pagerless-server.pagerless.svc:8443",
-        "PAGERLESS_TOKEN_FILE": str(token),
-        "PAGERLESS_PAGE": "checkout-7f2c",
-        "PAGERLESS_PAGE_UID": PAGE_UID,
-        "PAGERLESS_MODEL_BASE_URL": "https://api.deepseek.com/v1",
-        "PAGERLESS_MODEL_NAME": "deepseek-chat",
-        "PAGERLESS_MODEL_API_KEY_FILE": str(key),
+def test_missing_variables_are_named_together(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as caught:
+        ServiceSettings.from_env({})
+    message = str(caught.value)
+    for name in (
+        ENV_INTERNAL_TOKEN_FILE,
+        ENV_CALLBACK_ORIGIN,
+        ENV_MODEL_BASE_URL,
+        ENV_MODEL_NAME,
+        ENV_MODEL_API_KEY_FILE,
+    ):
+        assert name in message
+
+
+def test_secrets_are_not_in_repr(tmp_path: Path) -> None:
+    selected = settings(tmp_path)
+    assert TOKEN not in repr(selected)
+    assert API_KEY not in repr(selected)
+    assert API_KEY not in repr(selected.model)
+
+
+def test_empty_or_unreadable_credential_is_refused(tmp_path: Path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("", encoding="utf-8")
+    selected = settings(tmp_path)
+    env = {
+        ENV_INTERNAL_TOKEN_FILE: str(token_file),
+        ENV_CALLBACK_ORIGIN: CALLBACK_ORIGIN,
+        ENV_MODEL_BASE_URL: "https://models.example/v1",
+        ENV_MODEL_NAME: "m",
+        ENV_MODEL_API_KEY_FILE: str(tmp_path / "key"),
     }
-    values.update(overrides)
-    return values
-
-
-def test_a_valid_environment_yields_exactly_two_base_urls(tmp_path: Path) -> None:
-    settings = Settings.from_env(env(tmp_path))
-
-    assert settings.base_urls() == (
-        "https://pagerless-server.pagerless.svc:8443",
-        "https://api.deepseek.com/v1",
-    )
-    assert len(settings.base_urls()) == 2
-    assert BASE_URL_VARIABLES == ("PAGERLESS_SERVER_URL", "PAGERLESS_MODEL_BASE_URL")
-    assert settings.model.api_key == "sk-test-secret"
-    assert settings.model.model == "deepseek-chat"
-    assert (settings.tool_calls, settings.model_calls, settings.input_tokens, settings.seconds) == (
-        15,
-        12,
-        300_000,
-        300,
-    )
-
-
-def test_the_api_key_never_appears_in_the_settings_representation(tmp_path: Path) -> None:
-    settings = Settings.from_env(env(tmp_path))
-
-    assert "sk-test-secret" not in repr(settings)
-    assert "sk-test-secret" not in repr(settings.model)
-
-
-def test_no_other_environment_variable_can_introduce_a_third_base_url(tmp_path: Path) -> None:
-    settings = Settings.from_env(
-        env(
-            tmp_path,
-            PAGERLESS_KUBERNETES_URL="https://kubernetes.default.svc",
-            PAGERLESS_GITHUB_URL="https://api.github.com",
-            PAGERLESS_CONNECTOR_LOKI_URL="https://loki",
-        )
-    )
-
-    assert len(settings.base_urls()) == 2
+    (tmp_path / "key").write_text("k", encoding="utf-8")
+    with pytest.raises(ConfigError, match="empty"):
+        ServiceSettings.from_env(env)
+    with pytest.raises(ConfigError, match="cannot be read"):
+        ServiceSettings.from_env({**env, ENV_INTERNAL_TOKEN_FILE: str(tmp_path / "missing")})
+    assert selected.token == TOKEN
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "origin",
     [
-        {"PAGERLESS_SERVER_URL": ""},
-        {"PAGERLESS_TOKEN_FILE": ""},
-        {"PAGERLESS_PAGE": ""},
-        {"PAGERLESS_PAGE_UID": ""},
-        {"PAGERLESS_MODEL_BASE_URL": ""},
-        {"PAGERLESS_MODEL_NAME": ""},
-        {"PAGERLESS_MODEL_API_KEY_FILE": ""},
+        "http://server/path",
+        "http://user:pass@server",
+        "http://server?query=1",
+        "http://server#fragment",
+        "ftp://server",
     ],
 )
-def test_a_missing_required_variable_is_named(tmp_path: Path, overrides: dict[str, str]) -> None:
-    with pytest.raises(ConfigError, match="missing environment variables"):
-        Settings.from_env(env(tmp_path, **overrides))
+def test_callback_origin_must_be_a_bare_http_origin(tmp_path: Path, origin: str) -> None:
+    with pytest.raises(ConfigError, match="origin"):
+        settings(tmp_path, PAGERLESS_CALLBACK_ORIGIN=origin)
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "pagerless-server:8443",
-        "ftp://pagerless-server",
-        "https://user:password@pagerless-server",
-        "https://pagerless-server?x=1",
-        "https://pagerless-server#fragment",
-        "https://pagerless-server:8443/api",
-    ],
-)
-def test_an_invalid_server_url_is_refused(tmp_path: Path, url: str) -> None:
-    with pytest.raises(ConfigError):
-        Settings.from_env(env(tmp_path, PAGERLESS_SERVER_URL=url))
+def test_callback_origin_trailing_slash_is_normalized(tmp_path: Path) -> None:
+    selected = settings(tmp_path, PAGERLESS_CALLBACK_ORIGIN=CALLBACK_ORIGIN + "/")
+    assert selected.callback_origin == CALLBACK_ORIGIN
 
 
-def test_plain_http_to_a_model_requires_the_in_cluster_opt_in(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="ALLOW_INSECURE"):
-        Settings.from_env(env(tmp_path, PAGERLESS_MODEL_BASE_URL="http://vllm.pagerless.svc:8000/v1"))
-
-    settings = Settings.from_env(
-        env(
+def test_insecure_model_endpoint_needs_an_explicit_override(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="must be https"):
+        settings(
             tmp_path,
-            PAGERLESS_MODEL_BASE_URL="http://vllm.pagerless.svc:8000/v1",
-            PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT="1",
+            PAGERLESS_MODEL_BASE_URL="http://models.example/v1",
+            PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT="0",
         )
+    selected = settings(
+        tmp_path,
+        PAGERLESS_MODEL_BASE_URL="https://models.example/v1",
+        PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT="0",
     )
-    assert settings.model.base_url == "http://vllm.pagerless.svc:8000/v1"
+    assert selected.model.base_url == "https://models.example/v1"
 
 
-def test_the_page_uid_must_be_a_uuid(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="PAGERLESS_PAGE_UID must be a UUID"):
-        Settings.from_env(env(tmp_path, PAGERLESS_PAGE_UID="not-a-uuid"))
+@pytest.mark.parametrize("value", ["0", "65", "nope"])
+def test_concurrency_is_bounded(tmp_path: Path, value: str) -> None:
+    with pytest.raises(ConfigError, match=ENV_MAX_CONCURRENCY):
+        settings(tmp_path, **{ENV_MAX_CONCURRENCY: value})
 
 
-def test_the_task_must_be_known(tmp_path: Path) -> None:
-    with pytest.raises(ConfigError, match="investigate or narrative"):
-        Settings.from_env(env(tmp_path, PAGERLESS_TASK="benchmark"))
+def test_headers_are_bounded_json(tmp_path: Path) -> None:
+    selected = settings(tmp_path, **{ENV_MODEL_HEADERS: '{"x-tenant": "a"}'})
+    assert selected.model.headers == {"x-tenant": "a"}
+    with pytest.raises(ConfigError, match="header name"):
+        settings(tmp_path, **{ENV_MODEL_HEADERS: '{"bad header": "a"}'})
+    with pytest.raises(ConfigError, match="JSON object"):
+        settings(tmp_path, **{ENV_MODEL_HEADERS: "[]"})
 
 
-def test_model_headers_must_be_bounded_json_without_line_breaks(tmp_path: Path) -> None:
-    valid = Settings.from_env(env(tmp_path, PAGERLESS_MODEL_HEADERS='{"HTTP-Referer": "https://acme.test"}'))
-    assert valid.model.headers == {"HTTP-Referer": "https://acme.test"}
-
-    for raw in ("not json", "[]", '{"X-Bad": 1}', '{"X-Bad": "a\\nb"}'):
-        with pytest.raises(ConfigError, match="PAGERLESS_MODEL_HEADERS"):
-            Settings.from_env(env(tmp_path, PAGERLESS_MODEL_HEADERS=raw))
-
-    too_many = "{" + ", ".join(f'"X-{index}": "v"' for index in range(17)) + "}"
-    with pytest.raises(ConfigError, match="at most 16 entries"):
-        Settings.from_env(env(tmp_path, PAGERLESS_MODEL_HEADERS=too_many))
-
-
-def test_the_api_key_file_must_be_a_small_single_line(tmp_path: Path) -> None:
-    empty = tmp_path / "empty"
-    empty.write_text("\n", encoding="utf-8")
-    multiline = tmp_path / "multiline"
-    multiline.write_text("first\nsecond\n", encoding="utf-8")
-    huge = tmp_path / "huge"
-    huge.write_text("k" * 9000, encoding="utf-8")
-
-    for path in (empty, multiline, huge, tmp_path / "absent"):
-        with pytest.raises(ConfigError, match="PAGERLESS_MODEL_API_KEY_FILE"):
-            Settings.from_env(env(tmp_path, PAGERLESS_MODEL_API_KEY_FILE=str(path)))
+def test_multiline_credential_is_refused(tmp_path: Path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("one\ntwo\n", encoding="utf-8")
+    selected = settings(tmp_path)
+    env = {
+        ENV_INTERNAL_TOKEN_FILE: str(token_file),
+        ENV_CALLBACK_ORIGIN: CALLBACK_ORIGIN,
+        ENV_MODEL_BASE_URL: "https://models.example/v1",
+        ENV_MODEL_NAME: "m",
+        ENV_MODEL_API_KEY_FILE: str(tmp_path / "key"),
+    }
+    (tmp_path / "key").write_text("k", encoding="utf-8")
+    with pytest.raises(ConfigError, match="single line"):
+        ServiceSettings.from_env(env)
+    assert selected.token == TOKEN
 
 
-@pytest.mark.parametrize(
-    ("name", "value"),
-    [
-        ("PAGERLESS_MODEL_STRUCTURED_OUTPUT", "magic"),
-        ("PAGERLESS_MODEL_MAX_TOKENS_FIELD", "tokens"),
-        ("PAGERLESS_MODEL_SUPPORTS_TEMPERATURE", "maybe"),
-        ("PAGERLESS_BUDGET_TOOL_CALLS", "0"),
-        ("PAGERLESS_BUDGET_MODEL_CALLS", "many"),
-        ("PAGERLESS_BUDGET_SECONDS", "-1"),
-    ],
-)
-def test_an_invalid_optional_setting_is_refused(tmp_path: Path, name: str, value: str) -> None:
-    with pytest.raises(ConfigError, match=name):
-        Settings.from_env(env(tmp_path, **{name: value}))
-
-
-def test_the_dialect_switches_are_read(tmp_path: Path) -> None:
-    settings = Settings.from_env(
-        env(
-            tmp_path,
-            PAGERLESS_MODEL_MAX_TOKENS_FIELD="max_completion_tokens",
-            PAGERLESS_MODEL_SUPPORTS_TEMPERATURE="false",
-            PAGERLESS_MODEL_STRUCTURED_OUTPUT="json_object",
-            PAGERLESS_MODEL_CONTEXT_TOKENS="8192",
-            PAGERLESS_PAGE_UID=str(uuid4()),
-        )
-    )
-
-    assert settings.model.max_tokens_field == "max_completion_tokens"
-    assert settings.model.supports_temperature is False
-    assert settings.model.structured_output == "json_object"
-    assert settings.model.context_tokens == 8192
+def test_replace_keeps_the_rest_of_the_settings(tmp_path: Path) -> None:
+    selected = settings(tmp_path)
+    changed = replace(selected, max_concurrency=1)
+    assert changed.max_concurrency == 1
+    assert changed.token == selected.token

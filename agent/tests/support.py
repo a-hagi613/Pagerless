@@ -1,35 +1,42 @@
-"""Builders shared by the agent tests: a manifest, settings, and a provider on the mock."""
+"""Builders shared by the tests: settings, requests, agents and an ASGI client."""
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
-from uuid import uuid4
+from typing import Any, cast
 
 import httpx
-import httpx2
-from openai import AsyncOpenAI
+from fastapi import FastAPI
 
-from pagerless_agent.agent import Agent, Outcome
-from pagerless_agent.config import Settings
-from pagerless_agent.openai_compat import OpenAICompatibleProvider
-from pagerless_agent.runtime import run
-from pagerless_agent.structured import LadderCache
-from pagerless_agent.toolclient import ToolClient
-from tests.fakes import StandInBroker
-from tests.mock_openai import MockOpenAI, Step
+from pagerless_agent.agent import Agent
+from pagerless_agent.budget import Limits
+from pagerless_agent.callback import ToolExecutor
+from pagerless_agent.config import ServiceSettings
+from pagerless_agent.contract import TurnRequest, TurnResult
+from pagerless_agent.model import ModelProvider
+from pagerless_agent.readiness import ModelProbe, ProbeResult
+from pagerless_agent.server import create_app
+from pagerless_agent.turns import TurnManager
+from tests.fakes import (
+    API_KEY,
+    CALLBACK_ORIGIN,
+    TOKEN,
+    FakeGateway,
+    FakeProvider,
+    StubProbe,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
-PAGE = "checkout-7f2c"
-TOKEN = "projected-token-1"
-API_KEY = "test-model-key"
 
-DEFAULT_TOOLS: list[dict[str, Any]] = [
+TOOLS: list[dict[str, Any]] = [
     {
         "name": "pods_logs",
-        "description": "Read a pod's logs. Use previous=true first for a crash loop.",
-        "input_schema": {
+        "description": "Read the bounded logs of one pod.",
+        "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "required": ["namespace", "pod"],
@@ -41,24 +48,23 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "object_get",
-        "description": "Read one Kubernetes object.",
-        "input_schema": {
+        "name": "resources_get",
+        "description": "Read one Kubernetes object of an allowed kind.",
+        "inputSchema": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["apiVersion", "kind", "namespace", "name"],
+            "required": ["kind", "name"],
             "properties": {
-                "apiVersion": {"type": "string"},
                 "kind": {"type": "string"},
-                "namespace": {"type": "string"},
                 "name": {"type": "string"},
+                "namespace": {"type": "string"},
             },
         },
     },
     {
-        "name": "repo_file",
-        "description": "Read one file from the Target Repository.",
-        "input_schema": {
+        "name": "repo_read",
+        "description": "Read one file from the configured source repository.",
+        "inputSchema": {
             "type": "object",
             "additionalProperties": False,
             "required": ["path"],
@@ -67,191 +73,169 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
-
-def fixture(*parts: str) -> Path:
-    """Return the path of one checked-in test fixture."""
-    return FIXTURES.joinpath(*parts)
+QUESTION = "Why is checkout timing out?"
 
 
-def investigation_fixture() -> dict[str, Any]:
-    """Return the OOMKilled investigation fixture as a dictionary."""
-    document: dict[str, Any] = json.loads(fixture("investigation.json").read_text(encoding="utf-8"))
-    return document
-
-
-_OOM = MockOpenAI.from_fixture(fixture("scripts", "oom.json"))
-# The scripted investigation, in the order the graph consumes it.
-PREAMBLE: list[Step] = list(_OOM.steps[:3])
-DIAGNOSIS: dict[str, Any] = _OOM.steps[3].payload or {}
-PROPOSAL: dict[str, Any] = _OOM.steps[4].payload or {}
-assert DIAGNOSIS and PROPOSAL
-
-
-def script(
-    *,
-    investigate_steps: list[Step] | None = None,
-    diagnosis_steps: list[Step] | None = None,
-    proposal_steps: list[Step] | None = None,
-    profile: str = "strict",
-) -> MockOpenAI:
-    """Return one scripted investigation, with any of its three stages replaced."""
-    return MockOpenAI(
-        [
-            *(PREAMBLE if investigate_steps is None else investigate_steps),
-            *([Step(payload=DIAGNOSIS)] if diagnosis_steps is None else diagnosis_steps),
-            *([Step(payload=PROPOSAL)] if proposal_steps is None else proposal_steps),
-        ],
-        profile=profile,  # type: ignore[arg-type]
-    )
-
-
-def corrupted(payload: dict[str, Any], path: str, value: object) -> dict[str, Any]:
-    """Return a deep copy of a payload with one JSON Pointer set to a value."""
-    copy: dict[str, Any] = json.loads(json.dumps(payload))
-    node: Any = copy
-    tokens = path.lstrip("/").split("/")
-    for token in tokens[:-1]:
-        node = node[int(token)] if isinstance(node, list) else node[token]
-    last = tokens[-1]
-    if isinstance(node, list):
-        node[int(last)] = value
-    else:
-        node[last] = value
-    return copy
-
-
-def manifest(
-    *,
-    uid: str | None = None,
-    page: str = PAGE,
-    context: dict[str, Any] | None = None,
-    hint: str | None = None,
-    tools: list[dict[str, Any]] | None = None,
-    limits: dict[str, Any] | None = None,
-    repositories: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    """Return one investigation manifest, as `GET /v1/pages/{page}/investigation` serves it."""
-    source = investigation_fixture()
-    return {
-        "page": {"name": page, "uid": uid or str(uuid4()), "namespace": "pagerless"},
-        "target": {
-            "kind": "Deployment",
-            "name": "checkout",
-            "namespace": "shop",
-            "uid": "0b3f4a2c-1111-2222-3333-444455556666",
-            "generation": 42,
-        },
-        "trigger": {"kind": "Watcher", "reason": "CrashLoopBackOff"},
-        "hint": hint if hint is not None else source["hint"],
-        "scope": {
-            "namespaces": ["shop"],
-            "repositories": repositories
-            if repositories is not None
-            else [{"owner": "acme", "name": "gitops", "ref": "main"}],
-            "connectors": ["loki-prod"],
-            "kinds": ["Deployment", "Pod", "Event", "ReplicaSet"],
-        },
-        "context": context if context is not None else source["context"],
-        "tools": tools if tools is not None else list(DEFAULT_TOOLS),
-        "limits": limits if limits is not None else dict(source["limits"]),
-        "capabilities": {"structuredOutput": "unknown"},
-    }
-
-
-def settings(
-    tmp_path: Path,
-    *,
-    page: str = PAGE,
-    uid: str | None = None,
-    tool_calls: int = 15,
-    model_calls: int = 12,
-    input_tokens: int = 300_000,
-    seconds: float = 300.0,
-    context_tokens: int = 32_768,
-    structured_output: str = "auto",
-    task: str = "investigate",
-) -> Settings:
-    """Return settings for one Job, with the token and model key written to files."""
-    token_file = tmp_path / "token"
+def settings(tmp_path: Path, **overrides: Any) -> ServiceSettings:
+    """Return validated settings whose credentials are files under tmp_path."""
+    token_file = tmp_path / "internal-token"
     token_file.write_text(TOKEN + "\n", encoding="utf-8")
     key_file = tmp_path / "model-key"
     key_file.write_text(API_KEY + "\n", encoding="utf-8")
     env = {
-        "PAGERLESS_TASK": task,
-        "PAGERLESS_SERVER_URL": "https://pagerless-server.pagerless.svc:8443",
-        "PAGERLESS_TOKEN_FILE": str(token_file),
-        "PAGERLESS_PAGE": page,
-        "PAGERLESS_PAGE_UID": uid or str(uuid4()),
+        "PAGERLESS_INTERNAL_TOKEN_FILE": str(token_file),
+        "PAGERLESS_CALLBACK_ORIGIN": CALLBACK_ORIGIN,
+        "PAGERLESS_AGENT_MAX_CONCURRENCY": "4",
         "PAGERLESS_MODEL_BASE_URL": "http://mock-openai.pagerless.svc/v1",
         "PAGERLESS_MODEL_NAME": "mock-model",
         "PAGERLESS_MODEL_API_KEY_FILE": str(key_file),
-        "PAGERLESS_MODEL_CONTEXT_TOKENS": str(context_tokens),
-        "PAGERLESS_MODEL_STRUCTURED_OUTPUT": structured_output,
+        "PAGERLESS_MODEL_CONTEXT_TOKENS": "32768",
         "PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT": "1",
-        "PAGERLESS_BUDGET_TOOL_CALLS": str(tool_calls),
-        "PAGERLESS_BUDGET_MODEL_CALLS": str(model_calls),
-        "PAGERLESS_BUDGET_INPUT_TOKENS": str(input_tokens),
-        "PAGERLESS_BUDGET_SECONDS": str(seconds),
+        "PAGERLESS_BUDGET_TOOL_CALLS": "6",
+        "PAGERLESS_BUDGET_MODEL_CALLS": "6",
+        "PAGERLESS_BUDGET_INPUT_TOKENS": "300000",
+        "PAGERLESS_BUDGET_SECONDS": "60",
+        "PAGERLESS_AGENT_TOOL_TIMEOUT_S": "5",
     }
-    return Settings.from_env(env)
+    env.update({key: str(value) for key, value in overrides.items()})
+    return ServiceSettings.from_env(env)
 
 
-def provider(
-    settings: Settings,
-    mock: MockOpenAI,
+def request_body(
     *,
-    cache: LadderCache | None = None,
-    http: httpx2.AsyncClient | None = None,
-) -> OpenAICompatibleProvider:
-    """Return the real provider wired to the fixture-backed mock server."""
-    transport_client = http or httpx2.AsyncClient(transport=mock.transport())
-    sdk = AsyncOpenAI(
-        base_url=settings.model.base_url,
-        api_key=settings.model.api_key,
-        max_retries=0,
-        http_client=transport_client,
+    page_id: str = "p1",
+    turn_id: str = "t1",
+    message: str = QUESTION,
+    messages: list[dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    namespace: str | None = "shop",
+    target: dict[str, Any] | None = None,
+    limits: dict[str, Any] | None = None,
+    callback_url: str = CALLBACK_ORIGIN,
+) -> dict[str, Any]:
+    """Return a POST /turn body with camelCase names."""
+    return {
+        "pageId": page_id,
+        "turnId": turn_id,
+        "messages": messages if messages is not None else [{"role": "user", "content": message}],
+        "namespace": namespace,
+        "target": target if target is not None else {"kind": "Deployment", "name": "checkout"},
+        "tools": tools if tools is not None else list(TOOLS),
+        "callbackUrl": callback_url,
+        **({"limits": limits} if limits is not None else {}),
+    }
+
+
+def turn_request(**kwargs: Any) -> TurnRequest:
+    """Return a validated request from the builder."""
+    return TurnRequest.model_validate(request_body(**kwargs))
+
+
+def budgets(settings: ServiceSettings, request: TurnRequest | None = None) -> Limits:
+    """Return the limits the manager would use."""
+    configured = settings.budgets
+    requested = request.limits if request is not None else None
+    if requested is None:
+        return Limits(
+            tool_calls=configured.tool_calls,
+            model_calls=configured.model_calls,
+            input_tokens=configured.input_tokens,
+            seconds=configured.seconds,
+        )
+    return Limits(
+        tool_calls=min(requested.tool_calls or configured.tool_calls, configured.tool_calls),
+        model_calls=min(requested.model_calls or configured.model_calls, configured.model_calls),
+        input_tokens=min(requested.input_tokens or configured.input_tokens, configured.input_tokens),
+        seconds=min(requested.seconds or configured.seconds, configured.seconds),
     )
-    return OpenAICompatibleProvider(settings.model, client=sdk, cache=cache or LadderCache())
 
 
-def tool_client(settings: Settings, broker: StandInBroker) -> ToolClient:
-    """Return a tool broker client wired to the stand-in server."""
-    http = httpx.AsyncClient(transport=broker.transport())
-    return ToolClient(
-        settings.server_url,
-        settings.page,
-        settings.page_uid,
-        settings.token_file,
-        http=http,
-    )
+def sequence(prefix: str = "c") -> Callable[[], str]:
+    """Return a deterministic call-id factory."""
+    counter = 0
+
+    def next_id() -> str:
+        nonlocal counter
+        counter += 1
+        return f"{prefix}{counter}"
+
+    return next_id
 
 
-async def investigate(
-    settings: Settings,
-    mock: MockOpenAI,
-    broker: StandInBroker,
+def build_agent(
+    settings: ServiceSettings,
+    provider: ModelProvider,
+    gateway: ToolExecutor,
+    request: TurnRequest | None = None,
     *,
-    provider_cache: LadderCache | None = None,
-) -> Outcome:
-    """Run one investigation against the mock provider and the stand-in broker."""
-    selected = provider(settings, mock, cache=provider_cache)
-    client = tool_client(settings, broker)
-    try:
-        return await run(settings, provider=selected, client=client)
-    finally:
-        await client.aclose()
-
-
-def agent(
-    settings: Settings,
-    mock: MockOpenAI,
-    broker: StandInBroker,
-    *,
-    cache: LadderCache | None = None,
+    call_ids: Callable[[], str] | None = None,
+    tool_timeout_s: float = 5.0,
 ) -> Agent:
-    """Return an Agent wired to the mocks, for tests that inspect graph internals."""
+    """Return an Agent wired to the fakes."""
+    selected = request or turn_request()
     return Agent(
-        settings=settings,
-        provider=provider(settings, mock, cache=cache),
-        client=tool_client(settings, broker),
+        request=selected,
+        provider=provider,
+        gateway=gateway,
+        limits=budgets(settings, selected),
+        tool_timeout_s=tool_timeout_s,
+        context_tokens=settings.model.context_tokens,
+        max_output_tokens=settings.model.max_output_tokens,
+        nonce="run-nonce-0123456789abcdef",
+        call_id_factory=call_ids or sequence(),
     )
+
+
+async def run_turn(
+    settings: ServiceSettings,
+    provider: FakeProvider,
+    gateway: ToolExecutor,
+    request: TurnRequest | None = None,
+    *,
+    call_ids: Callable[[], str] | None = None,
+    tool_timeout_s: float = 5.0,
+) -> TurnResult:
+    """Run one turn through the real graph."""
+    agent = build_agent(
+        settings,
+        provider,
+        gateway,
+        request,
+        call_ids=call_ids,
+        tool_timeout_s=tool_timeout_s,
+    )
+    return await agent.run()
+
+
+@asynccontextmanager
+async def app_client(
+    settings: ServiceSettings,
+    *,
+    provider: FakeProvider,
+    gateway: FakeGateway,
+    probe: StubProbe | None = None,
+    manager: TurnManager | None = None,
+) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
+    """Return an ASGI client for the service with injected fakes."""
+    selected_probe = cast(
+        ModelProbe, probe or StubProbe(ProbeResult(True, "model tool-call probe succeeded"))
+    )
+    app = create_app(settings, provider=provider, gateway=gateway, probe=selected_probe, manager=manager)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://agent") as client:
+        yield app, client
+
+
+def auth_headers(token: str = TOKEN) -> dict[str, str]:
+    """Return the internal bearer header."""
+    return {"Authorization": f"Bearer {token}"}
+
+
+def contract_fixture(name: str) -> dict[str, Any]:
+    """Return one checked-in wire fixture."""
+    return cast(dict[str, Any], json.loads((FIXTURES / "contract" / name).read_text(encoding="utf-8")))
+
+
+def replace_settings(settings: ServiceSettings, **changes: Any) -> ServiceSettings:
+    """Return a copy with one field changed."""
+    return replace(settings, **changes)

@@ -1,4 +1,4 @@
-"""The entry point of the short-lived investigation Job."""
+"""Entry point of the private investigation agent service."""
 
 import logging
 
