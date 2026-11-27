@@ -159,7 +159,7 @@ fi
 
 require_commands kubectl
 kubectl krew version >/dev/null 2>&1 ||
-	die "the Krew plugin manager is required; see docs/install.md for the two installation commands."
+	die "install the Krew plugin manager before verifying the legacy plugin artifacts."
 
 if [ -z "$manifest" ]; then
 	manifest="$work/page.yaml"

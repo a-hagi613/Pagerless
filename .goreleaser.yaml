@@ -146,8 +146,7 @@ release:
       Pagerless needs no database, identity provider, message broker, admission
       webhook, gateway, or MCP server.
     - **Three onboarding paths.** Fill the credentials Secret by hand, with
-      `kubectl page config set`, or from a secret manager. `docs/onboarding.md`
-      documents all three.
+      `kubectl page config set`, or from a secret manager.
     - **A read-only boundary.** The cluster identity reads workloads, Events,
       logs, and the OpenAPI schema and never writes a workload; the agent Job
       holds no cluster RBAC at all.

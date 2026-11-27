@@ -1,4 +1,4 @@
-# Local secrets (ADR-0015)
+# Local secrets
 .env
 .env.*
 !.env.example
@@ -40,3 +40,6 @@ dashboard/playwright-report/
 .tflint-cache/
 tfplan
 crash.log
+
+# Workstation-only agent instructions
+/AGENTS.md
