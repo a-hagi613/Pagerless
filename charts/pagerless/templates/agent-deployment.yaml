@@ -42,6 +42,10 @@ spec:
               value: {{ required "model.baseUrl must name the OpenAI-compatible endpoint" .Values.model.baseUrl | quote }}
             - name: PAGERLESS_MODEL_NAME
               value: {{ required "model.name must name a tool-calling model" .Values.model.name | quote }}
+            {{- if .Values.model.allowInsecure }}
+            - name: PAGERLESS_ALLOW_INSECURE_MODEL_ENDPOINT
+              value: "1"
+            {{- end }}
             - name: PAGERLESS_MODEL_API_KEY_FILE
               value: /var/run/pagerless/secret/model-api-key
             - name: PAGERLESS_BUDGET_TOOL_CALLS

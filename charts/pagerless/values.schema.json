@@ -32,7 +32,8 @@
       "required": ["baseUrl", "name"],
       "properties": {
         "baseUrl": {"type": "string", "format": "uri", "pattern": "^https?://"},
-        "name": {"type": "string", "minLength": 1}
+        "name": {"type": "string", "minLength": 1},
+        "allowInsecure": {"type": "boolean"}
       }
     },
     "agent": {
