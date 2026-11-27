@@ -45,3 +45,11 @@ Persist user messages, terminal answers, citations, sanitized tool attempts and 
 | CI and release | Gate Go formatting, lint, tests and race-sensitive paths, Python lint/types/tests, frontend lint/types/tests, browser e2e, Helm lint/render/schema and kind installation. Verify pinned dependencies, release checksums, SBOMs and published artifacts. Publish only under approved fresh coordinates. |
 
 The implementation must document concrete access and credential provisioning, retention defaults, artifact coordinates and compatibility versions before release. Those choices still need review. This specification authorizes no deletion or replacement of published tags or releases.
+
+### Verification workflow
+
+Contributors iterate with formatting and targeted unit tests. GitHub-hosted CI owns full language checks, image builds, browser suites, kind integration and release verification. The pre-merge integration run must exercise the four components together.
+
+Run independent checks through completion on the same revision. Summarize all failed checks and retain their diagnostic output, including browser traces where applicable. A failed prerequisite must identify the dependent checks it blocked. The aggregate result fails on any required failure, cancellation or unexpected skip.
+
+Avoid duplicate push and pull-request builds for the same PR update. Cancel superseded PR runs, key dependency caches to toolchains and lockfiles, and reuse build artifacts from the same revision. If changed-path selection is enabled, shared contracts, security-sensitive changes and unclassified paths receive full coverage. Verify the selectors and aggregate result with deliberately failing fixtures.

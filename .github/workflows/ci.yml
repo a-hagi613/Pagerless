@@ -3,15 +3,15 @@ name: CI
 on:
   pull_request:
   push:
-    branches: ["**"]
+    branches: [main, a-hagi613/overhaul-simplify-project-scope, "integration/**", "combined/**"]
     tags: ["v*.*.*"]
   workflow_dispatch:
 
 # A newer push to the same branch or pull request supersedes the older run.
-# Runs on main are never cancelled, so the default branch always finishes.
+# Tag verification retains its own run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read
