@@ -107,8 +107,6 @@ func parseTarget(value string) (*target, error) {
 		}
 	}
 	switch len(parts) {
-	case 1:
-		return &target{Name: parts[0]}, nil
 	case 2:
 		return &target{Kind: parts[0], Name: parts[1]}, nil
 	case 3:
