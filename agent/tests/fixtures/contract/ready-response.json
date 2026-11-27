@@ -1,0 +1,10 @@
+{
+  "status": "degraded",
+  "checks": [
+    {
+      "name": "model",
+      "ok": false,
+      "reason": "the model endpoint is unreachable"
+    }
+  ]
+}
