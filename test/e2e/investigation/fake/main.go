@@ -136,7 +136,7 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		})
 		return
 	}
-	if !strings.HasSuffix(request.URL.Path, "/chat/completions") {
+	if request.URL.Path != "/v1/chat/completions" && request.URL.Path != "/chat/completions" {
 		http.NotFound(response, request)
 		return
 	}
