@@ -363,7 +363,7 @@ func newHarness(t *testing.T, options harnessOptions) *harness {
 	if err != nil {
 		t.Fatalf("build the service: %v", err)
 	}
-	api := &API{Service: service, Auth: NewAuth(func() (string, error) { return testOperatorToken, nil }, token)}
+	api := NewAPI(service, NewAuth(func() (string, error) { return testOperatorToken, nil }, token), nil)
 	server := httptest.NewUnstartedServer(api.Handler())
 	_ = server.Listener.Close()
 	server.Listener = listener
@@ -897,5 +897,35 @@ func TestToolCallbacksAreBoundToTheTurn(t *testing.T) {
 	}
 	if status := <-duplicate; status != http.StatusOK {
 		t.Fatalf("a denied tool answered %d", status)
+	}
+}
+
+func TestSecurityHeadersAndLoginLimit(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, harnessOptions{})
+	health := h.request(http.MethodGet, "/healthz", nil, map[string]string{"Authorization": ""})
+	if health.StatusCode != http.StatusOK {
+		t.Fatalf("healthz answered %d", health.StatusCode)
+	}
+	if health.Header.Get("X-Content-Type-Options") != "nosniff" ||
+		health.Header.Get("Content-Security-Policy") == "" ||
+		health.Header.Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("security headers are missing: %v", health.Header)
+	}
+	_ = health.Body.Close()
+
+	var last *http.Response
+	for range 12 {
+		if last != nil {
+			_ = last.Body.Close()
+		}
+		last = h.request(http.MethodPost, "/api/v1/session", map[string]string{"token": "wrong"},
+			map[string]string{"Authorization": "", "Origin": h.baseURL})
+	}
+	if last.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("repeated sign-ins answered %d", last.StatusCode)
+	}
+	if code := errorCode(t, last); code != "rate_limited" {
+		t.Fatalf("error code %q", code)
 	}
 }

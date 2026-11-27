@@ -67,7 +67,14 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       volumes:
-        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        # The Kubernetes integration sees only the integration bearer.
+        - name: credentials
+          secret:
+            secretName: {{ required "existingSecret must name the externally provisioned credentials Secret" .Values.existingSecret }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.secretKeys.mcpToken }}
+                path: mcp-token
         - name: tmp
           emptyDir: {}
 {{- end }}
@@ -141,6 +148,15 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
       volumes:
-        {{- include "pagerless.credentialsVolume" . | nindent 8 }}
+        # The GitHub reader sees only the integration bearer and its read token.
+        - name: credentials
+          secret:
+            secretName: {{ required "existingSecret must name the externally provisioned credentials Secret" .Values.existingSecret }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.secretKeys.mcpToken }}
+                path: mcp-token
+              - key: {{ .Values.secretKeys.githubReadToken }}
+                path: github-read-token
         - name: tmp
           emptyDir: {}

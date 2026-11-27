@@ -21,6 +21,13 @@ type API struct {
 	Auth    *Auth
 	// Static serves the embedded dashboard at /.
 	Static http.Handler
+	// Login bounds repeated token attempts.
+	Login *loginLimiter
+}
+
+// NewAPI builds an API with the default login limiter.
+func NewAPI(service *Service, auth *Auth, static http.Handler) *API {
+	return &API{Service: service, Auth: auth, Static: static, Login: newLoginLimiter()}
 }
 
 // Handler returns the complete HTTP surface.
@@ -39,7 +46,7 @@ func (a *API) Handler() http.Handler {
 	mux.Handle("GET /api/v1/pages/{id}/diff", a.authenticated(http.HandlerFunc(a.diff)))
 	mux.Handle("POST /internal/turns/{turnId}/tools", a.internal(http.HandlerFunc(a.toolCall)))
 	mux.Handle("/", a.static())
-	return mux
+	return securityHeaders(mux)
 }
 
 // static serves the dashboard, and refuses an unknown API path as JSON so the
@@ -80,6 +87,16 @@ func (a *API) ready(response http.ResponseWriter, request *http.Request) {
 
 // session exchanges the operator token for a browser cookie.
 func (a *API) session(response http.ResponseWriter, request *http.Request) {
+	limiter := a.Login
+	if limiter == nil {
+		limiter = newLoginLimiter()
+	}
+	if !limiter.allow(request) {
+		response.Header().Set("Retry-After", retryAfterSeconds())
+		writeError(response, &Error{HTTPStatus: http.StatusTooManyRequests, Code: "rate_limited",
+			Message: "Too many sign-in attempts; retry later."})
+		return
+	}
 	if !SameOrigin(request) {
 		writeError(response, &Error{HTTPStatus: http.StatusForbidden, Code: "cross_origin_denied",
 			Message: "The request did not come from the installation's origin."})
@@ -97,9 +114,11 @@ func (a *API) session(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if failure := a.Auth.Session(response, request, body.Token); failure != nil {
+		limiter.fail(request)
 		writeError(response, failure)
 		return
 	}
+	limiter.reset(request)
 	response.WriteHeader(http.StatusNoContent)
 }
 

@@ -100,13 +100,15 @@ func (s *Server) handle(response http.ResponseWriter, request *http.Request) {
 		}
 		writeRPCResult(response, envelope.ID, map[string]any{"tools": tools})
 	case "tools/call":
-		s.call(response, envelope.ID, envelope.Params)
+		s.call(request.Context(), response, envelope.ID, envelope.Params)
 	default:
 		writeRPCError(response, http.StatusOK, envelope.ID, -32601, "the method is not supported")
 	}
 }
 
-func (s *Server) call(response http.ResponseWriter, id json.RawMessage, params json.RawMessage) {
+func (s *Server) call(
+	ctx context.Context, response http.ResponseWriter, id json.RawMessage, params json.RawMessage,
+) {
 	var call struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -122,7 +124,7 @@ func (s *Server) call(response http.ResponseWriter, id json.RawMessage, params j
 		if tool.Name != call.Name {
 			continue
 		}
-		text, err := tool.Call(context.Background(), call.Arguments)
+		text, err := tool.Call(ctx, call.Arguments)
 		if err != nil {
 			writeToolResult(response, id, "the tool call failed: "+err.Error(), true)
 			return

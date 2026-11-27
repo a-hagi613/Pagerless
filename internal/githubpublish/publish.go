@@ -155,6 +155,9 @@ func (p *Publisher) Publish(ctx context.Context, proposal Proposal) (Published, 
 		return Published{}, err
 	}
 	branch := branchName(proposal)
+	if branch == p.Config.BaseBranch {
+		return Published{}, fmt.Errorf("%w: the proposal branch is the base branch", ErrConflict)
+	}
 	if existing, found, err := p.Writer.FindPullRequest(ctx, branch); err != nil {
 		return Published{}, fmt.Errorf("find the pull request of %s: %w", branch, err)
 	} else if found {
