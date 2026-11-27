@@ -34,6 +34,9 @@ replicaCount: 1
 model:
   baseUrl: ""
   name: ""
+  # Permit a plain-http endpoint. Use it only for a model gateway inside the
+  # cluster that does not terminate TLS; a public endpoint must be https.
+  allowInsecure: false
 
 agent:
   # Empty installs the bundled agent Service.

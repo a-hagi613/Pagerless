@@ -87,6 +87,7 @@ helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--set existingSecret=pagerless-credentials \
 	--set model.baseUrl=http://pagerless-fake:9090/v1 \
 	--set model.name=fake-model \
+	--set model.allowInsecure=true \
 	--set github.repository=acme/cluster \
 	--set github.baseBranch=main \
 	--set github.apiUrl=http://pagerless-fake:9091 \
