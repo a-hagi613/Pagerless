@@ -20,9 +20,14 @@ const (
 	streamBackoff = 200 * time.Millisecond
 )
 
-// errStreamEnded means the server closed the stream before the turn finished,
-// which is safe to resume from the last sequence.
-var errStreamEnded = errors.New("the event stream ended before the turn finished")
+var (
+	// errStreamEnded means the server closed the stream before the turn finished,
+	// which is safe to resume from the last sequence.
+	errStreamEnded = errors.New("the event stream ended before the turn finished")
+	// errStreamProtocol means the server did not speak the documented event
+	// stream, which a reconnect will not fix.
+	errStreamProtocol = errors.New("the server did not send a valid event stream")
+)
 
 // streamOutcome is what one followed stream reached.
 type streamOutcome struct {
@@ -145,7 +150,7 @@ func readEvents(ctx context.Context, body io.Reader, outcome *streamOutcome, han
 				data = append(data, '\n')
 			}
 			if len(data)+len(value) > maxEventBytes {
-				return "", fmt.Errorf("a streamed event exceeds the %d byte limit", maxEventBytes)
+				return "", fmt.Errorf("%w: an event exceeds the %d byte limit", errStreamProtocol, maxEventBytes)
 			}
 			data = append(data, value...)
 		case strings.HasPrefix(line, "id:"):
@@ -181,6 +186,9 @@ func terminalStatus(current event) string {
 func retryableError(err error) bool {
 	if errors.Is(err, errStreamEnded) {
 		return true
+	}
+	if errors.Is(err, errStreamProtocol) {
+		return false
 	}
 	if api, ok := errors.AsType[*apiError](err); ok {
 		return api.retryable()

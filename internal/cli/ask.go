@@ -176,7 +176,7 @@ func (a *app) reportDetach(pageID, turnID string, outcome streamOutcome) error {
 	if a.opts.json {
 		return writeJSON(a.out(), struct {
 			PageID      string `json:"pageId"`
-			TurnID      string `json:"turnId"`
+			TurnID      string `json:"turnId,omitempty"`
 			Detached    bool   `json:"detached"`
 			LastEventID int64  `json:"lastEventId"`
 		}{PageID: pageID, TurnID: turnID, Detached: true, LastEventID: outcome.LastSeq})

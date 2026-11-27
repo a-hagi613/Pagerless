@@ -38,7 +38,7 @@ func (a *app) readToken(path string) (string, error) {
 	} else {
 		if info, statErr := os.Stat(path); statErr == nil && info.Mode().Perm()&0o077 != 0 {
 			_, _ = fmt.Fprintf(a.errOut(),
-				"warning: %s is readable by other users; restrict it with chmod 600\n", path)
+				"warning: %s is readable by other users; restrict it with chmod 600\n", sanitize(path))
 		}
 		raw, err = readTokenFile(path)
 	}

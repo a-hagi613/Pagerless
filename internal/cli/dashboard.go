@@ -16,6 +16,10 @@ func newDashboardCommand(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dashboard",
 		Short: "Print or open the dashboard served by the installation",
+		Long: `Prints the address the installation serves the dashboard on. When the plugin
+discovered the service, it keeps its local port-forward open until Ctrl-C; pass
+--address to point at a long-running address instead, or --no-wait to exit
+immediately.`,
 		Args: func(_ *cobra.Command, args []string) error {
 			if len(args) != 0 {
 				return usagef("dashboard takes no arguments")

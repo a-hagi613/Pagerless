@@ -11,7 +11,11 @@ func newFollowCommand(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "follow <pageId>",
 		Short: "Replay a conversation's events and follow new ones",
-		Args:  exactlyOneArgument,
+		Long: `Replays the durable event log and keeps the stream open. Without --after it
+resumes after the last event this machine read, so a detached or interrupted
+follow continues without losing or repeating entries. With --json each event is
+one JSON object on its own line.`,
+		Args: exactlyOneArgument,
 		RunE: a.run(func(ctx context.Context, args []string) error {
 			return a.followPage(ctx, args[0])
 		}),
@@ -56,7 +60,9 @@ func newActivityCommand(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "activity <pageId>",
 		Short: "Print a conversation's recorded tool activity",
-		Args:  exactlyOneArgument,
+		Long: `Prints the recorded events once, without following. With --json the output is
+one document with an events array.`,
+		Args: exactlyOneArgument,
 		RunE: a.run(func(ctx context.Context, args []string) error {
 			return a.activity(ctx, args[0], after)
 		}),

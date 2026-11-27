@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -41,7 +42,7 @@ func TestAskStreamsProgressSeparatelyAndWritesJSON(t *testing.T) {
 			{2, eventJSON(t, 2, eventToolFinished, map[string]any{
 				fieldCallID: "c1", fieldTool: testTool, fieldStatus: "ok", fieldDurationMS: 120, fieldTruncated: true,
 			})},
-			{3, eventJSON(t, 3, eventAnswer, map[string]any{fieldContent: "The Service has no endpoints."})},
+			{3, eventJSON(t, 3, eventAnswer, map[string]any{fieldContent: testAnswer})},
 			{4, eventJSON(t, 4, eventTurnFinished, map[string]any{fieldStatus: statusCompleted})},
 		})
 	})
@@ -51,7 +52,7 @@ func TestAskStreamsProgressSeparatelyAndWritesJSON(t *testing.T) {
 			UpdatedAt: time.Date(2026, 1, 1, 0, 0, 4, 0, time.UTC), LastEventID: 4,
 			Messages: []message{
 				{ID: "m1", TurnID: "t1", Role: "user", Content: testQuestion},
-				{ID: "m2", TurnID: "t1", Role: "assistant", Content: "The Service has no endpoints.",
+				{ID: "m2", TurnID: "t1", Role: roleAssistant, Content: testAnswer,
 					Citations: []citation{{CallID: "c1", Pointer: "/subsets"}}},
 			},
 		}
@@ -95,7 +96,7 @@ func TestHumanAskKeepsProgressOffStandardOutputAndEscapesControlText(t *testing.
 	})
 	mux.HandleFunc("GET /api/v1/pages/p1", func(writer http.ResponseWriter, _ *http.Request) {
 		detail := pageDetail{ID: "p1", Status: statusCompleted, LastEventID: 2, Messages: []message{
-			{ID: "m1", Role: "assistant", Content: "\x1b[31mred\x1b[0m answer"},
+			{ID: "m1", Role: roleAssistant, Content: "\x1b[31mred\x1b[0m answer"},
 		}}
 		_ = json.NewEncoder(writer).Encode(detail)
 	})
@@ -112,12 +113,12 @@ func TestHumanAskKeepsProgressOffStandardOutputAndEscapesControlText(t *testing.
 func TestReplyAddsATurnWithAnIdempotencyKey(t *testing.T) {
 	prepare(t)
 	var key, message string
+	var inherited createRequest
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/pages/p1/turns", func(writer http.ResponseWriter, request *http.Request) {
 		key = request.Header.Get("Idempotency-Key")
-		var body createRequest
-		_ = json.NewDecoder(request.Body).Decode(&body)
-		message = body.Message
+		_ = json.NewDecoder(request.Body).Decode(&inherited)
+		message = inherited.Message
 		writer.WriteHeader(http.StatusCreated)
 		_, _ = writer.Write([]byte(`{"pageId":"p1","turnId":"t2"}`))
 	})
@@ -137,6 +138,96 @@ func TestReplyAddsATurnWithAnIdempotencyKey(t *testing.T) {
 	if message != "What changed?" || len(key) != 32 {
 		t.Fatalf("message = %q, key = %q", message, key)
 	}
+	if inherited.Target != nil || inherited.Namespace != "" {
+		t.Fatalf("reply should inherit the page's hints, not resend them: %+v", inherited)
+	}
+}
+
+func TestAskReportsAFailedTurnAndKeepsThePage(t *testing.T) {
+	prepare(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/pages", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+		_, _ = writer.Write([]byte(`{"pageId":"p1","turnId":"t1"}`))
+	})
+	mux.HandleFunc("GET /api/v1/pages/p1/events", func(writer http.ResponseWriter, _ *http.Request) {
+		writeSSE(t, writer, []sseEvent{
+			{1, eventJSON(t, 1, eventTurnFinished, map[string]any{fieldStatus: statusFailed})},
+		})
+	})
+	mux.HandleFunc("GET /api/v1/pages/p1", func(writer http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(writer).Encode(pageDetail{ID: "p1", Status: statusFailed, LastEventID: 1})
+	})
+	server := newServer(t, mux)
+	res := runCLI(t, context.Background(), "--address", server.URL, "ask", "why?")
+	requireCode(t, res.err, ExitFailure)
+	containsAll(t, res.stdout, "ID:", "p1", "failed")
+	containsAll(t, ErrorText(res.err), "failed")
+}
+
+func TestDetachExplainsHowToResumeAndStop(t *testing.T) {
+	root := NewRootCommand()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	instance := &app{opts: &options{}, cmd: root}
+
+	if err := instance.reportDetach("p1", "t1", streamOutcome{LastSeq: 9}); err != nil {
+		t.Fatalf("reportDetach: %v", err)
+	}
+	containsAll(t, stderr.String(), "Detached", "event 9", "kubectl page follow p1", "kubectl page stop p1")
+
+	instance.opts.json = true
+	stdout.Reset()
+	if err := instance.reportDetach("p1", "t1", streamOutcome{LastSeq: 9}); err != nil {
+		t.Fatalf("reportDetach JSON: %v", err)
+	}
+	body := decode[struct {
+		PageID      string `json:"pageId"`
+		TurnID      string `json:"turnId"`
+		Detached    bool   `json:"detached"`
+		LastEventID int64  `json:"lastEventId"`
+	}](t, stdout.String())
+	if body.PageID != "p1" || body.TurnID != "t1" || !body.Detached || body.LastEventID != 9 {
+		t.Fatalf("detach JSON = %+v", body)
+	}
+}
+
+func TestFollowHumanPrintsTheTraceToStandardOutput(t *testing.T) {
+	prepare(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/pages/p1/events", func(writer http.ResponseWriter, _ *http.Request) {
+		writeSSE(t, writer, []sseEvent{
+			{1, eventJSON(t, 1, eventToolStarted, map[string]any{fieldCallID: "c1", fieldTool: testTool})},
+			{2, eventJSON(t, 2, eventTurnFinished, map[string]any{fieldStatus: statusCompleted})},
+		})
+	})
+	server := newServer(t, mux)
+	res := runCLI(t, context.Background(), "--address", server.URL, "follow", "p1", "--from-start")
+	if res.err != nil {
+		t.Fatalf("follow: %v", res.err)
+	}
+	containsAll(t, res.stdout, "[1]", eventToolStarted, testTool, "[2]", eventTurnFinished, statusCompleted)
+	excludesAll(t, res.stdout, "\x1b")
+}
+
+func TestShowHumanRendersMessagesAndCitations(t *testing.T) {
+	prepare(t)
+	server := newServer(t, http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(writer).Encode(pageDetail{
+			ID: "p1", Title: testQuestion, Status: statusCompleted, LastEventID: 4,
+			Messages: []message{
+				{ID: "m1", Role: "user", Content: testQuestion},
+				{ID: "m2", Role: roleAssistant, Content: "No endpoints.",
+					Citations: []citation{{CallID: "c1", Pointer: "/subsets"}}},
+			},
+		})
+	}))
+	res := runCLI(t, context.Background(), "--address", server.URL, "show", "p1")
+	if res.err != nil {
+		t.Fatalf("show: %v", res.err)
+	}
+	containsAll(t, res.stdout, "p1", testQuestion, "No endpoints.", "citation: c1 /subsets", "Last event")
 }
 
 func TestListRendersOrderAndJSON(t *testing.T) {

@@ -45,10 +45,11 @@ func newClient(address, token string, timeout time.Duration) (*client, error) {
 	if err != nil {
 		return nil, err
 	}
+	transport := newTransport(timeout)
 	return &client{
 		base:       parsed,
-		http:       &http.Client{Transport: newTransport(timeout), Timeout: timeout},
-		streamHTTP: &http.Client{Transport: newTransport(timeout)},
+		http:       &http.Client{Transport: transport, Timeout: timeout},
+		streamHTTP: &http.Client{Transport: transport},
 		token:      token,
 		timeout:    timeout,
 		userAgent:  "kubectl-page/" + Version,
@@ -180,8 +181,8 @@ func (c *client) openEvents(ctx context.Context, pageID string, after int64) (io
 	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
 		raw, _ := readBounded(response.Body, maxErrorBytes)
 		_ = response.Body.Close()
-		return nil, fmt.Errorf("the server returned %q instead of an event stream: %s",
-			contentType, truncate(sanitize(string(raw)), 200))
+		return nil, fmt.Errorf("%w: got %q: %s",
+			errStreamProtocol, contentType, truncate(sanitize(string(raw)), 200))
 	}
 	return response.Body, nil
 }
@@ -288,7 +289,7 @@ func (e *apiError) retryable() bool {
 // pagePath escapes every identifier so an opaque ID cannot change the route.
 func pagePath(id string, suffix ...string) string {
 	var path strings.Builder
-	path.WriteString("/api/v1/pages/")
+	path.WriteString(apiPrefix + "/pages/")
 	path.WriteString(url.PathEscape(id))
 	for _, part := range suffix {
 		path.WriteString("/")
@@ -313,7 +314,7 @@ func (c *client) createPage(ctx context.Context, request createRequest) (createR
 	if err != nil {
 		return response, err
 	}
-	err = c.do(ctx, http.MethodPost, "/api/v1/pages", nil, request, &response, key)
+	err = c.do(ctx, http.MethodPost, apiPrefix+"/pages", nil, request, &response, key)
 	return response, err
 }
 
@@ -350,7 +351,7 @@ func (c *client) pages(ctx context.Context) ([]pageSummary, error) {
 	var list struct {
 		Pages []pageSummary `json:"pages"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/v1/pages", nil, nil, &list, ""); err != nil {
+	if err := c.do(ctx, http.MethodGet, apiPrefix+"/pages", nil, nil, &list, ""); err != nil {
 		return nil, err
 	}
 	return list.Pages, nil

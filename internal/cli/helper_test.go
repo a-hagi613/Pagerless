@@ -21,6 +21,10 @@ const (
 	testQuestion    = "Why is checkout slow?"
 	testCapacity    = "capacity"
 	testUnavailable = "unavailable"
+	testAnswer      = "The Service has no endpoints."
+	testReleaseNS   = "pagerless"
+	portHTTP        = "http"
+	roleAssistant   = "assistant"
 
 	fieldCallID     = "callId"
 	fieldTool       = "tool"

@@ -155,11 +155,11 @@ func (a *app) connect(ctx context.Context) (*client, error) {
 	if a.client != nil {
 		return a.client, nil
 	}
-	address, err := a.resolveBase(ctx)
+	token, err := a.resolveToken()
 	if err != nil {
 		return nil, err
 	}
-	token, err := a.resolveToken()
+	address, err := a.resolveBase(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,8 @@ Exit codes:
 	persistent.StringVarP(&opts.namespace, "namespace", "n", "",
 		"optional namespace hint for the investigation")
 	persistent.BoolVar(&opts.json, "json", false,
-		"write machine-readable JSON to standard output; progress stays on standard error")
+		"write machine-readable JSON to standard output (follow writes one event per line); "+
+			"progress stays on standard error")
 	persistent.DurationVar(&opts.timeout, "timeout", defaultTimeout,
 		"timeout for one API request")
 	persistent.DurationVar(&opts.followTimeout, "follow-timeout", defaultFollowTimeout,

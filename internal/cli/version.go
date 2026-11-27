@@ -50,7 +50,7 @@ func newVersionCommand(a *app) *cobra.Command {
 				BuildDate:     BuildDate,
 				ExpectedChart: ExpectedChartVersion,
 				GoVersion:     runtime.Version(),
-				API:           "/api/v1",
+				API:           apiPrefix,
 			}
 			if a.opts.json {
 				return writeJSON(a.out(), info)

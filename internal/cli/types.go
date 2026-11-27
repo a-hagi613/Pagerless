@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// apiPrefix is the only API version the shared contract exposes.
+const apiPrefix = "/api/v1"
+
 // Event types and turn statuses named by the public contract.
 const (
 	eventTurnStarted  = "turn.started"
