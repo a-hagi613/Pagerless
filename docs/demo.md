@@ -82,23 +82,25 @@ several timestamps to confirm that the question, live tool calls, evidence and r
 The stills in `docs/assets/` are WebP crops of those frames; the README embeds the full
 recordings and keeps a release-asset copy of each.
 
-## Published 1.0.0 acceptance
+## Published 1.0.1 acceptance
 
 The recordings demonstrate the interfaces. The published release was also installed a second time
 from its public coordinates, on a fresh kind `v1.29.14` cluster, with empty Docker and Helm
 credential stores:
 
-- `helm pull oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless --version 1.0.0` returned
-  chart digest `sha256:be45e8c8abf226f899194e0110ae7876ec1776290319aa31fac37b75b8a4b450`.
+- `helm pull oci://ghcr.io/a-hagi613/pagerless/core/charts/pagerless --version 1.0.1` returned
+  chart digest `sha256:ed51f04ff874df591da5b3a3499a018657ace01cc8a7bfaa4a4009e81982d5ff`.
 - The running server and agent pods used
-  `ghcr.io/a-hagi613/pagerless/core/{server,agent}:1.0.0`.
+  `ghcr.io/a-hagi613/pagerless/core/{server,agent}:1.0.1`, and `kubectl-page 1.0.1` came from the
+  release archive after its checksum was verified.
 - A real `claude-haiku-5-5` turn answered the inventory question with six citations and proposed
   `inventory-setting` to `inventory-settings` in `apps/inventory/workload.yaml`.
-- `kubectl page diff` opened draft pull request #2 against the private acceptance fixture. The
+- `kubectl page diff` opened draft pull request #5 against the private acceptance fixture. The
   applied Deployment kept the same UID and spec during the turn: the service had read the cluster,
   not changed it.
-- `scripts/release/verify-public-access.sh` reported every archive, the chart, and both images
-  public without a token.
+- The release workflow's credential-free **Anonymous install gate** passed, and
+  `scripts/release/verify-public-access.sh` reported every archive, the chart, and both images
+  public without a token. The 1.0.0 release passed the same gate before it.
 
 To reproduce the setup without the private scripts:
 
