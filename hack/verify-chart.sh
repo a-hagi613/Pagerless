@@ -216,7 +216,7 @@ if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
 echo "==> proving readiness reports a broken model and recovers"
 helm upgrade "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" --reuse-values \
-	--set model.baseUrl=http://pagerless-fake:9090/v1-broken --wait --timeout "${TIMEOUT}s" >/dev/null
+	--set model.baseUrl=http://pagerless-fake:9099/v1 --wait --timeout "${TIMEOUT}s" >/dev/null
 degraded=0
 for _ in $(seq 1 60); do
 	status=$(curl --silent -o "$STATE/degraded.json" -w '%{http_code}' "http://127.0.0.1:${LOCAL_PORT}/readyz" || true)
