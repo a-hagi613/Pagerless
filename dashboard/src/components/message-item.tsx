@@ -41,11 +41,15 @@ export function MessageItem({
             {message.citations.map((citation) => {
               const pointer = citationPointer(citation);
               return (
+                // A JSON pointer has no break opportunities of its own. Let a long citation wrap
+                // inside the conversation instead of widening the page on a narrow screen: an
+                // overflowing page makes the browser grow the layout viewport, which in turn
+                // stretches fixed dialogs past the physical screen.
                 <Button
                   key={`${citation.callId}-${pointer ?? ""}`}
                   variant="outline"
                   size="xs"
-                  className="font-mono"
+                  className="h-auto max-w-full min-h-7 min-w-0 shrink items-start justify-start gap-1 py-1 text-left font-mono whitespace-normal [overflow-wrap:anywhere]"
                   onClick={() => {
                     onEvidence(citation);
                   }}
@@ -55,9 +59,13 @@ export function MessageItem({
                       : `Open evidence for ${citation.callId} at ${pointer}`
                   }
                 >
-                  <FileSearch className="size-3" aria-hidden="true" />
-                  {citation.callId}
-                  {pointer !== undefined && <span className="text-muted-foreground">{pointer}</span>}
+                  <FileSearch className="mt-0.5 size-3" aria-hidden="true" />
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{citation.callId}</span>
+                  {pointer !== undefined && (
+                    <span className="min-w-0 text-muted-foreground [overflow-wrap:anywhere]">
+                      {pointer}
+                    </span>
+                  )}
                 </Button>
               );
             })}
