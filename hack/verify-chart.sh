@@ -166,6 +166,21 @@ fi
 
 fake_pod="$(kc -n "$NAMESPACE" get pod -l app.kubernetes.io/name=pagerless-fake -o jsonpath='{.items[0].metadata.name}')"
 
+echo "==> discovering the private Service with the released CLI from the host"
+# The plugin's normal path is operator kubeconfig discovery and an in-process
+# port-forward, not --address. Extract the same binary the image ships and run
+# it outside the cluster against the named kind context.
+cli_container="$(docker create "$E2E_IMAGE")"
+docker cp "${cli_container}:/usr/local/bin/kubectl-page" "$STATE/kubectl-page" >/dev/null
+docker rm "$cli_container" >/dev/null
+if ! printf '%s\n' "$operator_token" | "$STATE/kubectl-page" list \
+	--context "kind-${CLUSTER}" --release-namespace "$NAMESPACE" \
+	--token-file - --json >"$STATE/discovery.json" 2>"$STATE/discovery.err"; then
+	echo "the discovered CLI flow failed:" >&2
+	cat "$STATE/discovery.err" >&2
+	fail_stage "CLI discovery"
+fi
+
 echo "==> asking through the released CLI"
 if ! printf '%s\n' "$operator_token" | kc -n "$NAMESPACE" exec -i "$fake_pod" -- \
 	/usr/local/bin/kubectl-page "Why is checkout failing?" -n "$WORKLOAD_NAMESPACE" \
@@ -290,6 +305,17 @@ if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
 		fi
 		sleep 3
 	done
+	# The two-port fixture Service must keep both endpoints while completions
+	# fail: the Kubernetes probe path stays healthy and GitHub stays readable.
+	if ! grep -q '"name":"github_read","ok":true' "$STATE/degraded.json"; then
+		echo "the GitHub read check failed during the model outage:" >&2
+		cat "$STATE/degraded.json" >&2
+		fail_stage "GitHub read during outage"
+	fi
+	if ! kc -n "$NAMESPACE" exec "$fake_pod" -- \
+		wget -qO- "http://pagerless-fake:9091/_test/pulls" >/dev/null; then
+		fail_stage "GitHub endpoint during outage"
+	fi
 	kc -n "$NAMESPACE" exec "$fake_pod" -- \
 		wget -qO- "http://127.0.0.1:9090/_test/outage?on=0" >/dev/null
 	recovered=0
