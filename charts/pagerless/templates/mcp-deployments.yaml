@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: kubernetes-mcp
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pagerless.selectorLabels" . | nindent 6 }}
@@ -88,6 +90,8 @@ metadata:
     app.kubernetes.io/component: github-mcp
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pagerless.selectorLabels" . | nindent 6 }}
