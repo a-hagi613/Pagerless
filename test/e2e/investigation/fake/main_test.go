@@ -14,6 +14,8 @@ const (
 	keyRole  = "role"
 	roleUser = "user"
 	roleTool = "tool"
+
+	testQuestion = "why is checkout failing"
 )
 
 // modelRequest builds one Chat Completions request body.
@@ -56,10 +58,21 @@ func toolCall(t *testing.T, decoded map[string]any) (string, map[string]any) {
 	return function["name"].(string), arguments
 }
 
+func TestTheModelRefusesAnUnknownEndpointPath(t *testing.T) {
+	t.Parallel()
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1-broken/chat/completions",
+		bytes.NewReader(modelRequest([]map[string]any{{"role": "user", "content": "why"}}, "resources_get")))
+	(&modelServer{}).ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("a wrong endpoint path answered %d", response.Code)
+	}
+}
+
 func TestTheModelReadsBeforeSubmitting(t *testing.T) {
 	t.Parallel()
 	name, arguments := toolCall(t, askModel(t, modelRequest(
-		[]map[string]any{{keyRole: roleUser, keyContent: "why"}},
+		[]map[string]any{{keyRole: roleUser, keyContent: testQuestion}},
 		"resources_get", "submit_answer", "read_playbook",
 	)))
 	if name != "resources_get" {
@@ -76,7 +89,7 @@ func TestSubmitAnswerCitesTheRuntimeCallID(t *testing.T) {
 {"callId":"c-0123456789abcdef","kind":"Deployment"}
 </tool-result nonce="n">`
 	messages := []map[string]any{
-		{keyRole: roleUser, keyContent: "why"},
+		{keyRole: roleUser, keyContent: testQuestion},
 		{keyRole: roleTool, keyContent: envelope},
 	}
 	name, arguments := toolCall(t, askModel(t, modelRequest(messages,
