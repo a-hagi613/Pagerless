@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml/badge.svg)](https://github.com/a-hagi613/pagerless/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-![Kubernetes 1.29–1.37 tested](https://img.shields.io/badge/Kubernetes-1.37.0-informational)
+![Kubernetes 1.29–1.37 tested](https://img.shields.io/badge/Kubernetes-1.29--1.37-informational)
 ![Helm 4.3.2 tested](https://img.shields.io/badge/Helm-4.3.2-informational)
 
 Pagerless answers the question an on-call engineer actually asks: *why is this workload failing?*
@@ -39,7 +39,7 @@ transcript. [What the demo shows](docs/demo.md) explains the environment and the
 
 ## Install
 
-Tested on a single-node [kind](https://kind.sigs.k8s.io/) cluster with **Kubernetes 1.37.0**,
+Tested on a single-node [kind](https://kind.sigs.k8s.io/) cluster with **Kubernetes 1.29.14 and 1.37.0**,
 kind **v0.33.0**, Helm **4.3.2** and a 5 GiB persistent volume. The chart requires Kubernetes
 1.29 or newer.
 
@@ -249,7 +249,7 @@ base is explained instead of guessed.
 
 ## Demo and verification
 
-The dashboard and CLI recordings were made on a single-node kind cluster running Kubernetes 1.37.0,
+The dashboard and CLI recordings were made on a single-node kind cluster running Kubernetes 1.29.14,
 with the real `pagerless` chart, the real `claude-haiku-5-5` model and a private acceptance
 repository. The investigation in each video is a fresh model turn with live tool calls; the videos
 are not scripted transcripts.
