@@ -140,14 +140,17 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		writeJSON(response, http.StatusOK, map[string]bool{"outage": modelOutage.Load()})
 		return
 	}
-	if modelOutage.Load() {
-		http.Error(response, "the model is unavailable", http.StatusServiceUnavailable)
-		return
-	}
+	// The Kubernetes readiness probe reads /v1/models. Keep it healthy during a
+	// completions outage so the two-port fixture Service keeps both endpoints and
+	// the GitHub reads remain available.
 	if request.URL.Path == "/v1/models" {
 		writeJSON(response, http.StatusOK, map[string]any{
 			keyObject: "list", "data": []map[string]string{{"id": fakeModelName, keyObject: keyModel}},
 		})
+		return
+	}
+	if modelOutage.Load() {
+		http.Error(response, "the model is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if request.URL.Path != "/v1/chat/completions" && request.URL.Path != "/chat/completions" {

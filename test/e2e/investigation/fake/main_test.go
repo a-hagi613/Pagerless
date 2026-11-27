@@ -185,6 +185,11 @@ func TestTheOutageToggleFailsTheModelAndRecovers(t *testing.T) {
 	if failed.Code != http.StatusServiceUnavailable {
 		t.Fatalf("the outage answered %d", failed.Code)
 	}
+	models := httptest.NewRecorder()
+	handler.ServeHTTP(models, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if models.Code != http.StatusOK {
+		t.Fatalf("the readiness model list answered %d during the outage", models.Code)
+	}
 	recoverToggle := httptest.NewRecorder()
 	handler.ServeHTTP(recoverToggle, httptest.NewRequest(http.MethodGet, "/_test/outage?on=0", nil))
 	recovered := askModel(t, modelRequest(
