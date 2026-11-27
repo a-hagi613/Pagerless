@@ -11,7 +11,7 @@ func TestParseTarget(t *testing.T) {
 		wantErr bool
 	}{
 		{"", nil, false},
-		{testCheckout, &target{Name: testCheckout}, false},
+		{testCheckout, nil, true},
 		{"Deployment/checkout", &target{Kind: testKind, Name: testCheckout}, false},
 		{"shop/Deployment/checkout", &target{Namespace: testNamespace, Kind: testKind, Name: testCheckout}, false},
 		{"Deployment//checkout", nil, true},
