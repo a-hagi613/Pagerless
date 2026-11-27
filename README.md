@@ -159,9 +159,9 @@ Alertmanager integration can start an investigation without a human in the loop:
 as `notifications/pagerless/investigate` for push-style MCP bridges. The endpoint authenticates
 with the installation's `trigger-token`; the credentials step creates it.
 
-The Alertmanager/Grafana alert rules and dashboards used by the acceptance environment live in
-[`pagerless-sandbox`](https://github.com/a-hagi613/pagerless-sandbox). The shipped rules carry the
-`pagerless.dev/watch: "true"` opt-in and the namespace/deployment labels the bridge forwards.
+The acceptance environment uses the same alert rules and dashboards as the private
+`pagerless-sandbox` repository. The shipped rules carry the `pagerless.dev/watch: "true"` opt-in
+and the namespace/deployment labels the bridge forwards.
 
 ## Install
 
