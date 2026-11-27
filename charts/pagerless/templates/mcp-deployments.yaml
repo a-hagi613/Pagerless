@@ -26,6 +26,7 @@ spec:
         - name: kubernetes-mcp
           image: {{ include "pagerless.serverImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/pagerless-mcp"]
           args:
             - --provider=kubernetes
             - --listen=:{{ .Values.mcp.port }}
@@ -98,6 +99,7 @@ spec:
         - name: github-mcp
           image: {{ include "pagerless.serverImage" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/pagerless-mcp"]
           args:
             - --provider=github
             - --listen=:{{ .Values.mcp.port }}

@@ -5,25 +5,24 @@ name: CI
 # branch, the integration branch, integration candidates and tags are verified
 # explicitly.
 on:
+  # Every pull request is eligible, whatever base it targets. A push to a
+  # feature head does not start a second copy: the pull_request event covers it.
   pull_request:
-    branches:
-      - main
-      - overhaul-simplify-project-scope
   push:
     branches:
       - main
-      - overhaul-simplify-project-scope
+      - a-hagi613/overhaul-simplify-project-scope
       - "integration/**"
       - "combined/**"
     tags:
       - "v*.*.*"
   workflow_dispatch:
 
-# A newer push to the same pull request supersedes the older run. Default and
-# integration branch runs are never cancelled.
+# A newer push to the same branch or pull request supersedes the older run,
+# including main and integration candidates. Tag verification keeps its run.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read

@@ -26,6 +26,17 @@ import (
 )
 
 const (
+	fakeModelName = "fake-model"
+	keyContent    = "content"
+	keyType       = "type"
+	keyName       = "name"
+	keySHA        = "sha"
+	keyMessage    = "message"
+	keyModel      = "model"
+	keyObject     = "object"
+	kindFile      = "file"
+	notFound      = "Not Found"
+
 	baseSHA      = "base-sha"
 	repository   = "acme/cluster"
 	baseBranch   = "main"
@@ -115,7 +126,7 @@ type modelServer struct{}
 func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	if request.URL.Path == "/v1/models" {
 		writeJSON(response, http.StatusOK, map[string]any{
-			"object": "list", "data": []map[string]string{{"id": "fake-model", "object": "model"}},
+			keyObject: "list", "data": []map[string]string{{"id": fakeModelName, keyObject: keyModel}},
 		})
 		return
 	}
@@ -169,11 +180,11 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		`","files":[{"path":"` + proposalPath + `","content":` + quoteJSON(proposedManifest) + `}]}}` +
 		"\n```"
 	writeJSON(response, http.StatusOK, map[string]any{
-		"id": "chatcmpl-fake", "object": "chat.completion", "created": time.Now().Unix(),
-		"model": "fake-model",
+		"id": "chatcmpl-fake", keyObject: "chat.completion", "created": time.Now().Unix(),
+		keyModel: fakeModelName,
 		"choices": []map[string]any{{
 			"index": 0, "finish_reason": "stop",
-			"message": map[string]any{"role": "assistant", "content": content},
+			keyMessage: map[string]any{"role": "assistant", keyContent: content},
 		}},
 		"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
 	})
@@ -181,15 +192,15 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 
 func chatToolCall(name, arguments string) map[string]any {
 	return map[string]any{
-		"id": "chatcmpl-fake", "object": "chat.completion", "created": time.Now().Unix(),
-		"model": "fake-model",
+		"id": "chatcmpl-fake", keyObject: "chat.completion", "created": time.Now().Unix(),
+		keyModel: fakeModelName,
 		"choices": []map[string]any{{
 			"index": 0, "finish_reason": "tool_calls",
-			"message": map[string]any{
-				"role": "assistant", "content": nil,
+			keyMessage: map[string]any{
+				"role": "assistant", keyContent: nil,
 				"tool_calls": []map[string]any{{
-					"id": "call-1", "type": "function",
-					"function": map[string]string{"name": name, "arguments": arguments},
+					"id": "call-1", keyType: "function",
+					"function": map[string]string{keyName: name, "arguments": arguments},
 				}},
 			},
 		}},
@@ -250,10 +261,10 @@ func (g *github) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		branch := strings.TrimPrefix(path, "/git/ref/heads/")
 		sha, found := g.branches[branch]
 		if !found {
-			writeJSON(response, http.StatusNotFound, map[string]string{"message": "Not Found"})
+			writeJSON(response, http.StatusNotFound, map[string]string{keyMessage: notFound})
 			return
 		}
-		writeJSON(response, http.StatusOK, map[string]any{"object": map[string]string{"sha": sha}})
+		writeJSON(response, http.StatusOK, map[string]any{keyObject: map[string]string{keySHA: sha}})
 		return
 	case path == "/git/refs" && request.Method == http.MethodPost:
 		var body struct {
@@ -263,15 +274,15 @@ func (g *github) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		branch := strings.TrimPrefix(body.Ref, "refs/heads/")
 		if branch == "" || branch == baseBranch {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "invalid branch"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "invalid branch"})
 			return
 		}
 		if _, found := g.branches[branch]; found {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "Reference already exists"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "Reference already exists"})
 			return
 		}
 		if body.SHA != baseSHA {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "stale base"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "stale base"})
 			return
 		}
 		g.branches[branch] = baseSHA
@@ -302,7 +313,7 @@ func (g *github) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		if body.Head == baseBranch || body.Base != baseBranch || !body.Draft {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "refused"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "refused"})
 			return
 		}
 		number := len(g.pulls) + 1
@@ -316,10 +327,10 @@ func (g *github) ServeHTTP(response http.ResponseWriter, request *http.Request) 
 		return
 	case strings.HasPrefix(path, "/pulls/") && (request.Method == http.MethodPut || request.Method == http.MethodPatch):
 		g.merges++
-		writeJSON(response, http.StatusMethodNotAllowed, map[string]string{"message": "Pagerless never merges"})
+		writeJSON(response, http.StatusMethodNotAllowed, map[string]string{keyMessage: "Pagerless never merges"})
 		return
 	default:
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(response, http.StatusNotFound, map[string]string{keyMessage: notFound})
 	}
 }
 
@@ -333,12 +344,12 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		if body.Branch == "" || body.Branch == baseBranch || !g.branchExists(body.Branch) {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "refused"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "refused"})
 			return
 		}
 		content, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(body.Content, "\n", ""))
 		if err != nil {
-			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{"message": "bad content"})
+			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "bad content"})
 			return
 		}
 		g.files[path] = string(content)
@@ -354,9 +365,9 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 	if _, found := g.files[path]; found {
 		content := g.files[path]
 		writeJSON(response, http.StatusOK, map[string]any{
-			"type": "file", "encoding": "base64", "size": len(content),
-			"sha":     fmt.Sprintf("blob-%x", len(content)),
-			"content": base64.StdEncoding.EncodeToString([]byte(content)),
+			keyType: kindFile, "encoding": "base64", "size": len(content),
+			keySHA:     fmt.Sprintf("blob-%x", len(content)),
+			keyContent: base64.StdEncoding.EncodeToString([]byte(content)),
 		})
 		return
 	}
@@ -364,12 +375,13 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 	prefix := path + "/"
 	entries := make([]map[string]any, 0)
 	for name := range g.files {
-		if strings.HasPrefix(name, prefix) {
-			entries = append(entries, map[string]any{"name": strings.TrimPrefix(name, prefix), "path": name, "type": "file"})
+		if trimmed, found := strings.CutPrefix(name, prefix); found {
+			entries = append(entries,
+				map[string]any{"name": trimmed, "path": name, keyType: kindFile})
 		}
 	}
 	if len(entries) == 0 {
-		writeJSON(response, http.StatusNotFound, map[string]string{"message": "Not Found"})
+		writeJSON(response, http.StatusNotFound, map[string]string{keyMessage: notFound})
 		return
 	}
 	writeJSON(response, http.StatusOK, entries)
@@ -381,7 +393,7 @@ func (g *github) listDirectory(response http.ResponseWriter, request *http.Reque
 	entries := make([]map[string]any, 0)
 	for name := range g.files {
 		if path == "" || strings.HasPrefix(name, path+"/") {
-			entries = append(entries, map[string]any{"name": name, "path": name, "type": "file"})
+			entries = append(entries, map[string]any{keyName: name, "path": name, keyType: kindFile})
 		}
 	}
 	writeJSON(response, http.StatusOK, entries)
@@ -402,7 +414,7 @@ func runAssertion() error {
 		return fmt.Errorf("E2E_BASE_URL, E2E_TOKEN and E2E_QUESTION are required")
 	}
 	client := &http.Client{Timeout: 5 * time.Minute}
-	create := map[string]string{"message": question}
+	create := map[string]string{keyMessage: question}
 	if namespace != "" {
 		create["namespace"] = namespace
 	}
