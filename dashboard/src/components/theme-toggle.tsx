@@ -1,4 +1,5 @@
 import { Monitor, Moon, Sun } from "lucide-react";
+import { useId } from "react";
 
 import { useTheme } from "@/lib/use-theme";
 import type { Theme } from "@/lib/theme-context";
@@ -14,6 +15,9 @@ const options: { theme: Theme; label: string; Icon: typeof Sun }[] = [
 // visual segment is the label, and the focus ring rides on the input rather than on colour alone.
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, resolved, setTheme } = useTheme();
+  // Each mounted toggle is its own native radio group. The mobile sheet and the header can both be in the
+  // DOM, and sharing a group name would let a hidden control clear the visible one.
+  const group = useId();
 
   return (
     <div
@@ -36,7 +40,7 @@ export function ThemeToggle({ className }: { className?: string }) {
           >
             <input
               type="radio"
-              name="pagerless-theme"
+              name={`pagerless-theme-${group}`}
               value={value}
               checked={checked}
               onChange={() => {

@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { cn } from "@/lib/utils";
 
 // A native select, deliberately: it keeps keyboard and screen-reader behaviour the platform already
-// gets right, and the Portal never needs a custom popover for three fields.
+// gets right, and the dashboard keeps the platform keyboard model for its hint fields.
 function Select({ className, children, ...props }: ComponentProps<"select">) {
   return (
     <select

@@ -29,14 +29,14 @@ export function PromptChip({ className }: { className?: string }) {
   );
 }
 
-// One target: the mark, the wordmark, the >_ chip, and the subtitle. Activating it navigates to the
-// cluster view and clears every filter, which is the "start over" control the product promises.
+// One target: the mark, the wordmark, the >_ chip, and the subtitle. Activating it starts a new
+// investigation, which is the "start over" control the product promises.
 export function BrandLockup({ onActivate, className }: { onActivate?: () => void; className?: string }) {
   return (
     <Link
       to="/"
       onClick={onActivate}
-      aria-label="Pagerless cluster pages — show the whole cluster"
+      aria-label="Pagerless investigations — start a new investigation"
       className={cn(
         "flex min-w-0 items-center gap-2.5 rounded-lg py-1 pr-1 transition-colors hover:bg-accent",
         className,
@@ -49,7 +49,7 @@ export function BrandLockup({ onActivate, className }: { onActivate?: () => void
           <PromptChip />
         </span>
         <span className="mt-1 font-mono text-xs tracking-[0.14em] text-muted-foreground uppercase">
-          cluster pages
+          investigations
         </span>
       </span>
     </Link>
