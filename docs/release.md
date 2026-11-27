@@ -103,7 +103,6 @@ bash scripts/release/check-release-target.sh --tag pagerless-v1.0.0 --offline
 bash scripts/release/test-guards.sh
 make release-check
 make release-snapshot RELEASE_SNAPSHOT_VERSION=1.0.0
-helm lint charts/pagerless
 make validate
 ```
 

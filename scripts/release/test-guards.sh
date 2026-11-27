@@ -85,6 +85,20 @@ fi
 grep -q 'pagerless-v\*\.\*\.\*' "$root/.github/workflows/release.yml" ||
 	fail "the release workflow does not trigger on the fresh pagerless-v tag"
 
+# The anonymous access job reads the tag and version from the validate job.
+# A transitive dependency does not expose those outputs, so validate must be
+# named directly in needs: (the 1.0.0 run failed with an empty version).
+access_block="$(awk '
+	/^  access:/ { in_access = 1 }
+	in_access && /^  [a-z][a-z-]*:/ && !/^  access:/ { exit }
+	in_access { print }
+' "$root/.github/workflows/release.yml")"
+if printf '%s\n' "$access_block" | grep -Eq '^    needs:.*(^|[^a-z-])validate([^a-z-]|$)'; then
+	pass "the anonymous access job depends on validate directly"
+else
+	fail "the anonymous access job does not depend on validate directly"
+fi
+
 if [ "$failures" -ne 0 ]; then
 	die "$failures release guard check(s) failed."
 fi
