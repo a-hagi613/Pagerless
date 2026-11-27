@@ -48,8 +48,12 @@ const (
 	secretValue  = "token=abcdef123456"
 )
 
-// callIDPattern reads the service-assigned callId from the agent's envelope.
-var callIDPattern = regexp.MustCompile(`"callId"\s*:\s*"([^"]+)"`)
+// callIDPattern and basePattern read the service-assigned callId and the
+// repository's immutable base from the agent's tool envelopes.
+var (
+	callIDPattern = regexp.MustCompile(`"callId"\s*:\s*"([^"]+)"`)
+	basePattern   = regexp.MustCompile(`"baseSha"\s*:\s*"([0-9a-f]{40})"`)
+)
 
 const baseManifest = `apiVersion: apps/v1
 kind: Deployment
@@ -172,29 +176,34 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		http.Error(response, "bad request", http.StatusBadRequest)
 		return
 	}
-	hasToolResult := false
-	callID := ""
+	toolMessages := 0
+	resourceCall, repositoryCall := "", ""
+	discoveredBase := ""
 	for _, message := range body.Messages {
 		if message.Role != "tool" {
 			continue
 		}
-		hasToolResult = true
+		toolMessages++
 		var content string
 		if err := json.Unmarshal(message.Content, &content); err != nil {
 			content = string(message.Content)
 		}
+		callID := ""
 		if match := callIDPattern.FindStringSubmatch(content); len(match) == 2 {
 			callID = match[1]
 		}
-	}
-	if callID == "" {
-		callID = "call-1"
+		if match := basePattern.FindStringSubmatch(content); len(match) == 2 {
+			discoveredBase = match[1]
+			repositoryCall = callID
+		} else if resourceCall == "" {
+			resourceCall = callID
+		}
 	}
 	available := make(map[string]bool, len(body.Tools))
 	for _, tool := range body.Tools {
 		available[tool.Function.Name] = true
 	}
-	if !hasToolResult {
+	if toolMessages == 0 {
 		if available["resources_get"] {
 			writeJSON(response, http.StatusOK, chatToolCall("resources_get",
 				`{"kind":"Deployment","namespace":"shop","name":"checkout"}`))
@@ -207,12 +216,26 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 			}
 		}
 	}
+	if toolMessages == 1 && available["github_repository"] {
+		writeJSON(response, http.StatusOK, chatToolCall("github_repository", `{}`))
+		return
+	}
+	base := discoveredBase
+	if base == "" {
+		base = baseSHA
+	}
+	citations := make([]map[string]string, 0, 2)
+	for _, callID := range []string{resourceCall, repositoryCall} {
+		if callID != "" {
+			citations = append(citations, map[string]string{"callId": callID})
+		}
+	}
 	answer := map[string]any{
 		keyContent: "The checkout Deployment has no memory limit and its image cannot be pulled. " +
 			"A source change is justified.",
-		"citations": []map[string]string{{"callId": callID}},
+		"citations": citations,
 		"proposal": map[string]any{
-			"baseSha": baseSHA,
+			"baseSha": base,
 			"files":   []map[string]string{{keyPath: proposalPath, keyContent: proposedManifest}},
 		},
 	}

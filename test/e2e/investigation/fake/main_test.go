@@ -198,3 +198,33 @@ func TestTheOutageToggleFailsTheModelAndRecovers(t *testing.T) {
 		t.Fatalf("the model did not recover: %+v", recovered)
 	}
 }
+
+func TestTheModelResolvesTheRepositoryBase(t *testing.T) {
+	t.Parallel()
+	read := `<tool-result nonce="n" source="resources_get">
+{"callId":"c-read","kind":"Deployment"}
+</tool-result nonce="n">`
+	repository := `<tool-result nonce="n" source="github_repository">
+{"callId":"c-repo","baseBranch":"main","baseSha":"` + baseSHA + `"}
+</tool-result nonce="n">`
+	messages := []map[string]any{
+		{keyRole: roleUser, keyContent: testQuestion},
+		{keyRole: roleTool, keyContent: read},
+		{keyRole: roleTool, keyContent: repository},
+	}
+	name, arguments := toolCall(t, askModel(t, modelRequest(messages,
+		"resources_get", "github_repository", "submit_answer")))
+	if name != "submit_answer" {
+		t.Fatalf("third tool %q", name)
+	}
+	citations := arguments["citations"].([]any)
+	if len(citations) != 2 ||
+		citations[0].(map[string]any)["callId"] != "c-read" ||
+		citations[1].(map[string]any)["callId"] != "c-repo" {
+		t.Fatalf("citations %+v", citations)
+	}
+	proposal := arguments["proposal"].(map[string]any)
+	if proposal["baseSha"] != baseSHA {
+		t.Fatalf("baseSha %+v", proposal["baseSha"])
+	}
+}
