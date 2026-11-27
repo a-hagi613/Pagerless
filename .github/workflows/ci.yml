@@ -15,7 +15,9 @@ on:
       - "integration/**"
       - "combined/**"
     tags:
-      - "v*.*.*"
+      # Only the fresh immutable release tag. The legacy v-prefixed tags are
+      # frozen history and must not start any automation.
+      - "pagerless-v*.*.*"
   workflow_dispatch:
 
 # A newer push to the same branch or pull request supersedes the older run,
