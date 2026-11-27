@@ -108,7 +108,10 @@
     "networkPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "properties": {"enabled": {"type": "boolean"}}
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "extraEgress": {"type": "array", "items": {"type": "object"}}
+      }
     }
   },
   "definitions": {

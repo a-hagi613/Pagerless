@@ -215,12 +215,13 @@ func quoteJSON(value string) string {
 
 // github is an in-memory repository and pull-request store.
 type github struct {
-	mu       sync.Mutex
-	files    map[string]string
-	branches map[string]string
-	pulls    []pull
-	commits  int
-	merges   int
+	mu          sync.Mutex
+	files       map[string]string
+	branchFiles map[string]map[string]string
+	branches    map[string]string
+	pulls       []pull
+	commits     int
+	merges      int
 }
 
 type pull struct {
@@ -235,8 +236,9 @@ type pull struct {
 
 func newGitHub() *github {
 	return &github{
-		files:    map[string]string{proposalPath: baseManifest},
-		branches: map[string]string{baseBranch: baseSHA},
+		files:       map[string]string{proposalPath: baseManifest},
+		branchFiles: map[string]map[string]string{},
+		branches:    map[string]string{baseBranch: baseSHA},
 	}
 }
 
@@ -352,7 +354,10 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 			writeJSON(response, http.StatusUnprocessableEntity, map[string]string{keyMessage: "bad content"})
 			return
 		}
-		g.files[path] = string(content)
+		if g.branchFiles[body.Branch] == nil {
+			g.branchFiles[body.Branch] = map[string]string{}
+		}
+		g.branchFiles[body.Branch][path] = string(content)
 		g.commits++
 		g.branches[body.Branch] = fmt.Sprintf("commit-%d", g.commits)
 		writeJSON(response, http.StatusCreated, map[string]any{"commit": map[string]string{"sha": g.branches[body.Branch]}})
@@ -362,8 +367,8 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 		g.listDirectory(response, request, strings.TrimSuffix(path, "/"), ref)
 		return
 	}
-	if _, found := g.files[path]; found {
-		content := g.files[path]
+	content, found := g.fileAt(ref, path)
+	if found {
 		writeJSON(response, http.StatusOK, map[string]any{
 			keyType: kindFile, "encoding": "base64", "size": len(content),
 			keySHA:     fmt.Sprintf("blob-%x", len(content)),
@@ -399,6 +404,21 @@ func (g *github) listDirectory(response http.ResponseWriter, request *http.Reque
 	writeJSON(response, http.StatusOK, entries)
 }
 
+// fileAt returns the content at one revision. The base revision is immutable;
+// a branch sees its own commits and falls back to the base before the first
+// commit.
+func (g *github) fileAt(ref, path string) (string, bool) {
+	if ref == baseBranch || ref == baseSHA || ref == "" {
+		content, found := g.files[path]
+		return content, found
+	}
+	if content, found := g.branchFiles[ref][path]; found {
+		return content, true
+	}
+	content, found := g.files[path]
+	return content, found
+}
+
 func (g *github) branchExists(branch string) bool {
 	_, found := g.branches[branch]
 	return found
@@ -414,33 +434,39 @@ func runAssertion() error {
 		return fmt.Errorf("E2E_BASE_URL, E2E_TOKEN and E2E_QUESTION are required")
 	}
 	client := &http.Client{Timeout: 5 * time.Minute}
-	create := map[string]string{keyMessage: question}
-	if namespace != "" {
-		create["namespace"] = namespace
-	}
-	body, _ := json.Marshal(create)
-	request, err := http.NewRequest(http.MethodPost, base+"/api/v1/pages", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Idempotency-Key", randomKey())
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusCreated {
-		raw, _ := io.ReadAll(response.Body)
-		return fmt.Errorf("create answered %d: %s", response.StatusCode, raw)
-	}
 	var created struct {
 		PageID string `json:"pageId"`
 		TurnID string `json:"turnId"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
-		return err
+	if pageID := os.Getenv("E2E_PAGE_ID"); pageID != "" {
+		// Resume the page the CLI opened. A second page would publish a second
+		// proposal and make the pull-request assertion ambiguous.
+		created.PageID = pageID
+	} else {
+		create := map[string]string{keyMessage: question}
+		if namespace != "" {
+			create["namespace"] = namespace
+		}
+		body, _ := json.Marshal(create)
+		request, err := http.NewRequest(http.MethodPost, base+"/api/v1/pages", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Idempotency-Key", randomKey())
+		response, err := client.Do(request)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = response.Body.Close() }()
+		if response.StatusCode != http.StatusCreated {
+			raw, _ := io.ReadAll(response.Body)
+			return fmt.Errorf("create answered %d: %s", response.StatusCode, raw)
+		}
+		if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+			return err
+		}
 	}
 
 	events, err := follow(client, base, token, created.PageID)

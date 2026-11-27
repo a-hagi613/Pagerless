@@ -29,6 +29,10 @@ cleanup() {
 	if [ -n "${PORT_FORWARD_PID:-}" ]; then
 		kill "$PORT_FORWARD_PID" >/dev/null 2>&1 || true
 	fi
+	if [ "${PAGERLESS_KEEP_CLUSTER:-0}" = "1" ]; then
+		echo "keeping kind cluster ${CLUSTER} for inspection"
+		return
+	fi
 	kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 	rm -rf "$STATE"
 }
@@ -66,20 +70,46 @@ kc -n "$NAMESPACE" create secret generic pagerless-credentials \
 
 before_workload="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o json | python3 -c 'import json,sys,hashlib; print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True).encode()).hexdigest())')"
 
+cat >"$STATE/values.yaml" <<'EOF'
+# The fake model and GitHub endpoints run inside this cluster on test ports.
+networkPolicy:
+  extraEgress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: pagerless-fake
+EOF
+
 echo "==> installing the packaged chart"
 helm upgrade --install "$RELEASE" "$REPO_ROOT/charts/pagerless" \
+	--values "$STATE/values.yaml" \
 	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" \
 	--set existingSecret=pagerless-credentials \
 	--set model.baseUrl=http://pagerless-fake:9090/v1 \
 	--set model.name=fake-model \
 	--set github.repository=acme/cluster \
 	--set github.baseBranch=main \
+	--set github.apiUrl=http://pagerless-fake:9091 \
 	--set github.pathPrefix=apps/checkout \
 	--set image.tag=1.0.0 \
 	--set agentImage.tag=1.0.0 \
 	--set agent.budget.seconds=180 \
 	--wait --timeout "${TIMEOUT}s" >"$STATE/install.txt" 2>&1 ||
-	{ kc -n "$NAMESPACE" get pods; kc -n "$NAMESPACE" describe pods; cat "$STATE/install.txt"; exit 1; }
+	{
+		kc -n "$NAMESPACE" get pods
+		kc -n "$NAMESPACE" port-forward service/pagerless-server 18081:8080 >/dev/null 2>&1 &
+		DIAG_PID=$!
+		sleep 3
+		curl --silent "http://127.0.0.1:18081/readyz" || true
+		kill "$DIAG_PID" >/dev/null 2>&1 || true
+		kc -n "$NAMESPACE" describe pods
+		for deployment in pagerless-server pagerless-agent pagerless-kubernetes-mcp pagerless-github-mcp; do
+			echo "==> logs ${deployment}"
+			kc -n "$NAMESPACE" logs "deployment/${deployment}" --tail=80 || true
+		done
+		cat "$STATE/install.txt"
+		exit 1
+	}
 
 echo "==> port-forwarding the private Service"
 kc -n "$NAMESPACE" port-forward service/pagerless-server "${LOCAL_PORT}:8080" >"$STATE/port-forward.log" 2>&1 &
@@ -140,6 +170,7 @@ echo "==> opening a second investigation through the browser API"
 kc -n "$NAMESPACE" exec "$fake_pod" -- env \
 	E2E_BASE_URL=http://pagerless-server:8080 \
 	E2E_TOKEN="$operator_token" \
+	E2E_PAGE_ID="$page_id" \
 	E2E_QUESTION="Why is checkout failing?" \
 	E2E_NAMESPACE="$WORKLOAD_NAMESPACE" \
 	/usr/local/bin/fake --assert >"$STATE/assert.json"
@@ -176,6 +207,7 @@ echo "==> asserting the workload was not changed"
 after_workload="$(kc -n "$WORKLOAD_NAMESPACE" get deployment checkout -o json | python3 -c 'import json,sys,hashlib; print(hashlib.sha256(json.dumps(json.load(sys.stdin),sort_keys=True).encode()).hexdigest())')"
 [ "$before_workload" = "$after_workload" ] || die "the cluster workload changed; Pagerless must not mutate a cluster."
 
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
 echo "==> proving readiness reports a broken model and recovers"
 helm upgrade "$RELEASE" "$REPO_ROOT/charts/pagerless" \
 	--kube-context "kind-${CLUSTER}" --namespace "$NAMESPACE" --reuse-values \
@@ -200,6 +232,8 @@ for _ in $(seq 1 60); do
 done
 [ "$status" = "200" ] || { echo "the installation did not recover:"; cat "$STATE/ready.json"; exit 1; }
 
+fi
+
 if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
 	echo "==> running the dashboard browser suite against the installed backend"
 	( cd "$REPO_ROOT/dashboard" && npm ci && npx playwright install --with-deps chromium )
@@ -209,4 +243,9 @@ if [ "${PAGERLESS_E2E_BROWSER:-0}" = "1" ]; then
 fi
 
 echo
-echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, readiness recovery, RBAC, and draft PR verified."
+if [ "${PAGERLESS_E2E_NEGATIVE:-1}" = "1" ]; then
+	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, readiness recovery, RBAC, and draft PR verified."
+else
+	echo "kind integration: CLI, browser API, Kubernetes MCP, redaction, RBAC, and draft PR verified."
+	echo "negative readiness probe: skipped by PAGERLESS_E2E_NEGATIVE=0; it is required in CI."
+fi

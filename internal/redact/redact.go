@@ -85,6 +85,12 @@ var patterns = []pattern{
 	},
 }
 
+// sensitiveKey names a map field whose value is a credential even when the
+// value itself carries no recognizable shape, such as {"password":"hunter2"}.
+var sensitiveKey = regexp.MustCompile(
+	`(?i)^(password|passwd|secret|token|api[_-]?key|client[_-]?secret|access[_-]?key|private[_-]?key` +
+		`|.*[_-](token|password|secret|key))$`)
+
 // marker returns the one marker a redacted match leaves behind.
 func marker(class string) string { return "[redacted:" + class + "]" }
 
@@ -128,6 +134,13 @@ func JSON(value any) (any, int) {
 		case map[string]any:
 			redacted := make(map[string]any, len(typed))
 			for key, item := range typed {
+				if sensitiveKey.MatchString(key) {
+					if _, isString := item.(string); isString {
+						count++
+						redacted[key] = marker(Credential)
+						continue
+					}
+				}
 				redacted[key] = walk(item)
 			}
 			return redacted
@@ -144,7 +157,7 @@ func JSON(value any) (any, int) {
 			}
 			return redacted
 		default:
-			return value
+			return current
 		}
 	}
 	return walk(value), count

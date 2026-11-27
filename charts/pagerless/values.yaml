@@ -114,6 +114,10 @@ securityContext:
 
 networkPolicy:
   enabled: true
+  # Extra egress rules appended to the server, agent and integration policies.
+  # Use one when the model endpoint or a Git service runs inside the cluster on
+  # a port or pod the chart cannot know.
+  extraEgress: []
 
 nodeSelector: {}
 tolerations: []

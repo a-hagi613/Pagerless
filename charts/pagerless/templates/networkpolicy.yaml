@@ -42,6 +42,9 @@ spec:
     - ports:
         - port: 443
           protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -66,10 +69,14 @@ spec:
         - port: {{ .Values.agent.port }}
           protocol: TCP
   egress:
-    # The agent calls a model endpoint the operator supplies, whose address and
-    # port the chart cannot know. DNS plus the public web ports cover the
-    # documented endpoints; an in-cluster endpoint on another port needs an
-    # additional egress rule.
+    # The agent calls the server's callback and, in this chart, an in-cluster
+    # model endpoint. Its own release's pods are reachable on every port; an
+    # external endpoint uses the public web ports. The operator supplies the
+    # endpoint, so the chart cannot name its address.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "pagerless.selectorLabels" . | nindent 14 }}
     - to:
         - namespaceSelector:
             matchLabels:
@@ -84,6 +91,9 @@ spec:
           protocol: TCP
         - port: 443
           protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -116,6 +126,10 @@ spec:
           protocol: TCP
   egress:
     - to:
+        - podSelector:
+            matchLabels:
+              {{- include "pagerless.selectorLabels" . | nindent 14 }}
+    - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
@@ -129,4 +143,7 @@ spec:
           protocol: TCP
         - port: 6443
           protocol: TCP
+    {{- with .Values.networkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 {{- end }}
