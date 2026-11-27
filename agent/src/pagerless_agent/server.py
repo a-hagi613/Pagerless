@@ -8,14 +8,15 @@ belong to the Go service.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableMapping
 from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -102,11 +103,14 @@ def create_app(
         redoc_url=None,
         openapi_url="/openapi.json",
     )
-    app.state.settings = settings
+    app.add_middleware(
+        _IngressGuard,
+        token=settings.token,
+        max_request_bytes=settings.max_request_bytes,
+    )
     _install_error_handlers(app)
-    _install_body_limit(app, settings.max_request_bytes)
 
-    @app.post("/turn", response_model=TurnResult, dependencies=[Depends(_authenticated)])
+    @app.post("/turn", response_model=TurnResult)
     async def turn(body: TurnRequest) -> JSONResponse:
         _require_callback_origin(body.callback_url, settings.callback_origin)
         _require_limits(body.limits, settings.budgets)
@@ -118,7 +122,7 @@ def create_app(
             raise ApiError(429, capacity.code, str(capacity)) from capacity
         return JSONResponse(content=encode(result))
 
-    @app.post("/turns/{turn_id}/stop", response_model=StopResult, dependencies=[Depends(_authenticated)])
+    @app.post("/turns/{turn_id}/stop", response_model=StopResult)
     async def stop(turn_id: str) -> JSONResponse:
         result = await selected_manager.stop(turn_id)
         return JSONResponse(content=encode(result))
@@ -146,29 +150,145 @@ def create_app(
     return app
 
 
-async def _authenticated(request: Request) -> None:
-    """Authenticate before FastAPI parses the body, so a refusal leaks no validation detail."""
-    settings: ServiceSettings = request.app.state.settings
-    _authorize(request, settings)
+Scope = MutableMapping[str, Any]
+Receive = Callable[[], Awaitable[dict[str, Any]]]
+Send = Callable[[dict[str, Any]], Awaitable[None]]
+Message = dict[str, Any]
 
 
-def _authorize(request: Request, settings: ServiceSettings) -> None:
-    header = request.headers.get("authorization", "")
-    scheme, _, credential = header.partition(" ")
+class _IngressGuard:
+    """Authenticate protected routes and count real body bytes before FastAPI reads them.
+
+    This is raw ASGI and deliberately sits outside ``ExceptionMiddleware``: a refusal must
+    not depend on route parsing or body validation, and it must not buffer the body. A
+    declared ``Content-Length`` is rejected early; actual chunks are counted and discarded
+    once the limit is crossed, including when no length is declared. The downstream response
+    is suppressed so the client receives one contract-shaped 413, not a parser error.
+    """
+
+    def __init__(self, app: Callable[..., Awaitable[None]], *, token: str, max_request_bytes: int) -> None:
+        self._app = app
+        self._token = token
+        self._limit = max_request_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        if _is_protected(str(scope.get("path", ""))) and not _credential_matches(
+            _header(scope, b"authorization"), self._token
+        ):
+            await _send_error(
+                send,
+                401,
+                "unauthorized",
+                "a valid internal bearer credential is required",
+                extra_headers={"WWW-Authenticate": "Bearer"},
+            )
+            return
+        declared = _header(scope, b"content-length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except ValueError:
+                await _send_error(send, 400, "invalid_request", "invalid Content-Length header")
+                return
+            if length < 0:
+                await _send_error(send, 400, "invalid_request", "invalid Content-Length header")
+                return
+            if length > self._limit:
+                await _send_error(
+                    send,
+                    413,
+                    "request_too_large",
+                    f"the request body is larger than {self._limit} bytes",
+                )
+                return
+
+        total = 0
+        rejected = False
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal total, rejected
+            if rejected:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                total += len(body)
+                if total > self._limit:
+                    rejected = True
+                    # Discard the chunk; never concatenate or forward an oversized body.
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            nonlocal response_started
+            if rejected:
+                return
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self._app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not rejected:
+                raise
+        if rejected and not response_started:
+            await _send_error(
+                send,
+                413,
+                "request_too_large",
+                f"the request body is larger than {self._limit} bytes",
+            )
+
+
+def _is_protected(path: str) -> bool:
+    normalized = path.rstrip("/") or "/"
+    if normalized == "/turn":
+        return True
+    if not normalized.startswith("/turns/") or not normalized.endswith("/stop"):
+        return False
+    turn_id = normalized[len("/turns/") : -len("/stop")]
+    return bool(turn_id) and "/" not in turn_id
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    for key, value in scope.get("headers", []):
+        if key.lower() == name:
+            return str(value.decode("latin-1"))
+    return None
+
+
+def _credential_matches(header: str | None, token: str) -> bool:
+    scheme, _, credential = (header or "").partition(" ")
     if scheme.lower() != "bearer" or not credential:
-        raise ApiError(
-            401,
-            "unauthorized",
-            "a valid internal bearer credential is required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not secrets.compare_digest(credential.encode("utf-8"), settings.token.encode("utf-8")):
-        raise ApiError(
-            401,
-            "unauthorized",
-            "a valid internal bearer credential is required",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return False
+    return secrets.compare_digest(credential.encode("utf-8"), token.encode("utf-8"))
+
+
+async def _send_error(
+    send: Send,
+    status: int,
+    code: str,
+    message: str,
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
+    body = json.dumps(
+        {"error": {"code": code, "message": message[:MAX_ERROR_BODY]}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+    ]
+    for name, value in (extra_headers or {}).items():
+        headers.append((name.lower().encode("ascii"), value.encode("latin-1")))
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
 
 
 def _require_callback_origin(callback_url: str, configured: str) -> None:
@@ -261,29 +381,3 @@ def _install_error_handlers(app: FastAPI) -> None:
             status_code=500,
             content={"error": {"code": "internal_error", "message": "the agent service failed"}},
         )
-
-
-def _install_body_limit(app: FastAPI, limit: int) -> None:
-    @app.middleware("http")
-    async def limit_body(request: Request, call_next: Any) -> Any:
-        declared = request.headers.get("content-length")
-        if declared is not None:
-            try:
-                if int(declared) > limit:
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "error": {
-                                "code": "request_too_large",
-                                "message": f"the request body is larger than {limit} bytes",
-                            }
-                        },
-                    )
-            except ValueError:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "error": {"code": "invalid_request", "message": "invalid Content-Length header"}
-                    },
-                )
-        return await call_next(request)

@@ -115,7 +115,7 @@ withheld.
 | `PAGERLESS_AGENT_MAX_CONCURRENCY` | no (4) | Global active-turn ceiling, 1–64. |
 | `PAGERLESS_AGENT_HOST` | no (`0.0.0.0`) | Listen address; the chart keeps the Service private. |
 | `PAGERLESS_AGENT_PORT` | no (8080) | Listen port. |
-| `PAGERLESS_AGENT_MAX_REQUEST_BYTES` | no (1 MiB) | Declared request-body ceiling. |
+| `PAGERLESS_AGENT_MAX_REQUEST_BYTES` | no (1 MiB) | Declared and actual request-body ceiling. |
 | `PAGERLESS_AGENT_TOOL_TIMEOUT_S` | no (30) | Per-callback timeout. |
 | `PAGERLESS_AGENT_READINESS_TTL_S` | no (300) | Successful readiness cache lifetime. |
 | `PAGERLESS_AGENT_READINESS_TIMEOUT_S` | no (10) | One readiness probe deadline. |
@@ -180,8 +180,8 @@ kind or an available tool.
 
 ## Security boundaries
 
-- Inbound `/turn` and `/stop` require the internal bearer credential, compared in constant
-  time.
+- Inbound `/turn` and `/stop` authenticate in raw ASGI before FastAPI reads or validates the
+  body, using a constant-time comparison. The body cap likewise runs before route parsing.
 - The callback destination must match the configured origin; redirects and proxy
   environment settings are ignored.
 - No Kubernetes, GitHub, shell or mutation client exists in this package.
@@ -198,8 +198,8 @@ kind or an available tool.
   proposals against its own evidence store, publish any approved proposal, and mark
   interrupted turns after a restart.
 - Completed-turn replay is in memory only. There is no database or local transcript.
-- The message body is capped by `Content-Length`; this service is reachable only from the
-  private Go service, which sends a declared length.
+- The message body is capped by both a declared `Content-Length` and the actual ASGI chunks;
+  an oversized body is rejected before route parsing and never concatenated.
 - A model must support function calling. Readiness reports a clear degraded reason when it
   does not.
 - Multi-turn state is limited to the `messages` Go sends for each fresh turn.
