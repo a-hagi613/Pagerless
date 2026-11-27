@@ -31,11 +31,13 @@ const (
 	keyType       = "type"
 	keyName       = "name"
 	keySHA        = "sha"
+	keyPath       = "path"
 	keyMessage    = "message"
 	keyModel      = "model"
 	keyObject     = "object"
 	kindFile      = "file"
 	notFound      = "Not Found"
+	toolSubmit    = "submit_answer"
 
 	baseSHA      = "base-sha"
 	repository   = "acme/cluster"
@@ -155,39 +157,47 @@ func (m *modelServer) ServeHTTP(response http.ResponseWriter, request *http.Requ
 			hasToolResult = true
 		}
 	}
+	available := make(map[string]bool, len(body.Tools))
+	for _, tool := range body.Tools {
+		available[tool.Function.Name] = true
+	}
 	if !hasToolResult {
-		name := "resources_get"
-		found := false
-		for _, tool := range body.Tools {
-			if tool.Function.Name == "resources_get" {
-				found = true
-				break
-			}
-		}
-		if found {
-			writeJSON(response, http.StatusOK, chatToolCall(name,
+		if available["resources_get"] {
+			writeJSON(response, http.StatusOK, chatToolCall("resources_get",
 				`{"kind":"Deployment","namespace":"shop","name":"checkout"}`))
 			return
 		}
-		if len(body.Tools) > 0 {
-			writeJSON(response, http.StatusOK, chatToolCall(body.Tools[0].Function.Name, `{}`))
-			return
+		for _, tool := range body.Tools {
+			if tool.Function.Name != toolSubmit && tool.Function.Name != "read_playbook" {
+				writeJSON(response, http.StatusOK, chatToolCall(tool.Function.Name, `{}`))
+				return
+			}
 		}
 	}
-	content := "The checkout Deployment has no memory limit and its image cannot be pulled. " +
-		"A source change is justified.\n\n```json\n" +
-		`{"content":"Add a memory limit to the checkout container.","proposal":{"baseSha":"` + baseSHA +
-		`","files":[{"path":"` + proposalPath + `","content":` + quoteJSON(proposedManifest) + `}]}}` +
-		"\n```"
+	answer := map[string]any{
+		keyContent: "The checkout Deployment has no memory limit and its image cannot be pulled. " +
+			"A source change is justified.",
+		"citations": []map[string]string{{"callId": "call-1"}},
+		"proposal": map[string]any{
+			"baseSha": baseSHA,
+			"files":   []map[string]string{{keyPath: proposalPath, keyContent: proposedManifest}},
+		},
+	}
+	if available[toolSubmit] {
+		encoded, _ := json.Marshal(answer)
+		writeJSON(response, http.StatusOK, chatToolCall(toolSubmit, string(encoded)))
+		return
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"id": "chatcmpl-fake", keyObject: "chat.completion", "created": time.Now().Unix(),
 		keyModel: fakeModelName,
 		"choices": []map[string]any{{
 			"index": 0, "finish_reason": "stop",
-			keyMessage: map[string]any{"role": "assistant", keyContent: content},
+			keyMessage: map[string]any{"role": "assistant", keyContent: answer[keyContent]},
 		}},
 		"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
 	})
+
 }
 
 func chatToolCall(name, arguments string) map[string]any {
@@ -206,11 +216,6 @@ func chatToolCall(name, arguments string) map[string]any {
 		}},
 		"usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
 	}
-}
-
-func quoteJSON(value string) string {
-	encoded, _ := json.Marshal(value)
-	return string(encoded)
 }
 
 // github is an in-memory repository and pull-request store.
@@ -382,7 +387,7 @@ func (g *github) contents(response http.ResponseWriter, request *http.Request, p
 	for name := range g.files {
 		if trimmed, found := strings.CutPrefix(name, prefix); found {
 			entries = append(entries,
-				map[string]any{"name": trimmed, "path": name, keyType: kindFile})
+				map[string]any{"name": trimmed, keyPath: name, keyType: kindFile})
 		}
 	}
 	if len(entries) == 0 {
@@ -398,7 +403,7 @@ func (g *github) listDirectory(response http.ResponseWriter, request *http.Reque
 	entries := make([]map[string]any, 0)
 	for name := range g.files {
 		if path == "" || strings.HasPrefix(name, path+"/") {
-			entries = append(entries, map[string]any{keyName: name, "path": name, keyType: kindFile})
+			entries = append(entries, map[string]any{keyName: name, keyPath: name, keyType: kindFile})
 		}
 	}
 	writeJSON(response, http.StatusOK, entries)

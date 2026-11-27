@@ -8,6 +8,7 @@
 
 # Build output of the Go binaries
 /bin/
+/fake
 
 # Editor and OS files
 .idea/
