@@ -24,7 +24,9 @@ and never merges a pull request; a human reviews the draft.
 
 ## Architecture
 
-<img src="docs/assets/architecture.svg" width="100%" alt="Pagerless architecture">
+<img src="docs/assets/architecture.svg" width="100%" alt="Pagerless reference architecture: operators use the CLI or React dashboard; the Go server calls the Python and LangGraph agent and the read-only Kubernetes, GitHub, Prometheus and Grafana MCP integrations; the publisher opens draft pull requests.">
+
+*Editable source: [architecture.excalidraw](docs/assets/architecture.excalidraw).*
 
 - **Server** — authenticates operators and the MCP trigger, enforces tool policy, redacts results,
   stores the transcript and streams ordered events.
