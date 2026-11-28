@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/pagerless-mascot.png" width="150" alt="Pagerless">
+  <img src="docs/assets/pagerless-mascot.png" width="250" alt="Pagerless">
 </p>
 
 <h1 align="center">Pagerless</h1>
@@ -17,10 +17,6 @@
 Install Pagerless in your cluster. Trigger investigations manually from the CLI or dashboard, or
 automatically over MCP from the observability tools you already run. Pagerless investigates with
 read-only tools, cites every claim, and opens a draft pull request for the fix.
-
-Every turn keeps an ordered transcript of tool calls, arguments, statuses and bounded results. A
-finding points to the exact call and JSON pointer behind it. Pagerless has no cluster write path
-and never merges a pull request; a human reviews the draft.
 
 ## Architecture
 
@@ -80,20 +76,12 @@ the turn.
 The dashboard is the same investigation with a browser UI: an activity timeline, sanitized
 evidence dialogs, cited Markdown answers and the proposed diff.
 
-https://github.com/user-attachments/assets/44875625-1ea1-4eab-8bc5-f0606b5c7a32
 
-<img src="docs/assets/dashboard-live.webp" width="720" alt="A formatted Markdown answer with citation chips in the Pagerless dashboard.">
+https://github.com/user-attachments/assets/37840c4e-20ad-402f-99c7-6ca99058132b
 
-<table role="presentation">
-  <tr>
-    <td width="50%">
-      <img src="docs/assets/dashboard-evidence.webp" alt="The evidence dialog showing sanitized tool arguments and a bounded JSON result.">
-    </td>
-    <td width="50%">
-      <img src="docs/assets/dashboard-proposal.webp" alt="The proposed change panel showing a one-line diff and an Open draft pull request action.">
-    </td>
-  </tr>
-</table>
+
+<img src="docs/assets/dashboard-evidence.webp" alt="The evidence dialog showing sanitized tool arguments and a bounded JSON result.">
+
 
 ## Draft pull requests
 
@@ -261,24 +249,11 @@ kubectl --namespace pagerless port-forward service/pagerless-server 8080:8080
 The browser exchanges the token for an HttpOnly, SameSite=Strict session cookie; the token is never
 written to browser storage.
 
-## Security model
-
-- One read-only Kubernetes identity. Discovery never extends the admitted kinds; Secrets and every
-  write verb are refused before the API call.
-- Model output, logs and repository files are untrusted. Results are bounded, redacted and rendered
-  as text or safe Markdown; the dashboard never injects HTML.
-- Credentials are projected Secret files, read per request and never placed in flags, URLs, logs or
-  the transcript.
-- The agent is a separate service with an internal token and no cluster, GitHub or model credential.
-- The publisher is a separate code path with the GitHub write token. It only creates branches and
-  draft pull requests.
 
 ## Documentation
 
 - [Investigation API](docs/investigation-api.md) — pages, turns, events, evidence and publication.
-- [Architecture decision](docs/adr/0001-investigation-service.md) — runtime and permission boundaries.
 - [Release engineering](docs/release.md) — immutable tags, publication and anonymous access.
-- [Demo and verification](docs/demo.md) — recorded environment and acceptance evidence.
 - [Release notes](docs/release-notes/1.1.0.md) — coordinates and changes for this release.
 
 ## Development
